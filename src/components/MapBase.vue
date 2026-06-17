@@ -13,11 +13,11 @@
 
 <script setup>
 import { onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { Color, ImageryLayer, Ion, Rectangle, SceneMode, UrlTemplateImageryProvider, Viewer } from "cesium";
+import { Cartesian3, Color, ImageryLayer, Ion, Rectangle, SceneMode, UrlTemplateImageryProvider, Viewer } from "cesium";
 import "cesium/Build/Cesium/Widgets/widgets.css";
 import { Aim, FullScreen, Minus, Plus } from "@element-plus/icons-vue";
 
-const props = defineProps({ grid: Boolean, dark: Boolean, basemap: String, mode: String, master: Boolean, syncRect: Object });
+const props = defineProps({ grid: Boolean, dark: Boolean, basemap: String, mode: String, syncRect: Object });
 const emit = defineEmits(["camera-change"]);
 const container = ref(null);
 const extent = Rectangle.fromDegrees(73, 15, 135, 55);
@@ -27,7 +27,7 @@ const tiles = {
   "地形晕渲": "https://tile.opentopomap.org/{z}/{x}/{y}.png",
   "全球境界": "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}"
 };
-let viewer, base;
+let viewer, base, syncing = false;
 
 function setBase() {
   if (base) viewer.imageryLayers.remove(base);
@@ -71,17 +71,16 @@ function create() {
   setBase();
   paint();
   home();
-  let prevRect = null;
+  let prevCam = null;
   viewer.scene.postRender.addEventListener(() => {
-    if (!props.master) return;
-    const r = viewer.camera.computeViewRectangle();
-    if (!r) return;
-    if (prevRect &&
-        Math.abs(r.west  - prevRect.west)  < 1e-9 &&
-        Math.abs(r.north - prevRect.north) < 1e-9 &&
-        Math.abs(r.east  - prevRect.east)  < 1e-9) return;
-    prevRect = { west: r.west, south: r.south, east: r.east, north: r.north };
-    emit("camera-change", prevRect);
+    if (syncing) { syncing = false; return; }
+    const { x, y, z } = viewer.camera.position;
+    if (prevCam &&
+        Math.abs(x - prevCam.x) < 0.1 &&
+        Math.abs(y - prevCam.y) < 0.1 &&
+        Math.abs(z - prevCam.z) < 0.1) return;
+    prevCam = { x, y, z };
+    emit("camera-change", prevCam);
   });
 }
 
@@ -100,9 +99,14 @@ watch(() => props.mode, v => {
   else viewer.scene.morphTo2D(0);
   viewer.scene.requestRender();
 });
-watch(() => props.syncRect, rect => {
-  if (!viewer || !rect) return;
-  viewer.camera.setView({ destination: new Rectangle(rect.west, rect.south, rect.east, rect.north) });
+watch(() => props.syncRect, cam => {
+  if (!viewer || !cam) return;
+  syncing = true;
+  if (viewer.scene.mode === SceneMode.SCENE2D) {
+    viewer.camera.position = new Cartesian3(cam.x, cam.y, cam.z);
+  } else {
+    viewer.camera.setView({ destination: new Cartesian3(cam.x, cam.y, cam.z) });
+  }
   viewer.scene.requestRender();
 }, { flush: 'sync' });
 onBeforeUnmount(() => viewer && viewer.destroy());

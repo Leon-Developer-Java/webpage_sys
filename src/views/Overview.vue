@@ -71,7 +71,7 @@
     <div class="center">
       <div class="maps" :style="mapsGrid">
         <div :class="['cell', { 'cell-4': layout === '4' }]" v-for="(p, i) in panes" :key="layout + '-' + p.key">
-          <MapBase :grid="showGrid" :dark="dark" :basemap="basemap" :mode="sceneMode" :master="i === 0" :syncRect="linked && i > 0 ? syncRect : null" @camera-change="onMasterCamera">
+          <MapBase :grid="showGrid" :dark="dark" :basemap="basemap" :mode="sceneMode" :syncRect="linked && emitterIdx !== i ? syncRect : null" @camera-change="cam => onCameraChange(i, cam)">
             <component :is="p.comp" />
           </MapBase>
           <div v-if="layout !== '4'" class="map-info">
@@ -203,17 +203,20 @@ const animPos = ref(tIndex.value);
 const linked = ref(false);
 const syncRect = ref(null);
 const sceneMode = ref('2D');
-let masterRect = null;
+const emitterIdx = ref(-1);
+const latestCam = {};
 let animTimer = null;
 let lastTs = null;
 
-function onMasterCamera(rect) {
-  masterRect = rect;
-  if (linked.value) syncRect.value = rect;
+function onCameraChange(i, cam) {
+  latestCam[i] = cam;
+  if (!linked.value) return;
+  emitterIdx.value = i;
+  syncRect.value = cam;
 }
 
 watch(linked, v => {
-  if (v && masterRect) syncRect.value = masterRect;
+  if (v && latestCam[0]) { emitterIdx.value = 0; syncRect.value = latestCam[0]; }
 });
 
 function startAnim() {
