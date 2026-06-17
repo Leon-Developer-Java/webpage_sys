@@ -1,0 +1,24 @@
+{
+  "name": "weather-webpage-sys",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5177",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "^2.3.1",
+    "@zip.js/zip.js": "2.7.52",
+    "cesium": "^1.129.0",
+    "echarts": "^5.6.0",
+    "element-plus": "^2.9.1",
+    "vue": "^3.5.13",
+    "vue-router": "^4.6.4"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "vite": "^6.0.7",
+    "vite-plugin-cesium": "^1.2.23"
+  }
+}

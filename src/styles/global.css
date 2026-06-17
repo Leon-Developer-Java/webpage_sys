@@ -1,0 +1,113 @@
+:root { font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
+* { box-sizing: border-box; }
+html, body, #app { width: 100%; height: 100%; margin: 0; }
+body { overflow: hidden; }
+
+.app {
+  display: flex;
+  flex-direction: column;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  color: var(--text);
+  --accent: #4ea1ff;
+  --accent-soft: rgba(78, 161, 255, 0.18);
+  --ok: #34d399;
+  --text: #eaf1fb;
+  --muted: rgba(234, 241, 251, 0.56);
+  --glass: rgba(16, 24, 38, 0.55);
+  --glass-2: rgba(16, 24, 38, 0.8);
+  --field: rgba(255, 255, 255, 0.07);
+  --border: rgba(255, 255, 255, 0.1);
+  --shadow: 0 12px 44px rgba(0, 0, 0, 0.46);
+  --backdrop: radial-gradient(1200px 800px at 70% -10%, #16263f 0%, #0a111d 55%, #070b13 100%);
+  --el-color-primary: #4ea1ff;
+  background: var(--backdrop);
+}
+
+.app.light {
+  --accent: #1f8bff;
+  --accent-soft: rgba(31, 139, 255, 0.14);
+  --ok: #10b981;
+  --text: #14233a;
+  --muted: rgba(20, 35, 58, 0.55);
+  --glass: rgba(255, 255, 255, 0.64);
+  --glass-2: rgba(255, 255, 255, 0.86);
+  --field: rgba(15, 30, 60, 0.05);
+  --border: rgba(15, 30, 60, 0.09);
+  --shadow: 0 12px 44px rgba(30, 55, 100, 0.16);
+  --backdrop: radial-gradient(1200px 800px at 70% -10%, #dfeaf8 0%, #cdddf0 60%, #c2d4ea 100%);
+  --el-color-primary: #1f8bff;
+}
+
+.glass {
+  background: var(--glass);
+  backdrop-filter: blur(22px) saturate(150%);
+  -webkit-backdrop-filter: blur(22px) saturate(150%);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  border-radius: 16px;
+}
+
+.topbar {
+  position: relative;
+  z-index: 40;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  height: 56px;
+  padding: 0 22px;
+  margin: 10px 10px 0;
+  overflow: hidden;
+}
+
+.app > :not(.topbar) { flex: 1; min-height: 0; }
+
+.brand { display: flex; align-items: center; gap: 9px; font-size: 19px; letter-spacing: 0.5px; flex-shrink: 0; }
+.brand .el-icon { font-size: 24px; color: var(--accent); }
+
+nav { display: flex; align-items: center; gap: 2px; padding: 3px; background: var(--field); border: 1px solid var(--border); border-radius: 12px; flex-shrink: 0; }
+nav a { padding: 5px 14px; border-radius: 9px; color: var(--muted); font-size: 13px; text-decoration: none; transition: 0.15s; white-space: nowrap; }
+nav a:hover { color: var(--text); }
+nav .router-link-active { color: #fff; background: var(--accent); font-weight: 600; }
+.app.light nav .router-link-active { color: #fff; }
+
+.top-actions { display: flex; align-items: center; gap: 15px; margin-left: auto; color: var(--muted); font-size: 13px; flex-shrink: 1; min-width: 0; overflow: hidden; }
+.top-actions .el-input { width: 230px; flex-shrink: 1; min-width: 100px; }
+.loc, .status, .user { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.status i { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.bell { font-size: 19px; color: var(--muted); }
+.user { color: var(--text); }
+.theme { display: grid; place-items: center; width: 34px; height: 34px; border: 1px solid var(--border); border-radius: 10px; background: var(--field); color: var(--text); cursor: pointer; transition: 0.15s; }
+.theme:hover { color: var(--accent); }
+
+.stub { display: grid; place-items: center; width: 100%; height: 100%; color: var(--muted); font-size: 22px; }
+
+.app .el-input__wrapper { background: var(--field); box-shadow: 0 0 0 1px var(--border) inset; border-radius: 10px; }
+.app .el-input__inner { color: var(--text); }
+.app .el-input__inner::placeholder { color: var(--muted); }
+.app .el-select__wrapper { background: var(--field); box-shadow: 0 0 0 1px var(--border) inset; border-radius: 10px; color: var(--text); }
+
+.layer-legend {
+  position: absolute;
+  left: 10px;
+  top: 74px;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 9px;
+  border-radius: 9px;
+  width: 180px;
+  background: var(--glass);
+  backdrop-filter: blur(18px) saturate(150%);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+.cell-4 .layer-legend { top: 10px; }
+.layer-legend small { font-size: 10px; font-weight: 600; color: var(--muted); white-space: nowrap; }
+.layer-legend .legend-bar { height: 8px; border-radius: 4px; }
+.layer-legend ul { display: flex; justify-content: space-between; margin: 0; padding: 0; list-style: none; font-size: 10px; font-variant-numeric: tabular-nums; }
+.layer-legend ul li { flex: 1; text-align: center; min-width: 0; }
