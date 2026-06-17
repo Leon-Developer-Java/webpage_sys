@@ -14,6 +14,9 @@
       <button v-if="layout !== '1'" :class="{ on: linked }" @click="linked = !linked">
         <el-icon><Connection /></el-icon><span>联动</span>
       </button>
+      <button @click="sceneMode = sceneMode === '2D' ? '3D' : '2D'">
+        <b class="dim-icon">{{ sceneMode }}</b><span>视角</span>
+      </button>
     </aside>
 
     <section v-if="dockOpen" class="dock glass">
@@ -68,7 +71,7 @@
     <div class="center">
       <div class="maps" :style="mapsGrid">
         <div :class="['cell', { 'cell-4': layout === '4' }]" v-for="(p, i) in panes" :key="layout + '-' + p.key">
-          <MapBase :grid="showGrid" :dark="dark" :basemap="basemap" :master="i === 0" :syncRect="linked && i > 0 ? syncRect : null" @camera-change="onMasterCamera">
+          <MapBase :grid="showGrid" :dark="dark" :basemap="basemap" :mode="sceneMode" :master="i === 0" :syncRect="linked && i > 0 ? syncRect : null" @camera-change="onMasterCamera">
             <component :is="p.comp" />
           </MapBase>
           <div v-if="layout !== '4'" class="map-info">
@@ -199,10 +202,19 @@ const speed = ref(1);
 const animPos = ref(tIndex.value);
 const linked = ref(false);
 const syncRect = ref(null);
+const sceneMode = ref('2D');
+let masterRect = null;
 let animTimer = null;
 let lastTs = null;
 
-function onMasterCamera(rect) { if (linked.value) syncRect.value = rect; }
+function onMasterCamera(rect) {
+  masterRect = rect;
+  if (linked.value) syncRect.value = rect;
+}
+
+watch(linked, v => {
+  if (v && masterRect) syncRect.value = masterRect;
+});
 
 function startAnim() {
   clearInterval(animTimer);
@@ -247,6 +259,7 @@ const dockTitle = computed(() => ({ file: "选择文件", data: "数据类型", 
 
 function cycleLayout() {
   layout.value = layout.value === "1" ? "2" : layout.value === "2" ? "4" : "1";
+  if (layout.value === "1") linked.value = false;
 }
 
 function openTool(name) {
@@ -284,6 +297,7 @@ watch(active, () => { variable.value = variableOptions.value[0]; });
 .rail { flex-shrink: 0; display: flex; flex-direction: column; gap: 4px; padding: 8px; }
 .rail button { display: grid; place-items: center; gap: 3px; width: 50px; height: 50px; border: 0; border-radius: 12px; background: transparent; color: var(--muted); font: inherit; font-size: 11px; cursor: pointer; transition: 0.15s; }
 .rail button .el-icon { font-size: 19px; }
+.dim-icon { font-size: 14px; font-weight: 800; letter-spacing: -0.5px; line-height: 1; }
 .rail button:hover { color: var(--text); background: var(--field); }
 .rail button.on { color: #fff; background: var(--accent); }
 
