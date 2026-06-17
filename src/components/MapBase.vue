@@ -75,11 +75,13 @@ function create() {
   viewer.scene.postRender.addEventListener(() => {
     if (syncing) { syncing = false; return; }
     const { x, y, z } = viewer.camera.position;
+    const fr = viewer.scene.mode === SceneMode.SCENE2D ? (viewer.camera.frustum.right || 0) : 0;
     if (prevCam &&
         Math.abs(x - prevCam.x) < 0.1 &&
         Math.abs(y - prevCam.y) < 0.1 &&
-        Math.abs(z - prevCam.z) < 0.1) return;
-    prevCam = { x, y, z };
+        Math.abs(z - prevCam.z) < 0.1 &&
+        Math.abs(fr - prevCam.fr) < 1) return;
+    prevCam = { x, y, z, fr };
     emit("camera-change", prevCam);
   });
 }
@@ -104,6 +106,12 @@ watch(() => props.syncRect, cam => {
   syncing = true;
   if (viewer.scene.mode === SceneMode.SCENE2D) {
     viewer.camera.position = new Cartesian3(cam.x, cam.y, cam.z);
+    if (cam.fr) {
+      const f = viewer.camera.frustum;
+      const ar = viewer.scene.drawingBufferWidth / viewer.scene.drawingBufferHeight;
+      f.right = cam.fr;  f.left = -cam.fr;
+      f.top = cam.fr / ar;  f.bottom = -cam.fr / ar;
+    }
   } else {
     viewer.camera.setView({ destination: new Cartesian3(cam.x, cam.y, cam.z) });
   }
