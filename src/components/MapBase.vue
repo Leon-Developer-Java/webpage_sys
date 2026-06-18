@@ -13,11 +13,11 @@
 
 <script setup>
 import { onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { Cartesian3, Color, ImageryLayer, Ion, Rectangle, SceneMode, UrlTemplateImageryProvider, Viewer } from "cesium";
+import { Cartesian3, Color, GeographicProjection, ImageryLayer, Ion, Rectangle, SceneMode, UrlTemplateImageryProvider, Viewer, WebMercatorProjection } from "cesium";
 import "cesium/Build/Cesium/Widgets/widgets.css";
 import { Aim, FullScreen, Minus, Plus } from "@element-plus/icons-vue";
 
-const props = defineProps({ grid: Boolean, dark: Boolean, basemap: String, mode: String, syncRect: Object });
+const props = defineProps({ grid: Boolean, dark: Boolean, basemap: String, mode: String, syncRect: Object, projection: String });
 const emit = defineEmits(["camera-change"]);
 const container = ref(null);
 const extent = Rectangle.fromDegrees(73, 15, 135, 55);
@@ -65,7 +65,9 @@ function create() {
   viewer = new Viewer(container.value, {
     animation: false, baseLayer: false, baseLayerPicker: false, fullscreenButton: false,
     geocoder: false, homeButton: false, infoBox: false, navigationHelpButton: false,
-    requestRenderMode: true, sceneMode: props.mode === '3D' ? SceneMode.SCENE3D : SceneMode.SCENE2D, sceneModePicker: false, selectionIndicator: false, timeline: false
+    requestRenderMode: true,
+    mapProjection: props.projection === '墨卡托' ? new WebMercatorProjection() : new GeographicProjection(),
+    sceneMode: props.mode === '3D' ? SceneMode.SCENE3D : SceneMode.SCENE2D, sceneModePicker: false, selectionIndicator: false, timeline: false
   });
   viewer.cesiumWidget.creditContainer.style.display = "none";
   setBase();
@@ -95,6 +97,12 @@ function ready() {
 onMounted(ready);
 watch(() => props.dark, () => viewer && paint());
 watch(() => props.basemap, () => viewer && setBase());
+watch(() => props.projection, () => {
+  if (!viewer) return;
+  viewer.destroy();
+  viewer = null;
+  create();
+});
 watch(() => props.mode, v => {
   if (!viewer) return;
   if (v === '3D') viewer.scene.morphTo3D(0);

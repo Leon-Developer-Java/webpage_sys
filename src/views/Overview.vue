@@ -52,8 +52,15 @@
       <template v-else-if="tool === 'proj'">
         <p class="pick-hint">选择地图投影方式</p>
         <div class="picker">
-          <button v-for="p in projections" :key="p" :class="{ on: projection === p }" @click="projection = p">
-            <span>{{ p }}</span><el-icon v-if="projection === p"><Check /></el-icon>
+          <button
+            v-for="p in projections" :key="p"
+            :class="{ on: projection === p }"
+            :disabled="!PROJ_SUPPORTED.has(p)"
+            @click="projection = p"
+          >
+            <span>{{ p }}</span>
+            <el-icon v-if="projection === p"><Check /></el-icon>
+            <span v-else-if="!PROJ_SUPPORTED.has(p)" class="soon-tag">暂不支持</span>
           </button>
         </div>
       </template>
@@ -71,7 +78,7 @@
     <div class="center">
       <div class="maps" :style="mapsGrid">
         <div :class="['cell', { 'cell-4': layout === '4' }]" v-for="(p, i) in panes" :key="layout + '-' + p.key">
-          <MapBase :grid="showGrid" :dark="dark" :basemap="basemap" :mode="sceneMode" :syncRect="linked && emitterIdx !== i ? syncRect : null" @camera-change="cam => onCameraChange(i, cam)">
+          <MapBase :grid="showGrid" :dark="dark" :basemap="basemap" :mode="sceneMode" :projection="projection" :syncRect="linked && emitterIdx !== i ? syncRect : null" @camera-change="cam => onCameraChange(i, cam)">
             <component :is="p.comp" />
           </MapBase>
           <div v-if="layout !== '4'" class="map-info">
@@ -156,6 +163,7 @@ const processing = [
 
 const versions = ["文件存储：原始数据 + meta.json + PNG", "前端渲染：PNG 显示（后续升级 WebGL2）", "数据处理：后端完成、前端轻展示"];
 const projections = ["墨卡托", "等经纬", "兰博托", "罗宾逊", "正弦", "卫星正视"];
+const PROJ_SUPPORTED = new Set(["墨卡托", "等经纬"]);
 const basemaps = ["矢量底图", "影像底图", "地形晕渲", "全球境界"];
 const levels = ["地面", "850hPa", "500hPa", "200hPa"];
 const times = ["00时", "02时", "04时", "06时", "08时", "10时", "12时", "14时", "16时", "18时", "20时", "22时"];
@@ -308,6 +316,9 @@ watch(active, () => { variable.value = variableOptions.value[0]; });
 .picker button { display: flex; align-items: center; justify-content: space-between; padding: 11px 13px; border: 1px solid var(--border); border-radius: 10px; background: var(--field); color: var(--text); font: inherit; font-size: 13px; cursor: pointer; transition: 0.15s; }
 .picker button:hover { border-color: var(--accent); }
 .picker button.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.picker button:disabled { opacity: 0.38; cursor: not-allowed; }
+.picker button:disabled:hover { border-color: var(--border); background: var(--field); color: var(--text); }
+.soon-tag { font-size: 10px; color: var(--muted); }
 .picker button .el-icon { font-size: 15px; }
 
 .center { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
