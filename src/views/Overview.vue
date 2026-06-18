@@ -96,43 +96,21 @@
       </div>
     </div>
 
-    <aside v-if="propsOpen" class="props glass">
-      <div class="props-head"><h4>气象信息</h4><button class="props-close" @click="propsOpen = false"><el-icon><Close /></el-icon></button></div>
-      <div class="props-body">
-        <dl>
-          <div><dt>当前文件</dt><dd>{{ meta.file }}</dd></div>
-          <div><dt>气象要素</dt><dd>{{ meta.element }}</dd></div>
-          <div><dt>时次</dt><dd>{{ meta.time }}</dd></div>
-          <div><dt>层级/高度</dt><dd>{{ meta.level }}</dd></div>
-          <div><dt>空间范围</dt><dd>{{ meta.range }}</dd></div>
-          <div><dt>有效网格</dt><dd>{{ meta.grid }}</dd></div>
-          <div><dt>缺测值</dt><dd>{{ meta.missing }}</dd></div>
-          <div><dt>单位</dt><dd>{{ meta.unit }}</dd></div>
-          <div><dt>变量数</dt><dd>{{ meta.vars }}</dd></div>
-          <div><dt>时间步</dt><dd>{{ meta.steps }}</dd></div>
-          <div><dt>解析状态</dt><dd class="ok">已完成</dd></div>
-        </dl>
-        <h4>处理状态</h4>
-        <ul class="proc">
-          <li v-for="s in processing" :key="s.step">
-            <el-icon :class="s.ok ? 'ok' : 'run'"><CircleCheck v-if="s.ok" /><Loading v-else /></el-icon>
-            <span>{{ s.step }}</span><em :class="s.ok ? 'ok' : 'run'">{{ s.state }}</em><time>{{ s.t }}</time>
-          </li>
-        </ul>
-        <div class="version">
-          <h4>MVP 当前版本</h4>
-          <p v-for="v in versions" :key="v"><el-icon class="ok"><CircleCheck /></el-icon>{{ v }}</p>
-        </div>
+    <MetaPanel v-if="propsOpen" :meta="meta" :steps="processing" closable @close="propsOpen = false">
+      <div class="version">
+        <h4>MVP 当前版本</h4>
+        <p v-for="v in versions" :key="v"><el-icon class="ok"><CircleCheck /></el-icon>{{ v }}</p>
       </div>
-    </aside>
+    </MetaPanel>
   </div>
 </template>
 
 <script setup>
 import { computed, inject, onBeforeUnmount, ref, watch } from "vue";
-import { ArrowLeft, ArrowRight, Check, CircleCheck, Close, Connection, DArrowLeft, DArrowRight, DataAnalysis, Document, FolderOpened, Grid, Loading, MapLocation, Monitor, Operation, Position, RefreshRight, VideoPlay, VideoPause } from "@element-plus/icons-vue";
+import { ArrowLeft, ArrowRight, Check, CircleCheck, Close, Connection, DArrowLeft, DArrowRight, DataAnalysis, Document, FolderOpened, Grid, MapLocation, Monitor, Operation, Position, RefreshRight, VideoPlay, VideoPause } from "@element-plus/icons-vue";
 import { parseFile } from "../api";
 import MapBase from "../components/MapBase.vue";
+import MetaPanel from "../components/MetaPanel.vue";
 import TimeAxis from "../components/TimeAxis.vue";
 import VariableSelect from "../components/VariableSelect.vue";
 import Era5Layer from "../layers/Era5Layer.vue";
@@ -369,23 +347,6 @@ watch(active, () => { variable.value = variableOptions.value[0]; });
 .tc-speed button:hover { color: var(--text); }
 .tc-speed button.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 
-.props { flex-shrink: 0; width: 300px; display: flex; flex-direction: column; overflow: hidden; }
-.props-head { flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; padding: 0 16px; height: 52px; border-bottom: 1px solid var(--border); }
-.props-head h4 { margin: 0; font-size: 14px; }
-.props-body { flex: 1; overflow-y: auto; padding: 12px 16px 16px; scrollbar-width: none; }
-.props-body::-webkit-scrollbar { display: none; }
-.props-close { display: grid; place-items: center; width: 28px; height: 28px; border: 1px solid var(--border); border-radius: 8px; background: var(--field); color: var(--muted); cursor: pointer; }
-.props-close:hover { color: var(--text); }
-.props-body h4 { margin: 0 0 12px; font-size: 14px; }
-.props-body h4:not(:first-child) { margin-top: 20px; }
-.props-body dl { margin: 0; }
-.props dl div { display: flex; justify-content: space-between; gap: 14px; padding: 8px 0; border-bottom: 1px solid var(--border); }
-.props dt { color: var(--muted); font-size: 12px; white-space: nowrap; }
-.props dd { margin: 0; font-size: 12px; text-align: right; }
-.proc { display: grid; gap: 3px; margin: 0; padding: 0; list-style: none; }
-.proc li { display: flex; align-items: center; gap: 8px; padding: 7px 0; font-size: 12px; }
-.proc time { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
-.proc em { font-style: normal; }
 .version { margin-top: 18px; padding: 14px; border-radius: 12px; background: var(--field); }
 .version p { display: flex; align-items: center; gap: 7px; margin: 0 0 9px; font-size: 12px; color: var(--muted); }
 .version p:last-child { margin-bottom: 0; }
