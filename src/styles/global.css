@@ -1,4 +1,29 @@
-:root { font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
+:root {
+  font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+  --accent: #4ea1ff;
+  --accent-soft: rgba(78, 161, 255, 0.18);
+  --ok: #34d399;
+  --text: #eaf1fb;
+  --muted: rgba(234, 241, 251, 0.56);
+  --glass: rgba(16, 24, 38, 0.55);
+  --glass-2: rgba(16, 24, 38, 0.8);
+  --field: rgba(16, 28, 50, 0.92);
+  --border: rgba(255, 255, 255, 0.1);
+  --shadow: 0 12px 44px rgba(0, 0, 0, 0.46);
+}
+
+:root.light {
+  --accent: #1f8bff;
+  --accent-soft: rgba(31, 139, 255, 0.14);
+  --ok: #10b981;
+  --text: #14233a;
+  --muted: rgba(20, 35, 58, 0.55);
+  --glass: rgba(255, 255, 255, 0.64);
+  --glass-2: rgba(255, 255, 255, 0.86);
+  --field: rgba(240, 246, 255, 0.96);
+  --border: rgba(15, 30, 60, 0.09);
+  --shadow: 0 12px 44px rgba(30, 55, 100, 0.16);
+}
 * { box-sizing: border-box; }
 html, body, #app { width: 100%; height: 100%; margin: 0; }
 body { overflow: hidden; }

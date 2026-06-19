@@ -26,7 +26,7 @@
 </template>
 
 <script setup>
-import { provide, ref } from "vue";
+import { provide, ref, watch } from "vue";
 import { Bell, Cloudy, Location, Moon, Search, Sunny } from "@element-plus/icons-vue";
 
 const dark = ref(true);
@@ -34,4 +34,5 @@ const search = ref("");
 const webgl = !!document.createElement("canvas").getContext("webgl2");
 provide("theme", dark);
 provide("webgl", webgl);
+watch(dark, v => document.documentElement.classList.toggle("light", !v), { immediate: true });
 </script>

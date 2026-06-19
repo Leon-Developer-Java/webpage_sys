@@ -21,7 +21,8 @@ webpage_sys/
 ├── src/
 │   ├── main.js              # 入口：Vue + Router + ElementPlus
 │   ├── router.js            # 路由配置
-│   ├── api.js               # 统一请求：parseFile(file) → POST /api/files/parse
+│   ├── api.js               # 统一请求：parseFile→8002 / 分片上传→8003 / chatStream→8004
+│   ├── markdown.js          # 智能体消息 Markdown 渲染（marked + 中文加粗修复 + 净化）
 │   ├── App.vue              # 顶栏 + 主题切换 + <router-view>
 │   ├── styles/global.css    # CSS 变量（亮/暗主题）、公共组件样式
 │   ├── views/
@@ -43,6 +44,22 @@ webpage_sys/
 └── public/
     └── meta.template.json   # 后端 meta.json 字段规范
 ```
+
+## 智能体页（Agent.vue）后端对接
+
+智能体页对接独立后端 `backend_agent`（端口 **8004**，详见其 README）。
+
+- 请求：`api.js` 的 `chatStream(messages, context)` → `POST http://127.0.0.1:8004/api/agent/chat`
+- 响应：**NDJSON 流式**，每行一个 JSON 事件，前端按类型分发渲染：
+
+  | 事件 | 前端动作 |
+  |------|----------|
+  | `{type:"text",value}` | 追加到气泡（Markdown 渲染） |
+  | `{type:"tool",name,status,label,progress,result}` | 渲染/更新 `ToolCallCard` 进度卡 |
+  | `{type:"image",url,caption}` | 气泡内嵌 `<img>` |
+  | `{type:"done"}` / `{type:"error",message}` | 收尾 / 错误提示 |
+
+- 助手消息经 `markdown.js` 渲染（依赖 `marked`）。后端服务的图片由 `8004/outputs/*.png` 提供。
 
 ## 快速开始
 
