@@ -61,12 +61,33 @@
               <img :src="im.url" :alt="im.caption || '生成图像'" class="msg-img" />
               <span v-if="im.caption" class="msg-img-cap">{{ im.caption }}</span>
             </a>
+            <div v-if="m.paramPrompt" class="pc">
+              <div class="pc-head">补全参数 · {{ m.paramPrompt.modelName }}</div>
+              <div v-for="f in m.paramPrompt.fields" :key="f.name" class="pc-field">
+                <div class="pc-label">{{ f.label }}<span v-if="f.required" class="pc-req">*</span></div>
+                <div v-if="(f.options || []).length" class="pc-opts">
+                  <button
+                    v-for="o in f.options" :key="o" class="pc-opt"
+                    :disabled="streaming" @click="answerParam(f, o)"
+                  >{{ o }}</button>
+                </div>
+                <div class="pc-input-row">
+                  <input
+                    class="pc-input" v-model="paramDraft[f.name]"
+                    :placeholder="f.placeholder || ('输入' + f.label)"
+                    :disabled="streaming"
+                    @keydown.enter.prevent="answerParam(f, paramDraft[f.name])"
+                  />
+                  <button class="pc-ok" :disabled="streaming" @click="answerParam(f, paramDraft[f.name])">确定</button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
       <div class="input-area">
         <div class="chips">
-          <button v-for="c in quickChips" :key="c" class="chip" @click="inputText = c + ' '">{{ c }}</button>
+          <button v-for="c in quickChips" :key="c" class="chip" @click="inputText += c + ' '">{{ c }}</button>
         </div>
         <div class="input-row">
           <textarea
@@ -87,7 +108,7 @@
       </div>
     </div>
 
-    <WorkbenchPanel @cmd="c => inputText = c + ' '" />
+    <WorkbenchPanel @cmd="runCommand" />
   </div>
 
   <teleport to="body">
@@ -134,6 +155,7 @@ const activeId = ref(sessions.value[0].id);
 const inputText = ref("");
 const streaming = ref(false);
 const msgsEl = ref(null);
+const paramDraft = ref({});
 const menuId = ref(null);
 const ddPos = ref({ top: "0px", left: "0px" });
 const editingId = ref(null);
@@ -219,7 +241,7 @@ function newSession() {
 }
 
 function appendMsg(role, content) {
-  const m = { id: crypto.randomUUID(), role, content, toolCalls: [], images: [], streaming: role === "assistant" };
+  const m = { id: crypto.randomUUID(), role, content, toolCalls: [], images: [], paramPrompt: null, streaming: role === "assistant" };
   cur.value.msgs.push(m);
   scrollBottom();
   return cur.value.msgs[cur.value.msgs.length - 1];
@@ -234,6 +256,22 @@ function applyToolEvent(msg, ev) {
   if (ev.label != null) tc.label = ev.label;
   if (ev.progress != null) tc.progress = ev.progress;
   if (ev.result != null) tc.result = ev.result;
+}
+
+function runCommand(prompt) {
+  inputText.value += prompt + ' ';
+}
+
+// 用户在补全卡里选择/输入参数：组成一条消息并重新发送
+function answerParam(field, value) {
+  const v = (value ?? "").toString().trim();
+  if (!v || streaming.value) return;
+  for (let i = cur.value.msgs.length - 1; i >= 0; i--) {
+    if (cur.value.msgs[i].paramPrompt) { cur.value.msgs[i].paramPrompt = null; break; }
+  }
+  paramDraft.value = {};
+  inputText.value = `${field.label}：${v}`;
+  send();
 }
 
 async function send() {
@@ -252,6 +290,7 @@ async function send() {
       if (ev.type === "text") aiMsg.content += ev.value;
       else if (ev.type === "tool") applyToolEvent(aiMsg, ev);
       else if (ev.type === "image") aiMsg.images.push({ url: ev.url, caption: ev.caption });
+      else if (ev.type === "need_params") aiMsg.paramPrompt = { model: ev.model, modelName: ev.model_name, fields: ev.fields };
       else if (ev.type === "error") aiMsg.content += `\n⚠️ ${ev.message}`;
       scrollBottom();
     }
@@ -572,6 +611,40 @@ onBeforeUnmount(() => {
 .msg-img-link { display: block; margin-top: 8px; text-decoration: none; }
 .msg-img { display: block; max-width: 100%; border-radius: 8px; border: 1px solid var(--border); }
 .msg-img-cap { display: block; margin-top: 4px; font-size: 11px; color: var(--muted); }
+
+/* ── 参数补全卡 ── */
+.pc {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: rgba(78, 161, 255, 0.06);
+  border: 1px solid rgba(78, 161, 255, 0.22);
+  border-radius: 10px;
+}
+.pc-head { font-size: 11.5px; font-weight: 600; color: var(--accent); margin-bottom: 8px; }
+.pc-field { margin-bottom: 10px; }
+.pc-field:last-child { margin-bottom: 0; }
+.pc-label { font-size: 12px; color: var(--text); margin-bottom: 5px; }
+.pc-req { color: #f87171; margin-left: 2px; }
+.pc-opts { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.pc-opt {
+  padding: 3px 11px; border-radius: 20px; font: inherit; font-size: 11.5px;
+  border: 1px solid var(--border); background: var(--field); color: var(--text);
+  cursor: pointer; transition: 0.12s;
+}
+.pc-opt:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.pc-opt:disabled { opacity: 0.5; cursor: default; }
+.pc-input-row { display: flex; gap: 6px; }
+.pc-input {
+  flex: 1; min-width: 0; background: rgba(255, 255, 255, 0.045);
+  border: 1px solid var(--border); border-radius: 8px; padding: 5px 10px;
+  font: inherit; font-size: 12px; color: var(--text); outline: none;
+}
+.pc-input:focus { border-color: rgba(78, 161, 255, 0.4); }
+.pc-ok {
+  padding: 5px 14px; border-radius: 8px; font: inherit; font-size: 12px;
+  border: 1px solid var(--accent); background: var(--accent); color: #fff; cursor: pointer;
+}
+.pc-ok:disabled { opacity: 0.5; cursor: default; }
 
 /* ── input ── */
 .input-area {
