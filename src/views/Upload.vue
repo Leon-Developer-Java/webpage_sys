@@ -56,9 +56,9 @@
         <div class="tbl-wrap" v-if="tab === 'upload'">
           <table class="tbl">
             <colgroup>
-              <col style="width:38px"><col>
-              <col style="width:60px"><col style="width:80px"><col style="width:55px">
-              <col style="width:132px"><col style="width:118px"><col style="width:76px">
+              <col style="width:36px"><col>
+              <col style="width:68px"><col style="width:90px">
+              <col style="width:130px"><col style="width:124px"><col style="width:76px">
             </colgroup>
             <thead>
               <tr>
@@ -66,15 +66,14 @@
                 <th>文件名</th>
                 <th>格式</th>
                 <th>大小</th>
-                <th>创建时间</th>
                 <th>修改时间</th>
-                <th class="pin-l">数据类型</th>
+                <th class="pin-l">数据类型<span class="req">*</span></th>
                 <th class="pin-r">状态</th>
               </tr>
             </thead>
             <tbody>
               <tr v-if="!files.length">
-                <td colspan="8" class="tbl-empty">暂无文件，请拖拽或点击上方区域选择</td>
+                <td colspan="7" class="tbl-empty">暂无文件，请拖拽或点击上方区域选择</td>
               </tr>
               <tr
                 v-for="f in files"
@@ -91,7 +90,6 @@
                 </td>
                 <td>{{ f.fmt }}</td>
                 <td>{{ f.size }}</td>
-                <td>{{ f.created }}</td>
                 <td>{{ f.modified }}</td>
                 <td class="pin-l">
                   <select class="type-sel" v-model="f.dataType" @click.stop :disabled="f.status !== 'pending'">
@@ -110,9 +108,9 @@
         <div class="tbl-wrap" v-else>
           <table class="tbl">
             <colgroup>
-              <col style="width:38px"><col>
-              <col style="width:60px"><col style="width:80px"><col style="width:130px">
-              <col style="width:132px"><col style="width:76px">
+              <col style="width:36px"><col>
+              <col style="width:68px"><col style="width:90px">
+              <col style="width:124px"><col style="width:120px"><col style="width:76px">
             </colgroup>
             <thead>
               <tr>
@@ -153,18 +151,44 @@
       </template>
     </MetaPanel>
   </div>
+
+  <teleport to="body">
+    <div v-if="dlgVisible" class="dlg-mask" @click.self="cancelUpload">
+      <div class="dlg">
+        <div class="dlg-head">上传提醒</div>
+        <div class="dlg-body">
+          <p class="dlg-desc">以下 {{ missingTypeFiles.length }} 个文件未选择数据类型，无法上传：</p>
+          <ul class="dlg-list">
+            <li v-for="n in missingTypeFiles" :key="n">{{ n }}</li>
+          </ul>
+          <p v-if="pendingUpload.length" class="dlg-confirm">
+            继续将仅上传剩余 <b>{{ pendingUpload.length }}</b> 个已选择数据类型的文件，是否继续？
+          </p>
+          <p v-else class="dlg-confirm">所有选中文件均未选择数据类型，请返回补充后再上传。</p>
+        </div>
+        <div class="dlg-foot">
+          <button class="dlg-cancel" @click="cancelUpload">取消</button>
+          <button v-if="pendingUpload.length" class="dlg-ok" @click="doUpload">确定</button>
+        </div>
+      </div>
+    </div>
+  </teleport>
 </template>
 
 <script setup>
 import { computed, ref } from "vue";
 import { DataAnalysis, Delete, Upload, WarningFilled } from "@element-plus/icons-vue";
 import MetaPanel from "../components/MetaPanel.vue";
+import { uploadFileResumable } from "../api.js";
 
 const files = ref([]);
 const selected = ref(null);
 const dragging = ref(false);
 const input = ref(null);
 const tab = ref('upload');
+const dlgVisible = ref(false);
+const missingTypeFiles = ref([]);
+const pendingUpload = ref([]);
 
 const TYPES = ["ERA5", "GFS/ECMWF", "CMA", "雷达", "葵花", "WRF"];
 const STATUS = { pending: "待上传", uploading: "上传中", done: "完成", error: "失败" };
@@ -197,7 +221,6 @@ function fmtDate(ms) {
   return new Date(ms).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 function now() { return new Date().toLocaleTimeString(); }
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 function addFiles(list) {
   const incoming = [...list].map(file => file.name);
@@ -221,30 +244,40 @@ function addFiles(list) {
       dup: existingNames.has(file.name) || hasDupInBatch(file.name),
       steps: [],
       meta: null,
+      percent: 0,
+      raw: file,
     });
   }
 }
 
 async function run(f) {
   f.status = "uploading";
+  f.percent = 0;
   f.steps = [
-    { label: "上传", state: "等待", t: "", ok: false, running: false },
-    { label: "解析", state: "等待", t: "", ok: false, running: false },
+    { label: "上传", state: "上传中 0%", t: "", ok: false, running: true },
+    { label: "解析", state: "待解析", t: "", ok: false, running: false },
     { label: "渲染 PNG", state: "等待", t: "", ok: false, running: false },
     { label: "前端展示", state: "等待", t: "", ok: false, running: false },
   ];
-  f.steps[0].running = true; f.steps[0].state = "上传中";
-  for (let i = 0; i < 20; i++) await sleep(55);
-  f.steps[0].ok = true; f.steps[0].running = false; f.steps[0].state = "成功"; f.steps[0].t = now();
-  f.steps[1].running = true; f.steps[1].state = "解析中";
-  await sleep(650);
-  const t = now();
-  f.steps[1].ok = true; f.steps[1].running = false; f.steps[1].state = "成功"; f.steps[1].t = t;
-  f.steps[2].ok = true; f.steps[2].state = "成功"; f.steps[2].t = t;
-  f.steps[3].ok = true; f.steps[3].state = "服务中"; f.steps[3].t = t;
-  f.meta = { file: f.name, element: "—", time: "—", level: "—", range: "—", grid: "—", unit: "—", missing: "—", vars: "—", steps: "—" };
-  f.status = "done";
-  if (!selected.value) selected.value = f.id;
+
+  try {
+    const data = await uploadFileResumable(f.raw, f.dataType, p => {
+      f.percent = p;
+      f.steps[0].state = `上传中 ${Math.floor(p)}%`;
+    });
+    f.steps[0].ok = true; f.steps[0].running = false; f.steps[0].state = "成功"; f.steps[0].t = now();
+    f.meta = {
+      file: data?.file_name ?? f.name,
+      element: "—", time: "—", level: "—", range: "—", grid: "—", unit: "—", missing: "—", vars: "—",
+      steps: `已上传至 ${data?.directory ?? "wait_process/"}`,
+    };
+    f.status = "done";
+    if (!selected.value) selected.value = f.id;
+  } catch (err) {
+    f.steps[0].ok = false; f.steps[0].running = false; f.steps[0].state = "失败";
+    f.status = "error";
+    console.error("上传失败：", err);
+  }
 }
 
 function toggleAll(e) { files.value.forEach(f => { f.checked = e.target.checked; }); }
@@ -254,10 +287,35 @@ function deleteChecked() {
   const ids = new Set(checked.value.map(f => f.id));
   if (ids.has(selected.value)) selected.value = null;
   files.value = files.value.filter(f => !ids.has(f.id));
+  const counts = {};
+  files.value.forEach(f => { counts[f.name] = (counts[f.name] || 0) + 1; });
+  files.value.forEach(f => { f.dup = counts[f.name] > 1; });
 }
 
 function uploadChecked() {
-  files.value.filter(f => f.checked && f.status === 'pending').forEach(f => { f.checked = false; run(f); });
+  const sel = files.value.filter(f => f.checked && f.status === 'pending');
+  const withType = sel.filter(f => f.dataType);
+  const withoutType = sel.filter(f => !f.dataType);
+  if (withoutType.length === 0) {
+    withType.forEach(f => { f.checked = false; run(f); });
+    return;
+  }
+  missingTypeFiles.value = withoutType.map(f => f.name);
+  pendingUpload.value = withType;
+  dlgVisible.value = true;
+}
+
+function doUpload() {
+  pendingUpload.value.forEach(f => { f.checked = false; run(f); });
+  pendingUpload.value = [];
+  missingTypeFiles.value = [];
+  dlgVisible.value = false;
+}
+
+function cancelUpload() {
+  pendingUpload.value = [];
+  missingTypeFiles.value = [];
+  dlgVisible.value = false;
 }
 
 function deletePqChecked() {
@@ -403,7 +461,7 @@ function onPick(e) { addFiles(e.target.files); e.target.value = ""; }
 
 .tbl {
   width: 100%;
-  min-width: 580px;
+  min-width: 720px;
   border-collapse: separate;
   border-spacing: 0;
   table-layout: fixed;
@@ -487,4 +545,125 @@ input[type="checkbox"] { cursor: pointer; accent-color: var(--accent); }
 .badge.uploading { background: var(--accent-soft); color: var(--accent); }
 .badge.done { background: rgba(52, 211, 153, 0.15); color: var(--ok); }
 .badge.error { background: rgba(239, 68, 68, 0.15); color: #ef4444; }
+
+.req { color: #ef4444; margin-left: 2px; font-weight: 700; }
+
+.dlg-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dlg {
+  width: 420px;
+  max-width: calc(100vw - 40px);
+  display: flex;
+  flex-direction: column;
+  border-radius: 16px;
+  overflow: hidden;
+  background: var(--field);
+  border: 1px solid var(--border);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+  color: var(--text);
+}
+
+.dlg-head {
+  flex-shrink: 0;
+  padding: 0 20px;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  font-size: 15px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+}
+
+.dlg-body {
+  padding: 18px 20px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dlg-desc { margin: 0; font-size: 13px; color: var(--text); }
+
+.dlg-list {
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: 9px;
+  background: rgba(0, 0, 0, 0.18);
+  border: 1px solid var(--border);
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  max-height: 160px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.dlg-list li {
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding-left: 12px;
+  position: relative;
+}
+
+.dlg-list li::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #ef4444;
+}
+
+.dlg-confirm { margin: 0; font-size: 13px; color: var(--text); }
+.dlg-confirm b { color: var(--accent); }
+
+.dlg-foot {
+  flex-shrink: 0;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 20px 16px;
+  border-top: 1px solid var(--border);
+}
+
+.dlg-cancel {
+  padding: 6px 18px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--field);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: 0.15s;
+}
+.dlg-cancel:hover { border-color: var(--muted); }
+
+.dlg-ok {
+  padding: 6px 18px;
+  border-radius: 8px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: 0.15s;
+}
+.dlg-ok:hover { opacity: 0.88; }
 </style>
