@@ -1,6 +1,6 @@
-const API_BASE = "http://127.0.0.1:8002";
-const UPLOAD_BASE = "http://127.0.0.1:8003";
-const AGENT_BASE = "http://127.0.0.1:8004";
+const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8002";
+const UPLOAD_BASE = import.meta.env.VITE_UPLOAD_BASE ?? "http://127.0.0.1:8003";
+const AGENT_BASE = import.meta.env.VITE_AGENT_BASE ?? "http://127.0.0.1:8004";
 const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB
 
 // 与智能体后端的 NDJSON 流式对话：逐行解析，产出事件对象
