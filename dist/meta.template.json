@@ -1,0 +1,14 @@
+{
+  "_comment": "后端解析数据文件后返回此结构，POST /api/files/parse 的响应体中 payload.data 即为本格式",
+  "file":    "数据文件名（含扩展名）",
+  "element": "气象要素名称，如：组合反射率 DBZH",
+  "time":    "时次，格式：YYYY-MM-DD HH:mm",
+  "level":   "层级/高度描述，如：0.5° 仰角 / 500hPa",
+  "range":   "空间范围，如：73°E-135°E, 15°N-55°N",
+  "grid":    "有效网格，如：721 × 361",
+  "missing": "缺测值标记，如：-9999 / NaN",
+  "unit":    "数据单位，如：dBZ / °C / gpm",
+  "vars":    "变量数量（字符串），如：3",
+  "steps":   "时间步数（字符串），如：24",
+  "extent":  [73, 15, 135, 55]
+}
