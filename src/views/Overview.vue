@@ -43,7 +43,7 @@
       <template v-else-if="tool === 'data'">
         <p class="pick-hint">选择数据类型</p>
         <div class="picker">
-          <button v-for="s in sources" :key="s.key" :class="{ on: active === s.key }" @click="active = s.key">
+          <button v-for="s in sources" :key="s.key" :class="{ on: active === s.key }" @click="selectSource(s.key)">
             <span>{{ s.btn }}</span><el-icon v-if="active === s.key"><Check /></el-icon>
           </button>
         </div>
@@ -87,11 +87,11 @@
             :syncRect="linked && emitterIdx !== i ? syncRect : null"
             @camera-change="cam => onCameraChange(i, cam)"
           >
-            <component :is="p.comp" />
+            <component :is="p.comp" @display-loaded="payload => onLayerDisplayLoaded(p.key, payload)" />
           </MapBase>
           <div v-if="layout !== '4'" class="map-info">
             <span><b>{{ p.btn }}</b></span>
-            <span><b>{{ infos[p.key].file }}</b></span>
+            <span><b>{{ metaFor(p.key).file }}</b></span>
             <span>{{ projection }}</span>
           </div>
         </div>
@@ -121,9 +121,9 @@
 </template>
 
 <script setup>
-import { computed, inject, onBeforeUnmount, ref, watch } from "vue";
+import { computed, inject, onBeforeUnmount, provide, ref, watch } from "vue";
 import { ArrowLeft, ArrowRight, Check, CircleCheck, Close, Connection, DArrowLeft, DArrowRight, DataAnalysis, Document, FolderOpened, Grid, MapLocation, Monitor, Operation, Position, RefreshRight, VideoPlay, VideoPause } from "@element-plus/icons-vue";
-import { parseFile } from "../api";
+import { displayKeyFromParseResult, parseFile } from "../api";
 import MapBase from "../components/MapBase.vue";
 import MetaPanel from "../components/MetaPanel.vue";
 import TimeAxis from "../components/TimeAxis.vue";
@@ -191,6 +191,8 @@ const variable = ref("组合反射率 DBZH");
 const level = ref("500hPa");
 const tIndex = ref(5);
 const parsed = ref(null);
+const liveMeta = ref({});
+const layerRefreshKeys = ref({});
 const playing = ref(false);
 const speed = ref(1);
 const animPos = ref(tIndex.value);
@@ -201,6 +203,8 @@ const emitterIdx = ref(-1);
 const latestCam = {};
 let animTimer = null;
 let lastTs = null;
+
+provide("layerRefreshKeys", layerRefreshKeys);
 
 function onCameraChange(i, cam) {
   latestCam[i] = cam;
@@ -234,8 +238,15 @@ watch(speed, () => { if (playing.value) lastTs = Date.now(); });
 watch(tIndex, v => { if (!playing.value) animPos.value = v; });
 onBeforeUnmount(() => clearInterval(animTimer));
 
-const meta = computed(() => parsed.value || infos[active.value]);
-const variableOptions = computed(() => infos[active.value].element.split("、"));
+const meta = computed(() => parsed.value || liveMeta.value[active.value] || infos[active.value]);
+const variableOptions = computed(() => {
+  return variableOptionsFor(active.value);
+});
+
+function variableOptionsFor(key) {
+  const current = liveMeta.value[key] || infos[key];
+  return String(current.element || "").split("、").filter(Boolean);
+}
 
 const panes = computed(() => {
   if (layout.value === "1") return sources.filter(s => s.key === active.value);
@@ -264,10 +275,34 @@ function openTool(name) {
   else { tool.value = name; dockOpen.value = true; }
 }
 
+function metaFor(key) {
+  return liveMeta.value[key] || infos[key];
+}
+
+function onLayerDisplayLoaded(key, payload) {
+  if (!payload?.meta) return;
+  liveMeta.value = {
+    ...liveMeta.value,
+    [key]: payload.meta,
+  };
+}
+
 function pickFile(i) {
   selected.value = i;
-  active.value = files[i].key;
+  selectSource(files[i].key);
   parsed.value = null;
+}
+
+function selectSource(key) {
+  if (active.value === key) refreshLayer(key);
+  active.value = key;
+}
+
+function refreshLayer(key) {
+  layerRefreshKeys.value = {
+    ...layerRefreshKeys.value,
+    [key]: (layerRefreshKeys.value[key] || 0) + 1,
+  };
 }
 
 function choose(e) {
@@ -275,10 +310,28 @@ function choose(e) {
 }
 
 async function parse() {
-  if (file.value) parsed.value = await parseFile(file.value);
+  if (!file.value) return;
+  const result = await parseFile(file.value);
+  const looksLikeMeta = result?.file || result?.element || result?.data_type || result?.weather_info;
+  const nextMeta = result?.meta || (looksLikeMeta ? result : null);
+  const nextKey = displayKeyFromParseResult(result, file.value.name);
+  parsed.value = nextMeta || result;
+  if (nextKey) {
+    active.value = nextKey;
+    liveMeta.value = { ...liveMeta.value, [nextKey]: parsed.value };
+    refreshLayer(nextKey);
+  } else {
+    liveMeta.value = { ...liveMeta.value };
+  }
 }
 
-watch(active, () => { variable.value = variableOptions.value[0]; });
+watch(active, () => {
+  const parsedKey = displayKeyFromParseResult(parsed.value);
+  if (parsedKey && parsedKey !== active.value) {
+    parsed.value = null;
+  }
+  variable.value = variableOptions.value[0] || variable.value;
+});
 </script>
 
 <style scoped>
