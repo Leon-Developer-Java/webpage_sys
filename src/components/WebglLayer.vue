@@ -15,6 +15,7 @@ const props = defineProps({
   product: String,
   missing: { type: Number, default: -9999 },
   viewer: Object,
+  alpha: { type: Number, default: 1 },
 });
 const canvas = ref(null);
 const viewerRef = inject("cesiumViewer", ref(null));
@@ -155,7 +156,7 @@ function updateCesiumLayer() {
     tileWidth: canvas.value.width,
     tileHeight: canvas.value.height,
   }));
-  imageryLayer.alpha = 1;
+  imageryLayer.alpha = Math.min(1, Math.max(0, Number(props.alpha) || 0));
   viewer.imageryLayers.add(imageryLayer);
   imageryViewer = viewer;
   viewer.scene.requestRender();
@@ -283,6 +284,8 @@ watch(
 watch(() => props.extent, updateCesiumLayer, { deep: true });
 
 watch(() => props.viewer, updateCesiumLayer);
+
+watch(() => props.alpha, updateCesiumLayer);
 
 watch(
   () => viewerRef?.value,

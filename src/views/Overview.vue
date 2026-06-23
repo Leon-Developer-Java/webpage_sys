@@ -87,7 +87,7 @@
             :syncRect="linked && emitterIdx !== i ? syncRect : null"
             @camera-change="cam => onCameraChange(i, cam)"
           >
-            <component :is="p.comp" />
+            <component :is="p.comp" @display-loaded="data => onLayerDisplayLoaded(p.key, data)" />
           </MapBase>
           <div v-if="layout !== '4'" class="map-info">
             <span><b>{{ p.btn }}</b></span>
@@ -191,6 +191,7 @@ const variable = ref("组合反射率 DBZH");
 const level = ref("500hPa");
 const tIndex = ref(5);
 const parsed = ref(null);
+const layerDisplays = ref({});
 const playing = ref(false);
 const speed = ref(1);
 const animPos = ref(tIndex.value);
@@ -234,7 +235,26 @@ watch(speed, () => { if (playing.value) lastTs = Date.now(); });
 watch(tIndex, v => { if (!playing.value) animPos.value = v; });
 onBeforeUnmount(() => clearInterval(animTimer));
 
-const meta = computed(() => parsed.value || infos[active.value]);
+const meta = computed(() => {
+  const display = layerDisplays.value[active.value];
+  if (active.value === "himawari" && display?.meta_json) {
+    const firstVariable = display.variables?.[0] || display.meta_json.variables?.[0] || {};
+    const grid = display.grid || display.meta_json.grid;
+    const extent = display.extent || display.meta_json.extent;
+    return {
+      file: display.meta_json.scene_id,
+      element: firstVariable.name_zh || firstVariable.key,
+      time: display.meta_json.observation_time,
+      level: "等经纬网格 / EPSG:4326",
+      range: Array.isArray(extent) ? `${extent[0]}°E-${extent[2]}°E, ${extent[1]}°N-${extent[3]}°N` : undefined,
+      grid: grid ? `${grid.nx} × ${grid.ny}` : undefined,
+      unit: firstVariable.display_unit || firstVariable.unit,
+      missing: "NaN",
+      status: "解析完成",
+    };
+  }
+  return parsed.value || infos[active.value];
+});
 const variableOptions = computed(() => infos[active.value].element.split("、"));
 
 const panes = computed(() => {
@@ -276,6 +296,10 @@ function choose(e) {
 
 async function parse() {
   if (file.value) parsed.value = await parseFile(file.value);
+}
+
+function onLayerDisplayLoaded(key, data) {
+  layerDisplays.value = { ...layerDisplays.value, [key]: data };
 }
 
 watch(active, () => { variable.value = variableOptions.value[0]; });
