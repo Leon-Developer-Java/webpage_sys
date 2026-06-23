@@ -78,7 +78,15 @@
     <div class="center">
       <div class="maps" :style="mapsGrid">
         <div :class="['cell', { 'cell-4': layout === '4' }]" v-for="(p, i) in panes" :key="layout + '-' + p.key">
-          <MapBase :grid="showGrid" :dark="dark" :basemap="basemap" :mode="sceneMode" :projection="projection" :syncRect="linked && emitterIdx !== i ? syncRect : null" @camera-change="cam => onCameraChange(i, cam)">
+          <MapBase
+            :grid="showGrid"
+            :dark="dark"
+            :basemap="basemap"
+            :mode="sceneMode"
+            :projection="projection"
+            :syncRect="linked && emitterIdx !== i ? syncRect : null"
+            @camera-change="cam => onCameraChange(i, cam)"
+          >
             <component :is="p.comp" />
           </MapBase>
           <div v-if="layout !== '4'" class="map-info">
