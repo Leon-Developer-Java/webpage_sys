@@ -1,30 +1,23 @@
 <template>
-  <div class="cma-control">
-    <label>
+  <LayerCard :badge="label" :file="resolvedFile" :legend-title="legendTitle" :gradient="gradient" :ticks="ticks">
+    <label class="lc-row">
       <span>要素</span>
       <select v-model="selectedVariable" :disabled="loading || !variables.length">
-        <option v-for="item in variables" :key="item.name" :value="item.name">
-          {{ item.name }}
-        </option>
+        <option v-for="item in variables" :key="item.name" :value="item.name">{{ item.name }}</option>
       </select>
     </label>
-    <small v-if="grid">{{ grid.file }}</small>
-    <small v-else-if="loading">正在读取 CMA 格点...</small>
-    <small v-else>{{ error || "暂无 CMA 格点数据" }}</small>
-    <div class="cma-legend">
-      <small>{{ legendTitle }}</small>
-      <div class="legend-bar" :style="{ background: gradient }"></div>
-      <ul><li v-for="t in ticks" :key="t">{{ t }}</li></ul>
-    </div>
-  </div>
+  </LayerCard>
 </template>
 
 <script setup>
 import { Rectangle, SingleTileImageryProvider } from "cesium";
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import LayerCard from "../components/LayerCard.vue";
 
 const props = defineProps({
   levelIndex: { type: Number, default: 0 },
+  label: String,
+  file: String,
 });
 const emit = defineEmits(["display-loaded"]);
 
@@ -35,6 +28,7 @@ const gradient = `linear-gradient(to right, ${colors.join(",")})`;
 const variables = ref([]);
 const selectedVariable = ref("");
 const grid = ref(null);
+const resolvedFile = computed(() => grid.value?.file || props.file || "");
 const loading = ref(false);
 const error = ref("");
 const renderPreview = ref("");
@@ -340,100 +334,3 @@ watch(refreshKey, () => loadDisplay(selectedVariable.value));
 onBeforeUnmount(removeImageryLayer);
 </script>
 
-<style scoped>
-.cma-control {
-  position: absolute;
-  top: 76px;
-  left: 12px;
-  z-index: 5;
-  display: grid;
-  gap: 5px;
-  width: min(240px, calc(100% - 24px));
-  padding: 8px 9px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--glass);
-  color: var(--text);
-  font-size: 11px;
-  backdrop-filter: blur(14px) saturate(150%);
-  -webkit-backdrop-filter: blur(14px) saturate(150%);
-}
-
-.cma-control label {
-  display: grid;
-  grid-template-columns: 34px 1fr;
-  align-items: center;
-  gap: 7px;
-}
-
-.cma-control select {
-  min-width: 0;
-  width: 100%;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  padding: 5px 7px;
-  background: var(--field);
-  color: var(--text);
-  font: inherit;
-  outline: none;
-  color-scheme: light dark;
-}
-
-.cma-control select:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent-soft);
-}
-
-.cma-control option {
-  background: var(--field);
-  color: var(--text);
-}
-
-.cma-control small {
-  color: var(--muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-:global(.app.dark) .cma-control select,
-:global(.app.dark) .cma-control option {
-  background: #111827;
-  color: #e5edf7;
-}
-
-.cma-legend {
-  display: grid;
-  gap: 4px;
-  padding-top: 5px;
-  border-top: 1px solid var(--border);
-}
-
-.cma-legend small {
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--muted);
-  white-space: nowrap;
-}
-
-.cma-legend .legend-bar {
-  height: 8px;
-  border-radius: 4px;
-}
-
-.cma-legend ul {
-  display: flex;
-  justify-content: space-between;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  font-size: 10px;
-  font-variant-numeric: tabular-nums;
-}
-
-.cma-legend ul li {
-  flex: 1;
-  min-width: 0;
-  text-align: center;
-}
-</style>

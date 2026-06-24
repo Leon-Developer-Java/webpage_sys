@@ -136,3 +136,79 @@ nav .router-link-active { color: #fff; background: var(--accent); font-weight: 6
 .layer-legend .legend-bar { height: 8px; border-radius: 4px; }
 .layer-legend ul { display: flex; justify-content: space-between; margin: 0; padding: 0; list-style: none; font-size: 10px; font-variant-numeric: tabular-nums; }
 .layer-legend ul li { flex: 1; text-align: center; min-width: 0; }
+
+/* ── Element Plus 下拉弹层（teleport 到 body，需全局覆盖）──────────────── */
+.el-select-dropdown.el-popper {
+  background: var(--glass-2) !important;
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  border: 1px solid var(--border) !important;
+  border-radius: 12px !important;
+  box-shadow: var(--shadow) !important;
+}
+
+.el-select-dropdown__list {
+  padding: 4px !important;
+}
+
+.el-select-dropdown__item {
+  border-radius: 8px !important;
+  color: var(--muted) !important;
+  font-size: 12px !important;
+  height: 32px !important;
+  line-height: 32px !important;
+}
+
+.el-select-dropdown__item.is-hovering {
+  background: var(--field) !important;
+  color: var(--text) !important;
+}
+
+.el-select-dropdown__item.is-selected {
+  color: var(--accent) !important;
+  background: var(--accent-soft) !important;
+  font-weight: 500 !important;
+}
+
+.el-select-dropdown__item.is-selected.is-hovering {
+  background: var(--accent-soft) !important;
+}
+
+/* ── LayerCard 控件行（各 layer 的 select 行，scoped 无法穿透 slot）── */
+.lc-row {
+  display: grid;
+  grid-template-columns: 30px 1fr;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 9px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.lc-controls select {
+  min-width: 0;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 4px 6px;
+  background: var(--field);
+  color: var(--text);
+  font-size: 11px;
+  font-family: inherit;
+  outline: none;
+}
+
+.lc-controls select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.app.dark .lc-controls select {
+  color-scheme: dark;
+  background: #0f1c2e;
+  color: #e8f0fb;
+}
+
+.app.light .lc-controls select {
+  color-scheme: light;
+}

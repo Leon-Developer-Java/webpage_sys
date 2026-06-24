@@ -87,13 +87,8 @@
             :syncRect="linked && emitterIdx !== i ? syncRect : null"
             @camera-change="cam => onCameraChange(i, cam)"
           >
-            <component :is="p.comp" @display-loaded="payload => onLayerDisplayLoaded(p.key, payload)" />
+            <component :is="p.comp" :label="p.btn" :file="metaFor(p.key).file" @display-loaded="payload => onLayerDisplayLoaded(p.key, payload)" />
           </MapBase>
-          <div v-if="layout !== '4'" class="map-info">
-            <span><b>{{ p.btn }}</b></span>
-            <span><b>{{ metaFor(p.key).file }}</b></span>
-            <span>{{ projection }}</span>
-          </div>
         </div>
       </div>
       <div class="timebar glass">
@@ -111,18 +106,13 @@
       </div>
     </div>
 
-    <MetaPanel v-if="propsOpen" :meta="meta" :steps="processing" closable @close="propsOpen = false">
-      <div class="version">
-        <h4>MVP 当前版本</h4>
-        <p v-for="v in versions" :key="v"><el-icon class="ok"><CircleCheck /></el-icon>{{ v }}</p>
-      </div>
-    </MetaPanel>
+    <MetaPanel v-if="propsOpen" :meta="meta" closable @close="propsOpen = false" />
   </div>
 </template>
 
 <script setup>
 import { computed, inject, onBeforeUnmount, provide, ref, watch } from "vue";
-import { ArrowLeft, ArrowRight, Check, CircleCheck, Close, Connection, DArrowLeft, DArrowRight, DataAnalysis, Document, FolderOpened, Grid, MapLocation, Monitor, Operation, Position, RefreshRight, VideoPlay, VideoPause } from "@element-plus/icons-vue";
+import { ArrowLeft, ArrowRight, Check, Close, Connection, DArrowLeft, DArrowRight, DataAnalysis, Document, FolderOpened, Grid, MapLocation, Monitor, Operation, Position, RefreshRight, VideoPlay, VideoPause } from "@element-plus/icons-vue";
 import { displayKeyFromParseResult, parseFile } from "../api";
 import MapBase from "../components/MapBase.vue";
 import MetaPanel from "../components/MetaPanel.vue";
@@ -162,14 +152,6 @@ const files = [
   { name: "himawari_20250616_1000.hsd", time: "2025-06-16 10:00", size: "380 MB", key: "himawari" }
 ];
 
-const processing = [
-  { step: "下载", state: "成功", t: "06-16 09:58", ok: true },
-  { step: "解析", state: "成功", t: "06-16 09:59", ok: true },
-  { step: "渲染 PNG", state: "成功", t: "06-16 10:02", ok: true },
-  { step: "前端展示", state: "服务中", t: "200 ms", ok: false }
-];
-
-const versions = ["文件存储：原始数据 + meta.json + PNG", "前端渲染：PNG 显示（后续升级 WebGL2）", "数据处理：后端完成、前端轻展示"];
 const projections = ["墨卡托", "等经纬", "兰博托", "罗宾逊", "正弦", "卫星正视"];
 const PROJ_SUPPORTED = new Set(["墨卡托", "等经纬"]);
 const basemaps = ["矢量底图", "影像底图", "地形晕渲", "全球境界"];
@@ -386,27 +368,6 @@ watch(active, () => {
 .maps { flex: 1; min-height: 0; display: grid; gap: 10px; }
 .cell { position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; }
 .cell .map-base { position: absolute; inset: 0; }
-.map-info {
-  position: absolute;
-  top: 10px;
-  left: 10px;
-  z-index: 5;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  padding: 6px 9px;
-  border-radius: 9px;
-  background: var(--glass);
-  backdrop-filter: blur(14px) saturate(150%);
-  -webkit-backdrop-filter: blur(14px) saturate(150%);
-  border: 1px solid var(--border);
-  font-size: 10px;
-  color: var(--muted);
-  pointer-events: none;
-  width: 180px;
-}
-.map-info span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.map-info b { color: var(--text); font-weight: 600; }
 
 .timebar { flex-shrink: 0; padding: 6px 14px 8px; overflow: hidden; }
 .tb-head { display: flex; align-items: center; gap: 6px; padding: 0 0 6px; }
@@ -418,10 +379,4 @@ watch(active, () => {
 .tc-speed button { padding: 3px 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--field); color: var(--muted); font: inherit; font-size: 11px; cursor: pointer; transition: 0.15s; }
 .tc-speed button:hover { color: var(--text); }
 .tc-speed button.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
-
-.version { margin-top: 18px; padding: 14px; border-radius: 12px; background: var(--field); }
-.version p { display: flex; align-items: center; gap: 7px; margin: 0 0 9px; font-size: 12px; color: var(--muted); }
-.version p:last-child { margin-bottom: 0; }
-.ok { color: var(--ok); }
-.run { color: var(--accent); }
 </style>
