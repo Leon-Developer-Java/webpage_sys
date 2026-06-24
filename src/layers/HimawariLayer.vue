@@ -1,7 +1,6 @@
 <template>
   <WebglLayer :src="imageSrc" :extent="imageExtent" :alpha="opacity" />
-  <div class="layer-legend">
-    <small>{{ legendTitle }}</small>
+  <LayerCard :badge="props.label || '葵花卫星'" :file="cardFile" :legend-title="legendTitle" :gradient="gradient" :ticks="ticks">
     <div v-if="products.length" class="himawari-controls">
       <label>
         <span>变量</span>
@@ -16,18 +15,19 @@
         <input v-model.number="opacity" min="0.2" max="1" step="0.05" type="range" />
       </label>
     </div>
-    <div class="legend-bar" :style="{ background: gradient }"></div>
-    <ul><li v-for="t in ticks" :key="t">{{ t }}</li></ul>
     <p v-if="statusText" class="himawari-status">{{ statusText }}</p>
-  </div>
+  </LayerCard>
 </template>
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import LayerCard from "../components/LayerCard.vue";
 import WebglLayer from "../components/WebglLayer.vue";
 
 const props = defineProps({
   src: String,
+  label: String,
+  file: String,
   extent: { type: Array, default: null },
   refreshKey: { type: Number, default: 0 },
 });
@@ -52,6 +52,7 @@ const selectedProduct = computed(() => {
   return products.value.find((item) => item.key === selectedProductKey.value) || products.value[0];
 });
 const imageSrc = computed(() => props.src || selectedProduct.value?.png_data_url || display.value?.png_data_url || "");
+const cardFile = computed(() => props.file || display.value?.meta_json?.scene_id || "");
 const legendTitle = computed(() => {
   const item = selectedProduct.value;
   if (!item) return "葵花卫星";
@@ -59,8 +60,7 @@ const legendTitle = computed(() => {
   return unit ? `${item.name_zh || item.key} (${unit})` : item.name_zh || item.key;
 });
 
-const colors = ["#1f2937", "#9ca3af", "#f3f4f6", "#ef4444"];
-const gradient = `linear-gradient(to right, ${colors.join(",")})`;
+const gradient = "linear-gradient(to right, #1f2937, #9ca3af, #f3f4f6, #ef4444)";
 const ticks = ["-80", "-40", "0", "40"];
 const statusText = computed(() => {
   if (error.value) return error.value;
@@ -112,7 +112,7 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .himawari-status {
-  margin: 6px 0 0;
+  margin: 6px 9px 7px;
   color: var(--muted);
   font-size: 11px;
   line-height: 1.35;
@@ -120,8 +120,8 @@ onBeforeUnmount(() => {
 
 .himawari-controls {
   display: grid;
-  gap: 5px;
-  margin: 7px 0 8px;
+  gap: 6px;
+  padding: 7px 9px;
 }
 
 .himawari-controls label {

@@ -8,39 +8,34 @@
     :product="currentProduct?.code"
     :missing="gridMissing"
   />
-  <div class="layer-legend">
-    <small>{{ legendTitle }}</small>
-    <div v-if="products.length" class="radar-controls">
-      <label>
+  <LayerCard :badge="label" :file="resolvedFile" :legend-title="legendTitle" :gradient="gradient" :ticks="ticks">
+    <template v-if="products.length">
+      <label class="lc-row">
         <span>产品</span>
         <select v-model="selectedProductKey">
-          <option v-for="product in products" :key="product.key" :value="product.key">
-            {{ product.label }}
-          </option>
+          <option v-for="product in products" :key="product.key" :value="product.key">{{ product.label }}</option>
         </select>
       </label>
-      <label>
+      <label class="lc-row">
         <span>高度层</span>
         <select v-model="selectedLevelKey">
-          <option v-for="levelItem in currentLevels" :key="levelItem.key" :value="levelItem.key">
-            {{ levelItem.label }}
-          </option>
+          <option v-for="levelItem in currentLevels" :key="levelItem.key" :value="levelItem.key">{{ levelItem.label }}</option>
         </select>
       </label>
-    </div>
-    <div class="legend-bar" :style="{ background: gradient }"></div>
-    <ul><li v-for="t in ticks" :key="t">{{ t }}</li></ul>
-    <p v-if="statusText" class="radar-status">{{ statusText }}</p>
-  </div>
+    </template>
+  </LayerCard>
 </template>
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import WebglLayer from "../components/WebglLayer.vue";
+import LayerCard from "../components/LayerCard.vue";
 
 const props = defineProps({
   src: String,
   extent: { type: Array, default: null },
+  label: String,
+  file: String,
 });
 
 const API_BASE = "http://127.0.0.1:8002";
@@ -64,6 +59,7 @@ const gridWidth = computed(() => currentLevel.value?.grid?.nx || currentProduct.
 const gridHeight = computed(() => currentLevel.value?.grid?.ny || currentProduct.value?.grid?.ny || 0);
 const gridMissing = computed(() => currentLevel.value?.missing ?? currentProduct.value?.missing ?? -9999);
 const weatherInfo = computed(() => display.value?.weather_info || display.value?.meta_json?.weather_info || {});
+const resolvedFile = computed(() => weatherInfo.value.file || props.file || "");
 const legendTitle = computed(() => {
   if (!currentProduct.value) return weatherInfo.value.unit || "dBZ";
   const unit = currentProduct.value.unit ? ` (${currentProduct.value.unit})` : "";
@@ -199,42 +195,3 @@ watch(
 );
 </script>
 
-<style scoped>
-.radar-controls {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 5px;
-  margin: 7px 0 8px;
-}
-
-.radar-controls label {
-  display: grid;
-  grid-template-columns: 42px minmax(0, 1fr);
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  color: var(--muted);
-}
-
-.radar-controls select {
-  min-width: 0;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--field);
-  color: var(--text);
-  font: inherit;
-  font-size: 11px;
-  padding: 4px 7px;
-  outline: none;
-}
-
-.radar-controls select:focus {
-  border-color: rgba(78, 161, 255, 0.5);
-}
-
-.radar-status {
-  margin: 6px 0 0;
-  font-size: 11px;
-  color: var(--muted);
-}
-</style>

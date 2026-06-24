@@ -85,3 +85,47 @@ export async function parseFile(fileOrFiles) {
   }
   return payload.data;
 }
+
+export async function parseFiles(files) {
+  return parseFile(Array.from(files || []));
+}
+
+export function displayKeyFromBusinessType(value) {
+  const text = String(value || "").toLowerCase();
+  if (text.includes("cma")) return "cma";
+  if (text.includes("radar") || text.includes("雷达")) return "radar";
+  if (text.includes("era5")) return "era5";
+  if (text.includes("himawari") || text.includes("葵花")) return "himawari";
+  if (text.includes("wrf")) return "wrf";
+  if (text.includes("gfs") || text.includes("ecmwf") || text.includes("grib")) return "grib";
+  return "";
+}
+
+export function displayKeyFromFileName(filename) {
+  const name = String(filename || "").toLowerCase();
+  const suffix = name.includes(".") ? name.slice(name.lastIndexOf(".")) : "";
+
+  if (name.startsWith("z_radr") || name.includes("z_radr")) return "radar";
+  if (name.includes("cma")) return "cma";
+  if (name.includes("era5")) return "era5";
+  if (name.includes("gfs")) return "grib";
+  if (name.includes("himawari") || name.includes("hsd")) return "himawari";
+  if (name.includes("radar") || name.includes("cinrad")) return "radar";
+  if (name.includes("wrf")) return "wrf";
+
+  if (suffix === ".grib" || suffix === ".grib2") return "grib";
+  if (suffix === ".hsd") return "himawari";
+  if (suffix === ".cinrad" || suffix === ".radar" || suffix === ".bz2") return "radar";
+  if (suffix === ".nc") return "era5";
+  return "";
+}
+
+export function displayKeyFromParseResult(result, fallbackName = "") {
+  return displayKeyFromBusinessType(result?.business_type)
+    || displayKeyFromBusinessType(result?.data_type)
+    || displayKeyFromBusinessType(result?.meta?.data_type)
+    || displayKeyFromBusinessType(result?.meta?.type)
+    || displayKeyFromFileName(result?.file_name)
+    || displayKeyFromFileName(result?.meta?.file)
+    || displayKeyFromFileName(fallbackName);
+}

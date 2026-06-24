@@ -89,7 +89,13 @@
             :syncRect="linked && emitterIdx !== i ? syncRect : null"
             @camera-change="cam => onCameraChange(i, cam)"
           >
-            <component :is="p.comp" v-bind="layerProps(p.key)" @display-loaded="data => onLayerDisplayLoaded(p.key, data)" />
+            <WrfLayer
+              v-if="p.key === 'wrf'"
+              :time-index="tIndex"
+              :timeline-label="times[tIndex]"
+              :parsed-meta="parsed?.business_type === 'WRF' ? parsed.meta : null"
+            />
+            <component v-else :is="p.comp" v-bind="layerProps(p.key)" @display-loaded="data => onLayerDisplayLoaded(p.key, data)" />
           </MapBase>
           <div v-if="layout !== '4'" class="map-info">
             <span><b>{{ p.btn }}</b></span>
@@ -125,7 +131,7 @@
 <script setup>
 import { computed, inject, onBeforeUnmount, ref, watch } from "vue";
 import { ArrowLeft, ArrowRight, Check, CircleCheck, Close, Connection, DArrowLeft, DArrowRight, DataAnalysis, Document, FolderOpened, Grid, MapLocation, Monitor, Operation, Position, RefreshRight, VideoPlay, VideoPause } from "@element-plus/icons-vue";
-import { parseFile } from "../api";
+import { displayKeyFromParseResult, parseFile } from "../api";
 import MapBase from "../components/MapBase.vue";
 import MetaPanel from "../components/MetaPanel.vue";
 import TimeAxis from "../components/TimeAxis.vue";
@@ -176,7 +182,7 @@ const projections = ["墨卡托", "等经纬", "兰博托", "罗宾逊", "正弦
 const PROJ_SUPPORTED = new Set(["墨卡托", "等经纬"]);
 const basemaps = ["矢量底图", "影像底图", "地形晕渲", "全球境界"];
 const levels = ["地面", "850hPa", "500hPa", "200hPa"];
-const times = ["00时", "02时", "04时", "06时", "08时", "10时", "12时", "14时", "16时", "18时", "20时", "22时"];
+const defaultTimes = ["00时", "02时", "04时", "06时", "08时", "10时", "12时", "14时", "16时", "18时", "20时", "22时"];
 
 const tool = ref("file");
 const dockOpen = ref(false);
@@ -229,7 +235,7 @@ function startAnim() {
     const now = Date.now();
     animPos.value += (now - lastTs) * speed.value / 600;
     lastTs = now;
-    if (animPos.value >= times.length) animPos.value = 0;
+    if (animPos.value >= times.value.length) animPos.value = 0;
     const floor = Math.floor(animPos.value);
     if (floor !== tIndex.value) tIndex.value = floor;
   }, 16);
@@ -261,12 +267,7 @@ const meta = computed(() => {
       status: "解析完成",
     };
   }
-  return parsed.value || infos[active.value];
-});
-const fileLabel = computed(() => {
-  if (!filesToParse.value.length) return "";
-  if (filesToParse.value.length === 1) return filesToParse.value[0].name;
-  return `已选择 ${filesToParse.value.length} 个文件`;
+  return parsed.value?.weather_info || parsed.value || infos[active.value];
 });
 const variableOptions = computed(() => {
   if (active.value === "himawari") {
@@ -275,6 +276,20 @@ const variableOptions = computed(() => {
     if (items.length) return items.map(item => item.name_zh || item.key);
   }
   return infos[active.value].element.split("、");
+});
+const times = computed(() => {
+  const parsedTimes = parsed.value?.business_type === "WRF" ? parsed.value?.meta?.times : null;
+  if (!Array.isArray(parsedTimes) || parsedTimes.length === 0) return defaultTimes;
+  return parsedTimes.map((item) => {
+    const text = String(item);
+    const hour = text.match(/_(\d{2})[:_]\d{2}[:_]\d{2}$/)?.[1] ?? text.slice(11, 13);
+    return `${hour}时`;
+  });
+});
+const fileLabel = computed(() => {
+  if (!filesToParse.value.length) return "选择本地文件…";
+  if (filesToParse.value.length === 1) return filesToParse.value[0].name;
+  return `已选择 ${filesToParse.value.length} 个文件`;
 });
 
 const panes = computed(() => {
@@ -322,7 +337,7 @@ function choose(e) {
 }
 
 function openLocalPicker() {
-  if (active.value === "himawari") directoryInput.value?.click();
+  if (["himawari", "wrf"].includes(active.value)) directoryInput.value?.click();
   else fileInput.value?.click();
 }
 
@@ -332,11 +347,15 @@ async function parse() {
   parseError.value = "";
   try {
     const result = await parseFile(filesToParse.value);
-    parsed.value = result.weather_info || result.meta?.weather_info || result.meta || null;
-    const typeMap = { Himawari: "himawari", Radar: "radar", ERA5: "era5", GFS: "grib", CMA: "cma", WRF: "wrf" };
-    active.value = typeMap[result.business_type] || active.value;
+    parsed.value = result;
+    active.value = displayKeyFromParseResult(result, file.value?.name) || active.value;
     if (result.business_type === "Himawari") {
       displayRefresh.value = { ...displayRefresh.value, himawari: displayRefresh.value.himawari + 1 };
+    }
+    if (result.business_type === "WRF") {
+      layout.value = "1";
+      tIndex.value = 0;
+      animPos.value = 0;
     }
   } catch (err) {
     parseError.value = err.message || "解析失败";
