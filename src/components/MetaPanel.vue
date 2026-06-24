@@ -1,31 +1,25 @@
 <template>
   <aside class="meta-panel glass">
-    <button v-if="closable" class="close-btn" type="button" @click="emit('close')">×</button>
+    <div class="mp-header">
+      <span class="mp-title">气象信息</span>
+      <button v-if="closable" class="close-btn" type="button" @click="emit('close')">×</button>
+    </div>
 
-    <slot v-if="!meta" name="empty">
-      <div class="empty">暂无解析信息</div>
-    </slot>
+    <div class="mp-body">
+      <slot v-if="!meta" name="empty">
+        <div class="empty">暂无解析信息</div>
+      </slot>
 
-    <template v-else>
-      <h3>气象信息</h3>
-      <dl class="meta-list">
-        <template v-for="row in rows" :key="row.key">
-          <dt>{{ row.label }}</dt>
-          <dd>{{ row.value }}</dd>
-        </template>
-      </dl>
+      <template v-else>
+        <dl class="meta-list">
+          <template v-for="row in rows" :key="row.key">
+            <dt>{{ row.label }}</dt>
+            <dd>{{ row.value }}</dd>
+          </template>
+        </dl>
 
-      <div v-if="steps.length" class="steps">
-        <h4>处理流程</h4>
-        <div v-for="(step, index) in steps" :key="index" class="step">
-          <span :class="['dot', { ok: step.ok, running: step.running }]"></span>
-          <span>{{ step.step || step.label }}</span>
-          <small>{{ step.state }} {{ step.t }}</small>
-        </div>
-      </div>
-
-      <slot />
-    </template>
+      </template>
+    </div>
   </aside>
 </template>
 
@@ -34,7 +28,6 @@ import { computed } from "vue";
 
 const props = defineProps({
   meta: Object,
-  steps: { type: Array, default: () => [] },
   closable: Boolean,
 });
 
@@ -61,94 +54,109 @@ const rows = computed(() => {
 
 <style scoped>
 .meta-panel {
-  position: relative;
-  width: 286px;
+  width: 240px;
   flex-shrink: 0;
-  padding: 16px;
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── 固定标题栏 ── */
+.mp-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 44px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.mp-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: 0.3px;
 }
 
 .close-btn {
-  position: absolute;
-  top: 10px;
-  right: 10px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
   border: 0;
+  border-radius: 6px;
   background: transparent;
   color: var(--muted);
-  font-size: 20px;
+  font-size: 17px;
   line-height: 1;
   cursor: pointer;
+  transition: background 0.15s, color 0.15s;
 }
 
-h3,
-h4 {
-  margin: 0 0 12px;
-  font-size: 15px;
+.close-btn:hover {
+  background: var(--field);
+  color: var(--text);
 }
 
-h4 {
-  margin-top: 16px;
-  font-size: 13px;
+/* ── 滚动内容区 ── */
+.mp-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px;
+
+  /* Firefox */
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
 }
 
+/* Chrome / Edge / Safari */
+.mp-body::-webkit-scrollbar {
+  width: 4px;
+}
+
+.mp-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.mp-body::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+
+.mp-body::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+/* ── 数据列表 ── */
 .meta-list {
   display: grid;
-  grid-template-columns: 66px 1fr;
-  gap: 8px 10px;
+  grid-template-columns: 58px 1fr;
+  gap: 7px 8px;
   margin: 0;
   font-size: 12px;
 }
 
 dt {
   color: var(--muted);
+  white-space: nowrap;
 }
 
 dd {
   margin: 0;
   color: var(--text);
   word-break: break-word;
+  line-height: 1.4;
 }
 
-.steps {
-  border-top: 1px solid var(--border);
-  margin-top: 14px;
-  padding-top: 12px;
-}
 
-.step {
-  display: grid;
-  grid-template-columns: 10px 1fr auto;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 0;
-  font-size: 12px;
-}
-
-.step small {
-  color: var(--muted);
-}
-
-.dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--muted);
-}
-
-.dot.ok {
-  background: var(--ok);
-}
-
-.dot.running {
-  background: var(--accent);
-}
-
+/* ── 空态 ── */
 .empty {
   display: grid;
   place-items: center;
-  min-height: 180px;
+  min-height: 160px;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12px;
   text-align: center;
 }
 </style>
