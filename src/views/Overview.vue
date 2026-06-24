@@ -31,7 +31,10 @@
             <div><b>{{ f.name }}</b><span>{{ f.time }} · {{ f.size }}</span></div>
           </li>
         </ul>
-        <label class="upload"><input type="file" hidden @change="choose" />{{ file ? file.name : "选择本地文件…" }}</label>
+        <div class="upload-row">
+          <label class="upload"><input type="file" hidden @change="choose" />{{ fileLabel }}</label>
+          <label class="upload"><input type="file" hidden webkitdirectory directory multiple @change="chooseFolder" />选择文件夹</label>
+        </div>
         <el-button type="primary" size="small" class="parse" @click="parse">打开并解析</el-button>
         <p class="hint">解析后生成 meta.json + PNG</p>
         <div class="vars">
@@ -43,7 +46,7 @@
       <template v-else-if="tool === 'data'">
         <p class="pick-hint">选择数据类型</p>
         <div class="picker">
-          <button v-for="s in sources" :key="s.key" :class="{ on: active === s.key }" @click="selectSource(s.key)">
+          <button v-for="s in sources" :key="s.key" :class="{ on: active === s.key }" @click="active = s.key">
             <span>{{ s.btn }}</span><el-icon v-if="active === s.key"><Check /></el-icon>
           </button>
         </div>
@@ -87,8 +90,19 @@
             :syncRect="linked && emitterIdx !== i ? syncRect : null"
             @camera-change="cam => onCameraChange(i, cam)"
           >
-            <component :is="p.comp" :label="p.btn" :file="metaFor(p.key).file" @display-loaded="payload => onLayerDisplayLoaded(p.key, payload)" />
+            <WrfLayer
+              v-if="p.key === 'wrf'"
+              :time-index="tIndex"
+              :timeline-label="times[tIndex]"
+              :parsed-meta="parsed?.business_type === 'WRF' ? parsed.meta : null"
+            />
+            <component v-else :is="p.comp" />
           </MapBase>
+          <div v-if="layout !== '4'" class="map-info">
+            <span><b>{{ p.btn }}</b></span>
+            <span><b>{{ infos[p.key].file }}</b></span>
+            <span>{{ projection }}</span>
+          </div>
         </div>
       </div>
       <div class="timebar glass">
@@ -106,14 +120,19 @@
       </div>
     </div>
 
-    <MetaPanel v-if="propsOpen" :meta="meta" closable @close="propsOpen = false" />
+    <MetaPanel v-if="propsOpen" :meta="meta" :steps="processing" closable @close="propsOpen = false">
+      <div class="version">
+        <h4>MVP 当前版本</h4>
+        <p v-for="v in versions" :key="v"><el-icon class="ok"><CircleCheck /></el-icon>{{ v }}</p>
+      </div>
+    </MetaPanel>
   </div>
 </template>
 
 <script setup>
-import { computed, inject, onBeforeUnmount, provide, ref, watch } from "vue";
-import { ArrowLeft, ArrowRight, Check, Close, Connection, DArrowLeft, DArrowRight, DataAnalysis, Document, FolderOpened, Grid, MapLocation, Monitor, Operation, Position, RefreshRight, VideoPlay, VideoPause } from "@element-plus/icons-vue";
-import { displayKeyFromParseResult, parseFile } from "../api";
+import { computed, inject, onBeforeUnmount, ref, watch } from "vue";
+import { ArrowLeft, ArrowRight, Check, CircleCheck, Close, Connection, DArrowLeft, DArrowRight, DataAnalysis, Document, FolderOpened, Grid, MapLocation, Monitor, Operation, Position, RefreshRight, VideoPlay, VideoPause } from "@element-plus/icons-vue";
+import { parseFile, parseFiles } from "../api";
 import MapBase from "../components/MapBase.vue";
 import MetaPanel from "../components/MetaPanel.vue";
 import TimeAxis from "../components/TimeAxis.vue";
@@ -152,11 +171,19 @@ const files = [
   { name: "himawari_20250616_1000.hsd", time: "2025-06-16 10:00", size: "380 MB", key: "himawari" }
 ];
 
+const processing = [
+  { step: "下载", state: "成功", t: "06-16 09:58", ok: true },
+  { step: "解析", state: "成功", t: "06-16 09:59", ok: true },
+  { step: "渲染 PNG", state: "成功", t: "06-16 10:02", ok: true },
+  { step: "前端展示", state: "服务中", t: "200 ms", ok: false }
+];
+
+const versions = ["文件存储：原始数据 + meta.json + PNG", "前端渲染：PNG 显示（后续升级 WebGL2）", "数据处理：后端完成、前端轻展示"];
 const projections = ["墨卡托", "等经纬", "兰博托", "罗宾逊", "正弦", "卫星正视"];
 const PROJ_SUPPORTED = new Set(["墨卡托", "等经纬"]);
 const basemaps = ["矢量底图", "影像底图", "地形晕渲", "全球境界"];
 const levels = ["地面", "850hPa", "500hPa", "200hPa"];
-const times = ["00时", "02时", "04时", "06时", "08时", "10时", "12时", "14时", "16时", "18时", "20时", "22时"];
+const defaultTimes = ["00时", "02时", "04时", "06时", "08时", "10时", "12时", "14时", "16时", "18时", "20时", "22时"];
 
 const tool = ref("file");
 const dockOpen = ref(false);
@@ -166,6 +193,7 @@ const propsOpen = ref(true);
 const active = ref("radar");
 const selected = ref(0);
 const file = ref(null);
+const folderFiles = ref([]);
 const path = ref("D:/weather_data/radar/");
 const projection = ref("等经纬");
 const basemap = ref("矢量底图");
@@ -173,8 +201,6 @@ const variable = ref("组合反射率 DBZH");
 const level = ref("500hPa");
 const tIndex = ref(5);
 const parsed = ref(null);
-const liveMeta = ref({});
-const layerRefreshKeys = ref({});
 const playing = ref(false);
 const speed = ref(1);
 const animPos = ref(tIndex.value);
@@ -185,8 +211,6 @@ const emitterIdx = ref(-1);
 const latestCam = {};
 let animTimer = null;
 let lastTs = null;
-
-provide("layerRefreshKeys", layerRefreshKeys);
 
 function onCameraChange(i, cam) {
   latestCam[i] = cam;
@@ -206,7 +230,7 @@ function startAnim() {
     const now = Date.now();
     animPos.value += (now - lastTs) * speed.value / 600;
     lastTs = now;
-    if (animPos.value >= times.length) animPos.value = 0;
+    if (animPos.value >= times.value.length) animPos.value = 0;
     const floor = Math.floor(animPos.value);
     if (floor !== tIndex.value) tIndex.value = floor;
   }, 16);
@@ -220,15 +244,21 @@ watch(speed, () => { if (playing.value) lastTs = Date.now(); });
 watch(tIndex, v => { if (!playing.value) animPos.value = v; });
 onBeforeUnmount(() => clearInterval(animTimer));
 
-const meta = computed(() => parsed.value || liveMeta.value[active.value] || infos[active.value]);
-const variableOptions = computed(() => {
-  return variableOptionsFor(active.value);
+const meta = computed(() => parsed.value || infos[active.value]);
+const variableOptions = computed(() => infos[active.value].element.split("、"));
+const times = computed(() => {
+  const parsedTimes = parsed.value?.business_type === "WRF" ? parsed.value?.meta?.times : null;
+  if (!Array.isArray(parsedTimes) || parsedTimes.length === 0) return defaultTimes;
+  return parsedTimes.map((item) => {
+    const text = String(item);
+    const hour = text.match(/_(\d{2})[:_]\d{2}[:_]\d{2}$/)?.[1] ?? text.slice(11, 13);
+    return `${hour}时`;
+  });
 });
-
-function variableOptionsFor(key) {
-  const current = liveMeta.value[key] || infos[key];
-  return String(current.element || "").split("、").filter(Boolean);
-}
+const fileLabel = computed(() => {
+  if (folderFiles.value.length) return `已选择文件夹：${folderFiles.value.length} 个文件`;
+  return file.value ? file.value.name : "选择本地文件…";
+});
 
 const panes = computed(() => {
   if (layout.value === "1") return sources.filter(s => s.key === active.value);
@@ -257,63 +287,36 @@ function openTool(name) {
   else { tool.value = name; dockOpen.value = true; }
 }
 
-function metaFor(key) {
-  return liveMeta.value[key] || infos[key];
-}
-
-function onLayerDisplayLoaded(key, payload) {
-  if (!payload?.meta) return;
-  liveMeta.value = {
-    ...liveMeta.value,
-    [key]: payload.meta,
-  };
-}
-
 function pickFile(i) {
   selected.value = i;
-  selectSource(files[i].key);
+  active.value = files[i].key;
   parsed.value = null;
-}
-
-function selectSource(key) {
-  if (active.value === key) refreshLayer(key);
-  active.value = key;
-}
-
-function refreshLayer(key) {
-  layerRefreshKeys.value = {
-    ...layerRefreshKeys.value,
-    [key]: (layerRefreshKeys.value[key] || 0) + 1,
-  };
 }
 
 function choose(e) {
   file.value = e.target.files[0];
+  folderFiles.value = [];
+}
+
+function chooseFolder(e) {
+  folderFiles.value = Array.from(e.target.files ?? []);
+  file.value = folderFiles.value[0] ?? null;
 }
 
 async function parse() {
-  if (!file.value) return;
-  const result = await parseFile(file.value);
-  const looksLikeMeta = result?.file || result?.element || result?.data_type || result?.weather_info;
-  const nextMeta = result?.meta || (looksLikeMeta ? result : null);
-  const nextKey = displayKeyFromParseResult(result, file.value.name);
-  parsed.value = nextMeta || result;
-  if (nextKey) {
-    active.value = nextKey;
-    liveMeta.value = { ...liveMeta.value, [nextKey]: parsed.value };
-    refreshLayer(nextKey);
-  } else {
-    liveMeta.value = { ...liveMeta.value };
+  if (!file.value && !folderFiles.value.length) return;
+  parsed.value = folderFiles.value.length
+    ? await parseFiles(folderFiles.value)
+    : await parseFile(file.value);
+  if (parsed.value?.business_type === "WRF") {
+    active.value = "wrf";
+    layout.value = "1";
+    tIndex.value = 0;
+    animPos.value = 0;
   }
 }
 
-watch(active, () => {
-  const parsedKey = displayKeyFromParseResult(parsed.value);
-  if (parsedKey && parsedKey !== active.value) {
-    parsed.value = null;
-  }
-  variable.value = variableOptions.value[0] || variable.value;
-});
+watch(active, () => { variable.value = variableOptions.value[0]; });
 </script>
 
 <style scoped>
@@ -349,6 +352,7 @@ watch(active, () => {
 .files li.sel .dot { border-color: var(--accent); background: var(--accent); }
 .files b { display: block; font-size: 12px; font-weight: 500; word-break: break-all; }
 .files span { font-size: 11px; color: var(--muted); }
+.upload-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .upload { padding: 8px; border: 1px dashed var(--border); border-radius: 10px; color: var(--muted); font-size: 12px; cursor: pointer; text-align: center; }
 .parse { width: 100%; }
 .hint { margin: 0; color: var(--muted); font-size: 11px; text-align: center; }
@@ -368,6 +372,27 @@ watch(active, () => {
 .maps { flex: 1; min-height: 0; display: grid; gap: 10px; }
 .cell { position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; }
 .cell .map-base { position: absolute; inset: 0; }
+.map-info {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 9px;
+  border-radius: 9px;
+  background: var(--glass);
+  backdrop-filter: blur(14px) saturate(150%);
+  -webkit-backdrop-filter: blur(14px) saturate(150%);
+  border: 1px solid var(--border);
+  font-size: 10px;
+  color: var(--muted);
+  pointer-events: none;
+  width: 180px;
+}
+.map-info span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.map-info b { color: var(--text); font-weight: 600; }
 
 .timebar { flex-shrink: 0; padding: 6px 14px 8px; overflow: hidden; }
 .tb-head { display: flex; align-items: center; gap: 6px; padding: 0 0 6px; }
@@ -379,4 +404,10 @@ watch(active, () => {
 .tc-speed button { padding: 3px 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--field); color: var(--muted); font: inherit; font-size: 11px; cursor: pointer; transition: 0.15s; }
 .tc-speed button:hover { color: var(--text); }
 .tc-speed button.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+
+.version { margin-top: 18px; padding: 14px; border-radius: 12px; background: var(--field); }
+.version p { display: flex; align-items: center; gap: 7px; margin: 0 0 9px; font-size: 12px; color: var(--muted); }
+.version p:last-child { margin-bottom: 0; }
+.ok { color: var(--ok); }
+.run { color: var(--accent); }
 </style>
