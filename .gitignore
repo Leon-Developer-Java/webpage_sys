@@ -4,3 +4,6 @@ dist/
 .env.*.local
 dev-server.log
 *.log
+
+vite-dev.err.log
+vite-dev.out.log

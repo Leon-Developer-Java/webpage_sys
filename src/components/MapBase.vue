@@ -1,7 +1,7 @@
 <template>
   <div :class="['map-base', { grid, dark }]">
     <div ref="container" class="map-canvas"></div>
-    <slot></slot>
+    <slot :viewer="viewerRef"></slot>
     <div class="map-tools">
       <button @click="zoom(0.6)"><el-icon><Plus /></el-icon></button>
       <button @click="zoom(1.6)"><el-icon><Minus /></el-icon></button>
@@ -12,7 +12,7 @@
 </template>
 
 <script setup>
-import { onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { onBeforeUnmount, onMounted, provide, ref, shallowRef, watch } from "vue";
 import { Cartesian3, Color, GeographicProjection, ImageryLayer, Ion, Rectangle, SceneMode, UrlTemplateImageryProvider, Viewer, WebMercatorProjection } from "cesium";
 import "cesium/Build/Cesium/Widgets/widgets.css";
 import { Aim, FullScreen, Minus, Plus } from "@element-plus/icons-vue";
@@ -20,6 +20,7 @@ import { Aim, FullScreen, Minus, Plus } from "@element-plus/icons-vue";
 const props = defineProps({ grid: Boolean, dark: Boolean, basemap: String, mode: String, syncRect: Object, projection: String });
 const emit = defineEmits(["camera-change"]);
 const container = ref(null);
+const viewerRef = shallowRef(null);
 const extent = Rectangle.fromDegrees(73, 15, 135, 55);
 const tiles = {
   "矢量底图": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
@@ -29,10 +30,12 @@ const tiles = {
 };
 let viewer, base, syncing = false;
 
+provide("cesiumViewer", viewerRef);
+
 function setBase() {
   if (base) viewer.imageryLayers.remove(base);
   base = new ImageryLayer(new UrlTemplateImageryProvider({ url: tiles[props.basemap] || tiles["矢量底图"] }));
-  viewer.imageryLayers.add(base);
+  viewer.imageryLayers.add(base, 0);
   viewer.scene.requestRender();
 }
 
@@ -69,6 +72,7 @@ function create() {
     mapProjection: props.projection === '墨卡托' ? new WebMercatorProjection() : new GeographicProjection(),
     sceneMode: props.mode === '3D' ? SceneMode.SCENE3D : SceneMode.SCENE2D, sceneModePicker: false, selectionIndicator: false, timeline: false
   });
+  viewerRef.value = viewer;
   viewer.cesiumWidget.creditContainer.style.display = "none";
   setBase();
   paint();
@@ -88,6 +92,14 @@ function create() {
   });
 }
 
+function destroyViewer() {
+  if (!viewer) return;
+  viewerRef.value = null;
+  viewer.destroy();
+  viewer = null;
+  base = null;
+}
+
 function ready() {
   if (!container.value) return;
   if (container.value.clientWidth && container.value.clientHeight) create();
@@ -99,8 +111,7 @@ watch(() => props.dark, () => viewer && paint());
 watch(() => props.basemap, () => viewer && setBase());
 watch(() => props.projection, () => {
   if (!viewer) return;
-  viewer.destroy();
-  viewer = null;
+  destroyViewer();
   create();
 });
 watch(() => props.mode, v => {
@@ -125,7 +136,7 @@ watch(() => props.syncRect, cam => {
   }
   viewer.scene.requestRender();
 }, { flush: 'sync' });
-onBeforeUnmount(() => viewer && viewer.destroy());
+onBeforeUnmount(destroyViewer);
 </script>
 
 <style scoped>

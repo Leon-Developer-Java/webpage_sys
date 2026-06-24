@@ -1,126 +1,154 @@
 <template>
   <aside class="meta-panel glass">
-    <div class="mp-head">
-      <h4>气象信息</h4>
-      <button v-if="closable" class="mp-close" @click="$emit('close')">
-        <el-icon><Close /></el-icon>
-      </button>
-    </div>
-    <div class="mp-body" v-if="meta">
-      <dl>
-        <div v-for="[k, v] in rows" :key="k"><dt>{{ k }}</dt><dd>{{ v }}</dd></div>
+    <button v-if="closable" class="close-btn" type="button" @click="emit('close')">×</button>
+
+    <slot v-if="!meta" name="empty">
+      <div class="empty">暂无解析信息</div>
+    </slot>
+
+    <template v-else>
+      <h3>气象信息</h3>
+      <dl class="meta-list">
+        <template v-for="row in rows" :key="row.key">
+          <dt>{{ row.label }}</dt>
+          <dd>{{ row.value }}</dd>
+        </template>
       </dl>
-      <h4 class="mp-sec">处理步骤</h4>
-      <ul class="proc">
-        <li v-for="s in steps" :key="s.step || s.label">
-          <el-icon :class="s.ok ? 'ok' : s.running !== false ? 'run' : 'dim'">
-            <CircleCheck v-if="s.ok" /><Loading v-else-if="s.running !== false" /><Clock v-else />
-          </el-icon>
-          <span>{{ s.step || s.label }}</span>
-          <em :class="s.ok ? 'ok' : s.running !== false ? 'run' : ''">{{ s.state }}</em>
-          <time>{{ s.t }}</time>
-        </li>
-      </ul>
+
+      <div v-if="steps.length" class="steps">
+        <h4>处理流程</h4>
+        <div v-for="(step, index) in steps" :key="index" class="step">
+          <span :class="['dot', { ok: step.ok, running: step.running }]"></span>
+          <span>{{ step.step || step.label }}</span>
+          <small>{{ step.state }} {{ step.t }}</small>
+        </div>
+      </div>
+
       <slot />
-    </div>
-    <div class="mp-empty" v-else>
-      <slot name="empty">
-        <el-icon><Document /></el-icon>
-        <p>暂无气象信息</p>
-      </slot>
-    </div>
+    </template>
   </aside>
 </template>
 
 <script setup>
 import { computed } from "vue";
-import { CircleCheck, Clock, Close, Document, Loading } from "@element-plus/icons-vue";
 
 const props = defineProps({
-  meta: { type: Object, default: null },
+  meta: Object,
   steps: { type: Array, default: () => [] },
   closable: Boolean,
 });
 
-defineEmits(["close"]);
+const emit = defineEmits(["close"]);
 
 const rows = computed(() => {
-  const m = props.meta;
-  if (!m) return [];
+  const meta = props.meta || {};
+  const info = meta.weather_info || meta;
   return [
-    ["当前文件", m.file], ["气象要素", m.element], ["时次", m.time], ["层级/高度", m.level],
-    ["空间范围", m.range], ["有效网格", m.grid], ["缺测值", m.missing],
-    ["单位", m.unit], ["变量数", m.vars], ["时间步", m.steps],
-  ];
+    ["file", "文件", info.file || meta.file?.name || meta.file_name || meta.source_file],
+    ["element", "要素", info.element],
+    ["time", "时间", info.time],
+    ["level", "层级", info.level],
+    ["range", "范围", info.range],
+    ["grid", "网格", info.grid],
+    ["unit", "单位", info.unit],
+    ["missing", "缺测", info.missing],
+    ["status", "状态", info.status],
+  ]
+    .filter(([, , value]) => value !== undefined && value !== null && value !== "")
+    .map(([key, label, value]) => ({ key, label, value }));
 });
 </script>
 
 <style scoped>
 .meta-panel {
+  position: relative;
+  width: 286px;
   flex-shrink: 0;
-  width: 320px;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
+  padding: 16px;
+  overflow: auto;
 }
 
-.mp-head {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 16px;
-  height: 52px;
-  border-bottom: 1px solid var(--border);
-}
-.mp-head h4 { margin: 0; font-size: 14px; }
-
-.mp-close {
-  display: grid;
-  place-items: center;
-  width: 28px;
-  height: 28px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--field);
+.close-btn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  border: 0;
+  background: transparent;
   color: var(--muted);
+  font-size: 20px;
+  line-height: 1;
   cursor: pointer;
 }
-.mp-close:hover { color: var(--text); }
 
-.mp-body {
-  flex: 1;
-  overflow-y: auto;
-  padding: 12px 16px 16px;
-  scrollbar-width: none;
+h3,
+h4 {
+  margin: 0 0 12px;
+  font-size: 15px;
 }
-.mp-body::-webkit-scrollbar { display: none; }
 
-.mp-body dl { margin: 0; }
-.mp-body dl div { display: flex; justify-content: space-between; gap: 14px; padding: 8px 0; border-bottom: 1px solid var(--border); }
-.mp-body dt { color: var(--muted); font-size: 12px; white-space: nowrap; flex-shrink: 0; }
-.mp-body dd { margin: 0; font-size: 12px; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+h4 {
+  margin-top: 16px;
+  font-size: 13px;
+}
 
-.mp-sec { margin: 18px 0 8px; font-size: 13px; }
+.meta-list {
+  display: grid;
+  grid-template-columns: 66px 1fr;
+  gap: 8px 10px;
+  margin: 0;
+  font-size: 12px;
+}
 
-.proc { display: grid; gap: 3px; margin: 0; padding: 0; list-style: none; }
-.proc li { display: flex; align-items: center; gap: 8px; padding: 7px 0; font-size: 12px; }
-.proc em { font-style: normal; }
-.proc time { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; font-size: 11px; }
-
-.mp-empty {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
+dt {
   color: var(--muted);
 }
-.mp-empty :deep(.el-icon) { font-size: 36px; }
-.mp-empty p { font-size: 13px; margin: 0; }
 
-.ok { color: var(--ok); }
-.run { color: var(--accent); }
-.dim { color: var(--muted); }
+dd {
+  margin: 0;
+  color: var(--text);
+  word-break: break-word;
+}
+
+.steps {
+  border-top: 1px solid var(--border);
+  margin-top: 14px;
+  padding-top: 12px;
+}
+
+.step {
+  display: grid;
+  grid-template-columns: 10px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+  font-size: 12px;
+}
+
+.step small {
+  color: var(--muted);
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.dot.ok {
+  background: var(--ok);
+}
+
+.dot.running {
+  background: var(--accent);
+}
+
+.empty {
+  display: grid;
+  place-items: center;
+  min-height: 180px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
 </style>
