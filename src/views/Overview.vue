@@ -31,9 +31,11 @@
             <div><b>{{ f.name }}</b><span>{{ f.time }} · {{ f.size }}</span></div>
           </li>
         </ul>
-        <label class="upload"><input type="file" hidden @change="choose" />{{ file ? file.name : "选择本地文件…" }}</label>
-        <el-button type="primary" size="small" class="parse" @click="parse">打开并解析</el-button>
-        <p class="hint">解析后生成 meta.json + PNG</p>
+        <button class="upload" type="button" @click="openLocalPicker">{{ fileLabel || "选择本地文件…" }}</button>
+        <input ref="fileInput" type="file" hidden multiple @change="choose" />
+        <input ref="directoryInput" type="file" hidden multiple webkitdirectory @change="choose" />
+        <el-button type="primary" size="small" class="parse" :loading="parseBusy" :disabled="!filesToParse.length" @click="parse">打开并解析</el-button>
+        <p class="hint">{{ parseError || "解析后生成 meta.json + PNG" }}</p>
         <div class="vars">
           <VariableSelect v-model="variable" :options="variableOptions" />
           <VariableSelect v-model="level" :options="levels" />
@@ -87,7 +89,7 @@
             :syncRect="linked && emitterIdx !== i ? syncRect : null"
             @camera-change="cam => onCameraChange(i, cam)"
           >
-            <component :is="p.comp" @display-loaded="data => onLayerDisplayLoaded(p.key, data)" />
+            <component :is="p.comp" v-bind="layerProps(p.key)" @display-loaded="data => onLayerDisplayLoaded(p.key, data)" />
           </MapBase>
           <div v-if="layout !== '4'" class="map-info">
             <span><b>{{ p.btn }}</b></span>
@@ -184,6 +186,11 @@ const propsOpen = ref(true);
 const active = ref("radar");
 const selected = ref(0);
 const file = ref(null);
+const fileInput = ref(null);
+const directoryInput = ref(null);
+const filesToParse = ref([]);
+const parseBusy = ref(false);
+const parseError = ref("");
 const path = ref("D:/weather_data/radar/");
 const projection = ref("等经纬");
 const basemap = ref("矢量底图");
@@ -192,6 +199,7 @@ const level = ref("500hPa");
 const tIndex = ref(5);
 const parsed = ref(null);
 const layerDisplays = ref({});
+const displayRefresh = ref({ himawari: 0 });
 const playing = ref(false);
 const speed = ref(1);
 const animPos = ref(tIndex.value);
@@ -255,7 +263,19 @@ const meta = computed(() => {
   }
   return parsed.value || infos[active.value];
 });
-const variableOptions = computed(() => infos[active.value].element.split("、"));
+const fileLabel = computed(() => {
+  if (!filesToParse.value.length) return "";
+  if (filesToParse.value.length === 1) return filesToParse.value[0].name;
+  return `已选择 ${filesToParse.value.length} 个文件`;
+});
+const variableOptions = computed(() => {
+  if (active.value === "himawari") {
+    const display = layerDisplays.value.himawari;
+    const items = [...(display?.composites || []), ...(display?.variables || [])];
+    if (items.length) return items.map(item => item.name_zh || item.key);
+  }
+  return infos[active.value].element.split("、");
+});
 
 const panes = computed(() => {
   if (layout.value === "1") return sources.filter(s => s.key === active.value);
@@ -291,15 +311,47 @@ function pickFile(i) {
 }
 
 function choose(e) {
-  file.value = e.target.files[0];
+  const selectedFiles = Array.from(e.target.files || []);
+  filesToParse.value = selectedFiles;
+  file.value = selectedFiles[0] || null;
+  parseError.value = "";
+  if (selectedFiles.length) {
+    const relativePath = selectedFiles[0].webkitRelativePath;
+    path.value = relativePath ? `本地目录：${relativePath.split("/")[0]}` : `本地选择：${selectedFiles.length} 个文件`;
+  }
+}
+
+function openLocalPicker() {
+  if (active.value === "himawari") directoryInput.value?.click();
+  else fileInput.value?.click();
 }
 
 async function parse() {
-  if (file.value) parsed.value = await parseFile(file.value);
+  if (!filesToParse.value.length) return;
+  parseBusy.value = true;
+  parseError.value = "";
+  try {
+    const result = await parseFile(filesToParse.value);
+    parsed.value = result.weather_info || result.meta?.weather_info || result.meta || null;
+    const typeMap = { Himawari: "himawari", Radar: "radar", ERA5: "era5", GFS: "grib", CMA: "cma", WRF: "wrf" };
+    active.value = typeMap[result.business_type] || active.value;
+    if (result.business_type === "Himawari") {
+      displayRefresh.value = { ...displayRefresh.value, himawari: displayRefresh.value.himawari + 1 };
+    }
+  } catch (err) {
+    parseError.value = err.message || "解析失败";
+  } finally {
+    parseBusy.value = false;
+  }
 }
 
 function onLayerDisplayLoaded(key, data) {
   layerDisplays.value = { ...layerDisplays.value, [key]: data };
+}
+
+function layerProps(key) {
+  if (key === "himawari") return { refreshKey: displayRefresh.value.himawari };
+  return {};
 }
 
 watch(active, () => { variable.value = variableOptions.value[0]; });
@@ -338,7 +390,7 @@ watch(active, () => { variable.value = variableOptions.value[0]; });
 .files li.sel .dot { border-color: var(--accent); background: var(--accent); }
 .files b { display: block; font-size: 12px; font-weight: 500; word-break: break-all; }
 .files span { font-size: 11px; color: var(--muted); }
-.upload { padding: 8px; border: 1px dashed var(--border); border-radius: 10px; color: var(--muted); font-size: 12px; cursor: pointer; text-align: center; }
+.upload { width: 100%; padding: 8px; border: 1px dashed var(--border); border-radius: 10px; background: transparent; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; text-align: center; }
 .parse { width: 100%; }
 .hint { margin: 0; color: var(--muted); font-size: 11px; text-align: center; }
 .vars { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }

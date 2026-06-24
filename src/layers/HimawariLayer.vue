@@ -23,12 +23,13 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import WebglLayer from "../components/WebglLayer.vue";
 
 const props = defineProps({
   src: String,
   extent: { type: Array, default: null },
+  refreshKey: { type: Number, default: 0 },
 });
 const emit = defineEmits(["display-loaded"]);
 
@@ -98,6 +99,10 @@ async function loadHimawariDisplay() {
 onMounted(() => {
   loadHimawariDisplay();
   timer = window.setInterval(loadHimawariDisplay, 30000);
+});
+
+watch(() => props.refreshKey, () => {
+  loadHimawariDisplay();
 });
 
 onBeforeUnmount(() => {

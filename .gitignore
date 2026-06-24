@@ -1,3 +1,5 @@
 node_modules/
+dist/
 vite-dev.err.log
 vite-dev.out.log
+.DS_Store

@@ -70,10 +70,18 @@ export async function uploadFileResumable(file, dataType, onProgress = () => {})
   return payload.data;
 }
 
-export async function parseFile(file) {
+export async function parseFile(fileOrFiles) {
   const body = new FormData();
-  body.append("file", file);
+  const files = Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles];
+  if (files.length === 1) {
+    body.append("file", files[0]);
+  } else {
+    files.forEach(file => body.append("files", file));
+  }
   const response = await fetch(`${API_BASE}/api/files/parse`, { method: "POST", body });
   const payload = await response.json();
+  if (!response.ok || payload.code !== 0) {
+    throw new Error(payload.detail || payload.message || "解析失败");
+  }
   return payload.data;
 }
