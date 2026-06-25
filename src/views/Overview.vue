@@ -79,7 +79,7 @@
 
     <div class="center">
       <div class="maps" :style="mapsGrid">
-        <div :class="['cell', { 'cell-4': layout === '4' }]" v-for="(p, i) in panes" :key="layout + '-' + p.key">
+        <div :class="['cell', { 'cell-4': layout === '4' }]" v-for="(p, i) in panes" :key="layout + '-' + i">
           <MapBase
             :grid="showGrid"
             :dark="dark"

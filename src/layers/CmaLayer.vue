@@ -22,6 +22,7 @@ const props = defineProps({
 const emit = defineEmits(["display-loaded"]);
 
 const viewerRef = inject("cesiumViewer", ref(null));
+const flyToExtent = inject("flyToExtent", null);
 const layerRefreshKeys = inject("layerRefreshKeys", ref({}));
 const colors = ["#1d4ed8", "#0891b2", "#16a34a", "#facc15", "#dc2626"];
 const gradient = `linear-gradient(to right, ${colors.join(",")})`;
@@ -249,7 +250,6 @@ function applyImageryLayer() {
 
   removeImageryLayer();
   const [west, south, east, north] = payload.extent;
-  const rectangle = paddedRectangle(west, south, east, north);
   const imageUrl = renderGridImage(payload);
   try {
     imageryLayer = viewer.imageryLayers.addImageryProvider(new SingleTileImageryProvider({
@@ -260,23 +260,14 @@ function applyImageryLayer() {
     }));
     imageryLayer.alpha = 1;
     layerStatus.value = `Cesium 图层已添加：${west.toFixed(3)}, ${south.toFixed(3)} - ${east.toFixed(3)}, ${north.toFixed(3)}`;
-    viewer.camera.setView({ destination: rectangle });
+    const dx = Math.max((east - west) * 0.35, 0.5);
+    const dy = Math.max((north - south) * 0.35, 0.5);
+    flyToExtent?.([Math.max(-180, west - dx), Math.max(-90, south - dy), Math.min(180, east + dx), Math.min(90, north + dy)]);
     viewer.scene.requestRender();
   } catch (err) {
     console.error("CMA Cesium imagery layer failed", err);
     layerStatus.value = `Cesium 图层添加失败：${err?.message || err}`;
   }
-}
-
-function paddedRectangle(west, south, east, north) {
-  const dx = Math.max((east - west) * 0.35, 0.5);
-  const dy = Math.max((north - south) * 0.35, 0.5);
-  return Rectangle.fromDegrees(
-    Math.max(-180, west - dx),
-    Math.max(-90, south - dy),
-    Math.min(180, east + dx),
-    Math.min(90, north + dy)
-  );
 }
 
 function emitDisplay(display) {

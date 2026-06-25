@@ -28,7 +28,6 @@
 
 <script setup>
 import { computed, inject, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
-import { Rectangle } from "cesium";
 import WebglLayer from "../components/WebglLayer.vue";
 import LayerCard from "../components/LayerCard.vue";
 
@@ -41,6 +40,7 @@ const props = defineProps({
 
 const API_BASE = "http://127.0.0.1:8002";
 const viewerRef = inject("cesiumViewer", ref(null));
+const flyToExtent = inject("flyToExtent", null);
 const display = ref(null);
 let zoomedKey = "";
 const error = ref("");
@@ -136,9 +136,8 @@ function toPublicUrl(path) {
 }
 
 function zoomToData() {
-  const viewer = viewerRef?.value;
   const ext = currentLevel.value?.extent || currentProduct.value?.extent || display.value?.extent;
-  if (!viewer || !Array.isArray(ext) || ext.length !== 4) return;
+  if (!viewerRef?.value || !Array.isArray(ext) || ext.length !== 4) return;
   const [west, south, east, north] = ext.map(Number);
   if ([west, south, east, north].some(v => !Number.isFinite(v)) || west >= east || south >= north) return;
   const key = ext.join(",");
@@ -146,8 +145,7 @@ function zoomToData() {
   zoomedKey = key;
   const dx = Math.max((east - west) * 0.3, 0.05);
   const dy = Math.max((north - south) * 0.3, 0.05);
-  viewer.camera.setView({ destination: Rectangle.fromDegrees(west - dx, south - dy, east + dx, north + dy) });
-  viewer.scene.requestRender();
+  flyToExtent?.([west - dx, south - dy, east + dx, north + dy]);
 }
 
 async function loadGrid() {

@@ -50,6 +50,26 @@ watch(() => props.borders, v => {
 }, { immediate: true });
 
 provide("cesiumViewer", viewerRef);
+provide("flyToExtent", flyToExtent);
+
+// 飞到指定经纬度范围 [west, south, east, north]。
+// 多屏下每个窗口的画布尺寸/相机宽高比要等渲染循环跑几帧才更新到真实值，
+// 若立刻飞行会按错误宽高比把小范围数据飞偏（看起来像停在全国中心/没飞）。
+// 因此先 forceResize 触发重算，再等一小段时间让宽高比稳定后直接飞到正确位置（无跳变）。
+function flyToExtent(ext, duration = 1.5) {
+  if (!viewer || !Array.isArray(ext) || ext.length !== 4) return;
+  const values = ext.map(Number);
+  if (values.some(v => !Number.isFinite(v)) || values[0] >= values[2] || values[1] >= values[3]) return;
+  const dest = Rectangle.fromDegrees(values[0], values[1], values[2], values[3]);
+  const snap = viewer;
+  if (typeof viewer.forceResize === "function") viewer.forceResize();
+  viewer.scene.requestRender();
+  setTimeout(() => {
+    if (!snap || snap.isDestroyed()) return;
+    if (typeof snap.forceResize === "function") snap.forceResize();
+    snap.camera.flyTo({ destination: dest, duration });
+  }, 120);
+}
 
 function setBase() {
   if (base) viewer.imageryLayers.remove(base);

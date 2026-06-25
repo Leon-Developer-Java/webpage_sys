@@ -17,7 +17,7 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import LayerCard from "../components/LayerCard.vue";
 import WebglLayer from "../components/WebglLayer.vue";
 
@@ -31,11 +31,14 @@ const props = defineProps({
 const emit = defineEmits(["display-loaded"]);
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8002";
+const viewerRef = inject("cesiumViewer", ref(null));
+const flyToExtent = inject("flyToExtent", null);
 const display = ref(null);
 const error = ref("");
 const selectedProductKey = ref("");
 const opacity = ref(0.68);
 let timer = null;
+let zoomedKey = "";
 
 const imageExtent = computed(() => props.extent || display.value?.extent || display.value?.meta_json?.extent || [73, 18, 136, 54]);
 const variables = computed(() => display.value?.variables || display.value?.meta_json?.variables || []);
@@ -76,6 +79,20 @@ function syncSelection() {
     products.value[0].key;
 }
 
+function flyToData() {
+  if (!viewerRef?.value || !display.value) return;
+  const ext = imageExtent.value;
+  if (!Array.isArray(ext) || ext.length !== 4) return;
+  const [west, south, east, north] = ext.map(Number);
+  if ([west, south, east, north].some(v => !Number.isFinite(v)) || west >= east || south >= north) return;
+  const key = ext.join(",");
+  if (key === zoomedKey) return;
+  zoomedKey = key;
+  const dx = Math.max((east - west) * 0.04, 0.05);
+  const dy = Math.max((north - south) * 0.04, 0.05);
+  flyToExtent?.([west - dx, south - dy, east + dx, north + dy]);
+}
+
 async function loadHimawariDisplay() {
   try {
     const response = await fetch(`${API_BASE}/api/display/HIMAWARI`);
@@ -101,6 +118,8 @@ onMounted(() => {
 watch(() => props.refreshKey, () => {
   loadHimawariDisplay();
 });
+
+watch(() => [viewerRef?.value, display.value, imageExtent.value], flyToData, { immediate: true });
 
 onBeforeUnmount(() => {
   if (timer) window.clearInterval(timer);

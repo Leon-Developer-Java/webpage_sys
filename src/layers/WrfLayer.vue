@@ -27,7 +27,6 @@
 </template>
 
 <script setup>
-import { Rectangle } from "cesium";
 import { computed, inject, onMounted, ref, watch } from "vue";
 import WebglLayer from "../components/WebglLayer.vue";
 import LayerCard from "../components/LayerCard.vue";
@@ -161,6 +160,7 @@ const domain = ref("d02");
 const variable = ref("PM2_5_DRY");
 const selectedDate = ref(defaultDates[0]);
 const viewerRef = inject("cesiumViewer", ref(null));
+const flyToExtent = inject("flyToExtent", null);
 
 const currentDomain = computed(() => domains[domain.value] ?? domains.d02);
 const wrfMeta = computed(() => props.parsedMeta || display.value?.meta_json || null);
@@ -283,20 +283,11 @@ function formatTime(value) {
 }
 
 function zoomToDomain() {
-  const viewer = viewerRef?.value;
-  if (!viewer) return;
+  if (!viewerRef?.value) return;
   const [west, south, east, north] = extent.value;
   const lonPad = Math.max((east - west) * 0.25, 0.05);
   const latPad = Math.max((north - south) * 0.25, 0.05);
-  viewer.camera.setView({
-    destination: Rectangle.fromDegrees(
-      west - lonPad,
-      south - latPad,
-      east + lonPad,
-      north + latPad,
-    ),
-  });
-  viewer.scene.requestRender();
+  flyToExtent?.([west - lonPad, south - latPad, east + lonPad, north + latPad]);
 }
 
 watch(domain, () => setTimeout(zoomToDomain, 80));

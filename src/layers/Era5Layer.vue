@@ -34,6 +34,7 @@ const emit = defineEmits(["display-loaded"]);
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8002";
 const viewerRef = inject("cesiumViewer", ref(null));
+const flyToExtent = inject("flyToExtent", null);
 const layerRefreshKeys = inject("layerRefreshKeys", ref({}));
 
 const colors = ["#2563eb", "#0891b2", "#16a34a", "#facc15", "#dc2626"];
@@ -268,17 +269,6 @@ function removeImageryLayer() {
   imageryLayer = null;
 }
 
-function paddedRectangle(west, south, east, north) {
-  const dx = Math.max((east - west) * 0.35, 0.5);
-  const dy = Math.max((north - south) * 0.35, 0.5);
-  return Rectangle.fromDegrees(
-    Math.max(-180, west - dx),
-    Math.max(-90, south - dy),
-    Math.min(180, east + dx),
-    Math.min(90, north + dy)
-  );
-}
-
 function applyImageryLayer() {
   const viewer = viewerRef?.value;
   const payload = grid.value;
@@ -300,7 +290,9 @@ function applyImageryLayer() {
       tileHeight: payload.height,
     }));
     imageryLayer.alpha = 1;
-    viewer.camera.setView({ destination: paddedRectangle(west, south, east, north) });
+    const dx = Math.max((east - west) * 0.35, 0.5);
+    const dy = Math.max((north - south) * 0.35, 0.5);
+    flyToExtent?.([Math.max(-180, west - dx), Math.max(-90, south - dy), Math.min(180, east + dx), Math.min(90, north + dy)]);
     viewer.scene.requestRender();
   } catch (err) {
     error.value = "ERA5 layer failed";
