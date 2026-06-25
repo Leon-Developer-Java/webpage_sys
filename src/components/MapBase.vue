@@ -2,13 +2,6 @@
   <div :class="['map-base', { grid, dark }]">
     <div ref="container" class="map-canvas"></div>
     <slot :viewer="viewerRef"></slot>
-    <div class="map-tools">
-      <button @click="zoom(0.6)"><el-icon><Plus /></el-icon></button>
-      <button @click="zoom(1.6)"><el-icon><Minus /></el-icon></button>
-      <button @click="home"><el-icon><Aim /></el-icon></button>
-      <button @click="full"><el-icon><FullScreen /></el-icon></button>
-      <button :class="{ on: showBorders }" @click="toggleBorders" title="国界/省界叠加"><b class="dim-icon">界</b></button>
-    </div>
   </div>
 </template>
 
@@ -25,7 +18,6 @@ function loadBorderGeojson() {
 import { onBeforeUnmount, onMounted, provide, ref, shallowRef, watch } from "vue";
 import { Cartesian3, Color, ColorGeometryInstanceAttribute, GeographicProjection, GeometryInstance, ImageryLayer, Ion, PerInstanceColorAppearance, Primitive, Rectangle, SceneMode, SimplePolylineGeometry, UrlTemplateImageryProvider, Viewer, WebMercatorProjection } from "cesium";
 import "cesium/Build/Cesium/Widgets/widgets.css";
-import { Aim, FullScreen, Minus, Plus } from "@element-plus/icons-vue";
 
 const props = defineProps({ grid: Boolean, dark: Boolean, basemap: String, mode: String, syncRect: Object, projection: String, borders: { default: null } });
 const emit = defineEmits(["camera-change", "toggle-borders"]);
@@ -51,6 +43,15 @@ watch(() => props.borders, v => {
 
 provide("cesiumViewer", viewerRef);
 provide("flyToExtent", flyToExtent);
+// 把地图工具（缩放/复位/全屏/界）暴露给图层卡片，使其能与信息卡合并到同一张卡里。
+provide("mapControls", {
+  zoomIn: () => viewer && zoom(0.6),
+  zoomOut: () => viewer && zoom(1.6),
+  home: () => viewer && home(),
+  full: () => full(),
+  toggleBorders: () => toggleBorders(),
+  borders: showBorders,
+});
 
 // 飞到指定经纬度范围 [west, south, east, north]。
 // 多屏下每个窗口的画布尺寸/相机宽高比要等渲染循环跑几帧才更新到真实值，
@@ -263,31 +264,4 @@ onBeforeUnmount(destroyViewer);
   content: "";
 }
 
-.map-tools {
-  position: absolute;
-  right: 14px;
-  top: 14px;
-  z-index: 4;
-  display: grid;
-  gap: 6px;
-}
-
-.map-tools button {
-  display: grid;
-  place-items: center;
-  width: 36px;
-  height: 36px;
-  border: 1px solid var(--border);
-  border-radius: 11px;
-  background: var(--glass);
-  backdrop-filter: blur(16px) saturate(150%);
-  -webkit-backdrop-filter: blur(16px) saturate(150%);
-  color: var(--text);
-  cursor: pointer;
-  transition: 0.15s;
-}
-
-.map-tools button:hover { color: var(--accent); }
-.map-tools button.on { color: var(--accent); background: var(--accent-soft); }
-.map-tools .dim-icon { font-size: 14px; font-weight: 800; line-height: 1; }
 </style>
