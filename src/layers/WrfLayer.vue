@@ -1,72 +1,60 @@
 <template>
   <WebglLayer :key="layerKey" :src="imageUrl" :extent="extent" />
-
-  <section class="wrf-panel">
-    <div>
-      <strong>WRF-Chem 产品图层</strong>
-      <small>{{ currentVariable.name }} · {{ currentDomain.label }}</small>
-    </div>
-
-    <label>
-      区域
+  <LayerCard :badge="label" :file="currentVariable.name" :legend-title="currentVariable.unit" :gradient="currentVariable.gradient" :ticks="currentVariable.ticks">
+    <label class="lc-row">
+      <span>区域</span>
       <select v-model="domain">
-        <option v-for="item in domainOptions" :key="item.value" :value="item.value">
-          {{ item.label }}
-        </option>
+        <option v-for="item in domainOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
       </select>
     </label>
-
-    <label>
-      产品
+    <label class="lc-row">
+      <span>产品</span>
       <select v-model="variable">
-        <option v-for="item in variableOptions" :key="item.value" :value="item.value">
-          {{ item.name }}
-        </option>
+        <option v-for="item in variableOptions" :key="item.value" :value="item.value">{{ item.name }}</option>
       </select>
     </label>
-
-    <label>
-      日期
+    <label class="lc-row">
+      <span>日期</span>
       <select v-model="selectedDate">
-        <option v-for="item in availableDates" :key="item" :value="item">
-          {{ item }}
-        </option>
+        <option v-for="item in availableDates" :key="item" :value="item">{{ item }}</option>
       </select>
     </label>
-
-    <div class="wrf-time">
-      <span>当前时次</span>
+    <div class="lc-row">
+      <span>时次</span>
       <b>{{ formatTime(time) }}</b>
-      <small>小时跟随底部时间轴播放</small>
     </div>
-  </section>
-
-  <section class="wrf-info">
-    <strong>{{ currentVariable.name }}</strong>
-    <span>{{ currentVariable.desc }}</span>
-    <small>当前时次：{{ formatTime(time) }}</small>
-  </section>
-
-  <div class="wrf-legend">
-    <small>{{ currentVariable.unit }}</small>
-    <div class="legend-bar" :style="{ background: currentVariable.gradient }"></div>
-    <ul><li v-for="tick in currentVariable.ticks" :key="tick">{{ tick }}</li></ul>
-  </div>
+  </LayerCard>
 </template>
 
 <script setup>
 import { Rectangle } from "cesium";
 import { computed, inject, onMounted, ref, watch } from "vue";
 import WebglLayer from "../components/WebglLayer.vue";
+import LayerCard from "../components/LayerCard.vue";
 
 const props = defineProps({
   timeIndex: { type: Number, default: 12 },
   timelineLabel: { type: String, default: "" },
   parsedMeta: { type: Object, default: null },
+  label: { type: String, default: "WRF" },
 });
 
-const OUTPUT_BASE = "/wrf-overlays";
-const BACKEND_DATA_BASE = "/backend-data";
+const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8002";
+const display = ref(null);
+
+function toPublicUrl(path) {
+  if (!path) return "";
+  if (/^https?:\/\//i.test(path) || path.startsWith("data:")) return path;
+  const normalized = String(path).replaceAll("\\", "/");
+  const idx = normalized.indexOf("/data/");
+  return idx >= 0 ? `${API_BASE}${normalized.slice(idx)}` : "";
+}
+
+function loadWrfDisplay() {
+  fetch(`${API_BASE}/api/display/WRF`).then((response) => response.json()).then((payload) => {
+    if (payload?.code === 0) display.value = payload.data;
+  });
+}
 
 const domains = {
   d01: {
@@ -175,14 +163,15 @@ const selectedDate = ref(defaultDates[0]);
 const viewerRef = inject("cesiumViewer", ref(null));
 
 const currentDomain = computed(() => domains[domain.value] ?? domains.d02);
+const wrfMeta = computed(() => props.parsedMeta || display.value?.meta_json || null);
 const availableDates = computed(() => {
-  const parsedDates = (props.parsedMeta?.times ?? [])
+  const parsedDates = (wrfMeta.value?.times ?? [])
     .map((item) => String(item).slice(0, 10))
     .filter(Boolean);
   return parsedDates.length ? [...new Set(parsedDates)] : defaultDates;
 });
 const parsedVariables = computed(() => {
-  const list = props.parsedMeta?.variables;
+  const list = wrfMeta.value?.variables;
   if (!Array.isArray(list) || list.length === 0) return [];
   return list.map((item) => ({
     value: item.name,
@@ -201,7 +190,7 @@ const currentVariable = computed(
   () => variableOptions.value.find((item) => item.value === variable.value) ?? variableOptions.value[0],
 );
 const extent = computed(() => {
-  const bbox = props.parsedMeta?.bbox;
+  const bbox = wrfMeta.value?.bbox;
   const parsedExtent = [bbox?.west, bbox?.south, bbox?.east, bbox?.north].map(Number);
   if (parsedExtent.every(Number.isFinite) && parsedExtent[0] < parsedExtent[2] && parsedExtent[1] < parsedExtent[3]) {
     return parsedExtent;
@@ -214,7 +203,7 @@ const timelineHour = computed(() => {
   return Math.max(0, Math.min(12, Number.isFinite(hour) ? hour : 0));
 });
 const time = computed(() => {
-  const parsedTimes = props.parsedMeta?.times;
+  const parsedTimes = wrfMeta.value?.times;
   const parsedTime = Array.isArray(parsedTimes)
     ? parsedTimes[Math.min(Math.max(props.timeIndex, 0), parsedTimes.length - 1)]
     : null;
@@ -225,7 +214,7 @@ const time = computed(() => {
 const imageUrl = computed(() => {
   const parsedUrl = parsedPngUrl(variable.value);
   if (parsedUrl) return parsedUrl;
-  return `${OUTPUT_BASE}/${domain.value}/${variable.value}/${time.value}.png`;
+  return toPublicUrl(display.value?.png);
 });
 const layerKey = computed(() => `${imageUrl.value}|${extent.value.join(",")}`);
 
@@ -239,7 +228,7 @@ function ticksFor(name) {
 }
 
 function parsedPngUrl(variableName) {
-  const files = props.parsedMeta?.png_files;
+  const files = wrfMeta.value?.png_files;
   if (!Array.isArray(files)) return "";
   const target = String(variableName || "");
   const timePart = time.value;
@@ -256,11 +245,9 @@ function parsedPngUrl(variableName) {
 }
 
 function localDataUrl(path) {
-  const normalized = String(path || "").replaceAll("\\", "/");
-  const marker = "/backend_system/data/";
-  const index = normalized.indexOf(marker);
-  const url = index >= 0 ? `${BACKEND_DATA_BASE}/${normalized.slice(index + marker.length)}` : normalized;
-  const version = encodeURIComponent(props.parsedMeta?.dataset_id || props.parsedMeta?.meta_file || "");
+  const url = toPublicUrl(path);
+  if (!url) return "";
+  const version = encodeURIComponent(wrfMeta.value?.dataset_id || wrfMeta.value?.meta_file || "");
   if (!version || url.includes("?")) return url;
   return `${url}?v=${version}`;
 }
@@ -283,7 +270,7 @@ function preferredVariable(meta) {
 }
 
 function firstRenderablePng(files) {
-  const name = preferredVariable(props.parsedMeta);
+  const name = preferredVariable(wrfMeta.value);
   const timePart = time.value;
   return files.find((item) => {
     const base = String(item).replaceAll("\\", "/").split("/").pop()?.replace(/\.png$/i, "") ?? "";
@@ -314,7 +301,7 @@ function zoomToDomain() {
 
 watch(domain, () => setTimeout(zoomToDomain, 80));
 watch(
-  () => props.parsedMeta,
+  wrfMeta,
   (meta) => {
     const firstVar = preferredVariable(meta);
     if (firstVar) variable.value = firstVar;
@@ -327,115 +314,8 @@ watch(() => viewerRef?.value, (viewer) => {
   if (viewer) setTimeout(zoomToDomain, 120);
 });
 
-onMounted(() => setTimeout(zoomToDomain, 120));
+onMounted(() => {
+  loadWrfDisplay();
+  setTimeout(zoomToDomain, 120);
+});
 </script>
-
-<style scoped>
-.wrf-panel,
-.wrf-info,
-.wrf-legend {
-  position: absolute;
-  z-index: 20;
-  color: var(--text);
-  background: color-mix(in srgb, var(--glass) 94%, transparent);
-  border: 1px solid var(--border);
-  box-shadow: var(--shadow);
-  backdrop-filter: blur(14px);
-}
-
-.wrf-panel {
-  left: 18px;
-  top: 82px;
-  width: 300px;
-  display: grid;
-  gap: 10px;
-  padding: 14px;
-  border-radius: 12px;
-}
-
-.wrf-panel strong,
-.wrf-info strong {
-  display: block;
-  font-size: 14px;
-  margin-bottom: 4px;
-}
-
-.wrf-panel small,
-.wrf-info small,
-.wrf-info span {
-  display: block;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.wrf-panel label {
-  display: grid;
-  gap: 5px;
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.wrf-panel select {
-  width: 100%;
-  height: 34px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  color: var(--text);
-  background: var(--field);
-  padding: 0 9px;
-  outline: none;
-}
-
-.wrf-time {
-  display: grid;
-  gap: 4px;
-  padding: 9px 10px;
-  border-radius: 8px;
-  background: var(--field);
-}
-
-.wrf-time span,
-.wrf-time small {
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.wrf-time b {
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.wrf-info {
-  left: 18px;
-  bottom: 28px;
-  width: 300px;
-  padding: 12px 14px;
-  border-radius: 12px;
-}
-
-.wrf-legend {
-  right: 22px;
-  bottom: 28px;
-  min-width: 210px;
-  padding: 10px 12px;
-  border-radius: 10px;
-}
-
-.legend-bar {
-  height: 10px;
-  margin: 7px 0;
-  border-radius: 999px;
-}
-
-.wrf-legend ul {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  color: var(--muted);
-  font-size: 11px;
-}
-</style>

@@ -7,20 +7,31 @@
       <button @click="zoom(1.6)"><el-icon><Minus /></el-icon></button>
       <button @click="home"><el-icon><Aim /></el-icon></button>
       <button @click="full"><el-icon><FullScreen /></el-icon></button>
+      <button :class="{ on: showBorders }" @click="toggleBorders" title="国界/省界叠加"><b class="dim-icon">界</b></button>
     </div>
   </div>
 </template>
 
+<script>
+const BORDER_GEOJSON = "https://cdn.jsdelivr.net/gh/datasets/geo-countries@master/data/countries.geojson";
+let borderGeojsonPromise = null;
+function loadBorderGeojson() {
+  if (!borderGeojsonPromise) borderGeojsonPromise = fetch(BORDER_GEOJSON).then((response) => response.json());
+  return borderGeojsonPromise;
+}
+</script>
+
 <script setup>
 import { onBeforeUnmount, onMounted, provide, ref, shallowRef, watch } from "vue";
-import { Cartesian3, Color, GeographicProjection, ImageryLayer, Ion, Rectangle, SceneMode, UrlTemplateImageryProvider, Viewer, WebMercatorProjection } from "cesium";
+import { Cartesian3, Color, ColorGeometryInstanceAttribute, GeographicProjection, GeometryInstance, ImageryLayer, Ion, PerInstanceColorAppearance, Primitive, Rectangle, SceneMode, SimplePolylineGeometry, UrlTemplateImageryProvider, Viewer, WebMercatorProjection } from "cesium";
 import "cesium/Build/Cesium/Widgets/widgets.css";
 import { Aim, FullScreen, Minus, Plus } from "@element-plus/icons-vue";
 
-const props = defineProps({ grid: Boolean, dark: Boolean, basemap: String, mode: String, syncRect: Object, projection: String });
-const emit = defineEmits(["camera-change"]);
+const props = defineProps({ grid: Boolean, dark: Boolean, basemap: String, mode: String, syncRect: Object, projection: String, borders: { default: null } });
+const emit = defineEmits(["camera-change", "toggle-borders"]);
 const container = ref(null);
 const viewerRef = shallowRef(null);
+const showBorders = ref(false);
 const extent = Rectangle.fromDegrees(73, 15, 135, 55);
 const tiles = {
   "矢量底图": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
@@ -28,7 +39,15 @@ const tiles = {
   "地形晕渲": "https://tile.opentopomap.org/{z}/{x}/{y}.png",
   "全球境界": "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}"
 };
-let viewer, base, syncing = false;
+let viewer, base, borderPrim = null, borderGen = 0, syncing = false;
+
+watch(viewerRef, v => { if (v) applyBorders(); });
+
+watch(() => props.borders, v => {
+  if (v === null) return;
+  showBorders.value = v;
+  if (viewer) applyBorders();
+}, { immediate: true });
 
 provide("cesiumViewer", viewerRef);
 
@@ -37,6 +56,51 @@ function setBase() {
   base = new ImageryLayer(new UrlTemplateImageryProvider({ url: tiles[props.basemap] || tiles["矢量底图"] }));
   viewer.imageryLayers.add(base, 0);
   viewer.scene.requestRender();
+}
+
+function clearBorders() {
+  if (borderPrim && viewer && !viewer.isDestroyed() && !borderPrim.isDestroyed()) {
+    viewer.scene.primitives.remove(borderPrim);
+  }
+  borderPrim = null;
+}
+
+function applyBorders() {
+  const gen = ++borderGen;
+  clearBorders();
+  if (!showBorders.value) { viewer.scene.requestRender(); return; }
+  const snap = viewer;
+  loadBorderGeojson().then(geojson => {
+    if (gen !== borderGen || !viewer || viewer.isDestroyed() || viewer !== snap) return;
+    const instances = [];
+    for (const { geometry } of geojson.features) {
+      if (!geometry) continue;
+      const rings = geometry.type === "Polygon" ? geometry.coordinates
+                  : geometry.type === "MultiPolygon" ? geometry.coordinates.flat(1)
+                  : [];
+      for (const ring of rings) {
+        if (ring.length < 2) continue;
+        instances.push(new GeometryInstance({
+          geometry: new SimplePolylineGeometry({ positions: Cartesian3.fromDegreesArray(ring.flat()) }),
+          attributes: { color: ColorGeometryInstanceAttribute.fromColor(Color.BLACK) },
+        }));
+      }
+    }
+    if (!instances.length) return;
+    borderPrim = viewer.scene.primitives.add(new Primitive({
+      geometryInstances: instances,
+      appearance: new PerInstanceColorAppearance({ flat: true, translucent: false }),
+    }));
+    viewer.scene.requestRender();
+  });
+}
+
+function toggleBorders() {
+  if (props.borders === null) {
+    showBorders.value = !showBorders.value;
+    if (viewer) applyBorders();
+  }
+  emit("toggle-borders");
 }
 
 function paint() {
@@ -94,10 +158,12 @@ function create() {
 
 function destroyViewer() {
   if (!viewer) return;
+  borderGen++;
   viewerRef.value = null;
   viewer.destroy();
   viewer = null;
   base = null;
+  borderPrim = null;
 }
 
 function ready() {
@@ -202,4 +268,6 @@ onBeforeUnmount(destroyViewer);
 }
 
 .map-tools button:hover { color: var(--accent); }
+.map-tools button.on { color: var(--accent); background: var(--accent-soft); }
+.map-tools .dim-icon { font-size: 14px; font-weight: 800; line-height: 1; }
 </style>

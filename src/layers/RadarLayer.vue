@@ -27,7 +27,8 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
+import { computed, inject, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
+import { Rectangle } from "cesium";
 import WebglLayer from "../components/WebglLayer.vue";
 import LayerCard from "../components/LayerCard.vue";
 
@@ -39,7 +40,9 @@ const props = defineProps({
 });
 
 const API_BASE = "http://127.0.0.1:8002";
+const viewerRef = inject("cesiumViewer", ref(null));
 const display = ref(null);
+let zoomedKey = "";
 const error = ref("");
 const selectedProductKey = ref("");
 const selectedLevelKey = ref("");
@@ -53,7 +56,7 @@ const products = computed(() => display.value?.grid_products ?? []);
 const currentProduct = computed(() => products.value.find((item) => item.key === selectedProductKey.value) ?? products.value[0] ?? null);
 const currentLevels = computed(() => currentProduct.value?.levels ?? []);
 const currentLevel = computed(() => currentLevels.value.find((item) => item.key === selectedLevelKey.value) ?? currentLevels.value[0] ?? null);
-const fallbackImageSrc = computed(() => props.src || display.value?.png_data_url || "");
+const fallbackImageSrc = computed(() => props.src || toPublicUrl(display.value?.png) || display.value?.png_data_url || "");
 const imageExtent = computed(() => props.extent || currentLevel.value?.extent || currentProduct.value?.extent || display.value?.extent || display.value?.meta_json?.extent || [73, 15, 135, 55]);
 const gridWidth = computed(() => currentLevel.value?.grid?.nx || currentProduct.value?.grid?.nx || 0);
 const gridHeight = computed(() => currentLevel.value?.grid?.ny || currentProduct.value?.grid?.ny || 0);
@@ -124,6 +127,29 @@ function apiUrl(path) {
   return `${API_BASE}${path}`;
 }
 
+function toPublicUrl(path) {
+  if (!path) return "";
+  if (/^https?:\/\//i.test(path) || path.startsWith("data:")) return path;
+  const normalized = String(path).replaceAll("\\", "/");
+  const idx = normalized.indexOf("/data/");
+  return idx >= 0 ? `${API_BASE}${normalized.slice(idx)}` : "";
+}
+
+function zoomToData() {
+  const viewer = viewerRef?.value;
+  const ext = currentLevel.value?.extent || currentProduct.value?.extent || display.value?.extent;
+  if (!viewer || !Array.isArray(ext) || ext.length !== 4) return;
+  const [west, south, east, north] = ext.map(Number);
+  if ([west, south, east, north].some(v => !Number.isFinite(v)) || west >= east || south >= north) return;
+  const key = ext.join(",");
+  if (key === zoomedKey) return;
+  zoomedKey = key;
+  const dx = Math.max((east - west) * 0.3, 0.05);
+  const dy = Math.max((north - south) * 0.3, 0.05);
+  viewer.camera.setView({ destination: Rectangle.fromDegrees(west - dx, south - dy, east + dx, north + dy) });
+  viewer.scene.requestRender();
+}
+
 async function loadGrid() {
   const level = currentLevel.value;
   const url = apiUrl(level?.grid_url);
@@ -192,6 +218,11 @@ watch(selectedProductKey, syncSelection);
 watch(
   () => [currentProduct.value?.key, currentLevel.value?.key, currentLevel.value?.grid_url],
   loadGrid,
+);
+watch(
+  () => [viewerRef?.value, currentLevel.value?.extent, currentProduct.value?.extent],
+  zoomToData,
+  { immediate: true },
 );
 </script>
 

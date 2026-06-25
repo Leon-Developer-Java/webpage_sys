@@ -87,21 +87,19 @@
             :mode="sceneMode"
             :projection="projection"
             :syncRect="linked && emitterIdx !== i ? syncRect : null"
+            :borders="sharedBorders"
             @camera-change="cam => onCameraChange(i, cam)"
+            @toggle-borders="onToggleBorders"
           >
             <WrfLayer
               v-if="p.key === 'wrf'"
+              :label="p.btn"
               :time-index="tIndex"
               :timeline-label="times[tIndex]"
               :parsed-meta="parsed?.business_type === 'WRF' ? parsed.meta : null"
             />
-            <component v-else :is="p.comp" v-bind="layerProps(p.key)" @display-loaded="data => onLayerDisplayLoaded(p.key, data)" />
+            <component v-else :is="p.comp" :label="p.btn" :file="infos[p.key].file" v-bind="layerProps(p.key)" @display-loaded="data => onLayerDisplayLoaded(p.key, data)" />
           </MapBase>
-          <div v-if="layout !== '4'" class="map-info">
-            <span><b>{{ p.btn }}</b></span>
-            <span><b>{{ infos[p.key].file }}</b></span>
-            <span>{{ projection }}</span>
-          </div>
         </div>
       </div>
       <div class="timebar glass">
@@ -213,9 +211,14 @@ const linked = ref(false);
 const syncRect = ref(null);
 const sceneMode = ref('2D');
 const emitterIdx = ref(-1);
+const sharedBorders = ref(false);
 const latestCam = {};
 let animTimer = null;
 let lastTs = null;
+
+function onToggleBorders() {
+  sharedBorders.value = !sharedBorders.value;
+}
 
 function onCameraChange(i, cam) {
   latestCam[i] = cam;
@@ -428,28 +431,6 @@ watch(active, () => { variable.value = variableOptions.value[0]; });
 .maps { flex: 1; min-height: 0; display: grid; gap: 10px; }
 .cell { position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; }
 .cell .map-base { position: absolute; inset: 0; }
-.map-info {
-  position: absolute;
-  top: 10px;
-  left: 10px;
-  z-index: 5;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  padding: 6px 9px;
-  border-radius: 9px;
-  background: var(--glass);
-  backdrop-filter: blur(14px) saturate(150%);
-  -webkit-backdrop-filter: blur(14px) saturate(150%);
-  border: 1px solid var(--border);
-  font-size: 10px;
-  color: var(--muted);
-  pointer-events: none;
-  width: 180px;
-}
-.map-info span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.map-info b { color: var(--text); font-weight: 600; }
-
 .timebar { flex-shrink: 0; padding: 6px 14px 8px; overflow: hidden; }
 .tb-head { display: flex; align-items: center; gap: 6px; padding: 0 0 6px; }
 .tc-btn { display: grid; place-items: center; width: 24px; height: 24px; border: 1px solid var(--border); border-radius: 7px; background: var(--field); color: var(--muted); cursor: pointer; transition: 0.15s; }

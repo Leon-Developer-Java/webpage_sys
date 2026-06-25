@@ -1,21 +1,18 @@
 <template>
   <WebglLayer :src="imageSrc" :extent="imageExtent" :alpha="opacity" />
-  <LayerCard class="himawari-card" :badge="props.label || '葵花卫星'" :file="cardFile" :legend-title="legendTitle" :gradient="gradient" :ticks="ticks">
-    <div v-if="products.length" class="himawari-controls">
-      <label>
+  <LayerCard :badge="props.label || '葵花卫星'" :file="cardFile" :legend-title="legendTitle" :gradient="gradient" :ticks="ticks">
+    <template v-if="products.length">
+      <label class="lc-row">
         <span>变量</span>
         <select v-model="selectedProductKey">
-          <option v-for="product in products" :key="product.key" :value="product.key">
-            {{ product.name_zh || product.key }}
-          </option>
+          <option v-for="product in products" :key="product.key" :value="product.key">{{ product.name_zh || product.key }}</option>
         </select>
       </label>
-      <label>
+      <label class="lc-row">
         <span>融合</span>
-        <input v-model.number="opacity" min="0.2" max="1" step="0.05" type="range" />
+        <input v-model.number="opacity" min="0.2" max="1" step="0.05" type="range" style="width: 100%; min-width: 0; accent-color: var(--accent);" />
       </label>
-    </div>
-    <p v-if="statusText" class="himawari-status">{{ statusText }}</p>
+    </template>
   </LayerCard>
 </template>
 
@@ -109,84 +106,3 @@ onBeforeUnmount(() => {
   if (timer) window.clearInterval(timer);
 });
 </script>
-
-<style scoped>
-.himawari-status {
-  margin: 0 8px 6px;
-  color: var(--muted);
-  font-size: 10px;
-  line-height: 1.25;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.himawari-controls {
-  display: grid;
-  gap: 4px;
-  padding: 28px 8px 5px;
-}
-
-.himawari-controls label {
-  display: grid;
-  grid-template-columns: 30px minmax(0, 1fr);
-  align-items: center;
-  gap: 5px;
-  color: var(--muted);
-  font-size: 10px;
-}
-
-.himawari-controls select {
-  min-width: 0;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: rgba(15, 23, 42, 0.82);
-  color: var(--text);
-  font: inherit;
-  font-size: 10px;
-  padding: 3px 5px;
-}
-
-.himawari-controls input[type="range"] {
-  min-width: 0;
-  accent-color: var(--accent);
-}
-
-.himawari-card {
-  top: 8px;
-  left: 8px;
-  width: min(210px, calc(100% - 92px));
-}
-
-.himawari-card :deep(.lc-header) {
-  padding: 5px 7px;
-  margin-bottom: 14px;
-  border-bottom: 0;
-}
-
-.himawari-card :deep(.lc-badge) {
-  font-size: 9px;
-  padding: 1px 5px;
-}
-
-.himawari-card :deep(.lc-file) {
-  font-size: 9.5px;
-}
-
-.himawari-card :deep(.lc-legend) {
-  gap: 3px;
-  padding: 5px 8px 6px;
-}
-
-.himawari-card :deep(.lc-legend small) {
-  font-size: 9.5px;
-}
-
-.himawari-card :deep(.lc-bar) {
-  height: 6px;
-}
-
-.himawari-card :deep(.lc-legend ul) {
-  font-size: 9px;
-}
-</style>
