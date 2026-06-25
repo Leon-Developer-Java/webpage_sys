@@ -282,31 +282,34 @@ function formatTime(value) {
   return value.replace("_", " ").replaceAll("_", ":");
 }
 
+let zoomedKey = "";
 function zoomToDomain() {
-  if (!viewerRef?.value) return;
-  const [west, south, east, north] = extent.value;
+  // 和 CMA 一致：等数据(wrfMeta)和 viewer 就绪后再飞，避免多屏下画布宽高比未稳定时飞偏。
+  if (!viewerRef?.value || !wrfMeta.value) return;
+  const ext = extent.value;
+  if (!Array.isArray(ext) || ext.length !== 4) return;
+  const [west, south, east, north] = ext.map(Number);
+  if (![west, south, east, north].every(Number.isFinite) || west >= east || south >= north) return;
+  const key = ext.join(",");
+  if (key === zoomedKey) return;
+  zoomedKey = key;
   const lonPad = Math.max((east - west) * 0.25, 0.05);
   const latPad = Math.max((north - south) * 0.25, 0.05);
   flyToExtent?.([west - lonPad, south - latPad, east + lonPad, north + latPad]);
 }
 
-watch(domain, () => setTimeout(zoomToDomain, 80));
 watch(
   wrfMeta,
   (meta) => {
     const firstVar = preferredVariable(meta);
     if (firstVar) variable.value = firstVar;
     selectedDate.value = availableDates.value[0] ?? defaultDates[0];
-    setTimeout(zoomToDomain, 120);
   },
   { immediate: true },
 );
-watch(() => viewerRef?.value, (viewer) => {
-  if (viewer) setTimeout(zoomToDomain, 120);
-});
+watch(() => [viewerRef?.value, wrfMeta.value, extent.value], zoomToDomain, { immediate: true });
 
 onMounted(() => {
   loadWrfDisplay();
-  setTimeout(zoomToDomain, 120);
 });
 </script>
