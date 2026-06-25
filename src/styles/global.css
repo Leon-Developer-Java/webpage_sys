@@ -177,7 +177,7 @@ nav .router-link-active { color: #fff; background: var(--accent); font-weight: 6
 /* ── LayerCard 控件行（各 layer 的 select 行，scoped 无法穿透 slot）── */
 .lc-row {
   display: grid;
-  grid-template-columns: 30px 1fr;
+  grid-template-columns: 30px minmax(0, 1fr);
   align-items: center;
   gap: 7px;
   padding: 7px 9px;
@@ -196,6 +196,9 @@ nav .router-link-active { color: #fff; background: var(--accent); font-weight: 6
   font-size: 11px;
   font-family: inherit;
   outline: none;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .lc-controls select:focus {
