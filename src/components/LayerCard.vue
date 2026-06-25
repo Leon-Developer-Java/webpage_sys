@@ -57,15 +57,18 @@ const controls = inject("mapControls", null);
 /* 定位容器：负责贴左、下移、滑入滑出动画；把手可以溢出到右侧 */
 .layer-card {
   position: absolute;
-  top: 48px;
+  /* 以卡片"中心"对齐底图竖直中线：不同高度的卡片都围绕同一中心展开，
+     大卡片自然向上下扩展，把手始终落在卡片正中且位置固定不跳动 */
+  top: 50%;
   left: 0;
   z-index: 5;
   width: min(240px, calc(100% - 10px));
+  transform: translateY(-50%);
   transition: transform 0.3s cubic-bezier(0.22, 0.61, 0.36, 1);
 }
 
 .layer-card.collapsed {
-  transform: translateX(-100%);
+  transform: translate(-100%, -50%);
 }
 
 /* 卡片主体：玻璃质感 + 左侧直角，内容裁切 */
@@ -85,6 +88,7 @@ const controls = inject("mapControls", null);
 .lc-tab {
   position: absolute;
   left: 100%;
+  /* 把手居中于卡片：卡片中心又对齐底图中线，所以把手始终在正中且固定 */
   top: 50%;
   transform: translateY(-50%);
   display: grid;
