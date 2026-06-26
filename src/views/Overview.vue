@@ -31,11 +31,9 @@
             <div><b>{{ f.name }}</b><span>{{ f.time }} · {{ f.size }}</span></div>
           </li>
         </ul>
-        <button class="upload" type="button" @click="openLocalPicker">{{ fileLabel || "选择本地文件…" }}</button>
-        <input ref="fileInput" type="file" hidden multiple @change="choose" />
-        <input ref="directoryInput" type="file" hidden multiple webkitdirectory @change="choose" />
-        <el-button type="primary" size="small" class="parse" :loading="parseBusy" :disabled="!filesToParse.length" @click="parse">打开并解析</el-button>
-        <p class="hint">{{ parseError || "解析后生成 meta.json + PNG" }}</p>
+        <label class="upload"><input type="file" hidden @change="choose" />{{ file ? file.name : "选择本地文件…" }}</label>
+        <el-button type="primary" size="small" class="parse" @click="parse">打开并解析</el-button>
+        <p class="hint">解析后生成 meta.json + PNG</p>
         <div class="vars">
           <VariableSelect v-model="variable" :options="variableOptions" />
           <VariableSelect v-model="level" :options="levels" />
@@ -45,7 +43,7 @@
       <template v-else-if="tool === 'data'">
         <p class="pick-hint">选择数据类型</p>
         <div class="picker">
-          <button v-for="s in sources" :key="s.key" :class="{ on: active === s.key }" @click="active = s.key">
+          <button v-for="s in sources" :key="s.key" :class="{ on: active === s.key }" @click="selectSource(s.key)">
             <span>{{ s.btn }}</span><el-icon v-if="active === s.key"><Check /></el-icon>
           </button>
         </div>
@@ -79,7 +77,7 @@
 
     <div class="center">
       <div class="maps" :style="mapsGrid">
-        <div :class="['cell', { 'cell-4': layout === '4' }]" v-for="(p, i) in panes" :key="layout + '-' + i">
+        <div :class="['cell', { 'cell-4': layout === '4' }]" v-for="(p, i) in panes" :key="layout + '-' + p.key">
           <MapBase
             :grid="showGrid"
             :dark="dark"
@@ -87,33 +85,34 @@
             :mode="sceneMode"
             :projection="projection"
             :syncRect="linked && emitterIdx !== i ? syncRect : null"
-            :borders="sharedBorders"
             @camera-change="cam => onCameraChange(i, cam)"
-            @toggle-borders="onToggleBorders"
           >
-            <WrfLayer
-              v-if="p.key === 'wrf'"
-              :label="p.btn"
-              :time-index="tIndex"
-              :timeline-label="times[tIndex]"
-              :parsed-meta="parsed?.business_type === 'WRF' ? parsed.meta : null"
+            <component
+              :is="p.comp"
+              :parsed="layerParsed(p.key)"
+              :time-index="layerTimeIndex"
             />
-            <component v-else :is="p.comp" :label="p.btn" :file="infos[p.key].file" v-bind="layerProps(p.key)" @display-loaded="data => onLayerDisplayLoaded(p.key, data)" />
           </MapBase>
+          <div v-if="layout !== '4'" class="map-info">
+            <span><b>{{ p.btn }}</b></span>
+            <span><b>{{ layerInfo(p.key).file }}</b></span>
+            <span>{{ projection }}</span>
+          </div>
         </div>
       </div>
+
       <div class="timebar glass">
         <div class="tb-head">
-          <button class="tc-btn" @click="tIndex = 0"><el-icon><DArrowLeft /></el-icon></button>
-          <button class="tc-btn" @click="tIndex = Math.max(0, tIndex - 1)"><el-icon><ArrowLeft /></el-icon></button>
+          <button class="tc-btn" @click="setTimeIndex(0)"><el-icon><DArrowLeft /></el-icon></button>
+          <button class="tc-btn" @click="setTimeIndex(Math.max(0, tIndex - 1))"><el-icon><ArrowLeft /></el-icon></button>
           <button class="tc-play" @click="playing = !playing"><el-icon><VideoPause v-if="playing" /><VideoPlay v-else /></el-icon></button>
-          <button class="tc-btn" @click="tIndex = Math.min(times.length - 1, tIndex + 1)"><el-icon><ArrowRight /></el-icon></button>
-          <button class="tc-btn" @click="tIndex = times.length - 1"><el-icon><DArrowRight /></el-icon></button>
+          <button class="tc-btn" @click="setTimeIndex(Math.min(axisTimes.length - 1, tIndex + 1))"><el-icon><ArrowRight /></el-icon></button>
+          <button class="tc-btn" @click="setTimeIndex(axisTimes.length - 1)"><el-icon><DArrowRight /></el-icon></button>
           <div class="tc-speed">
             <button v-for="s in [0.5, 1, 2, 4]" :key="s" :class="{ on: speed === s }" @click="speed = s">{{ s }}x</button>
           </div>
         </div>
-        <TimeAxis :times="times" :active="animPos" @update:active="v => { tIndex = v; animPos = v; }" :dark="dark" />
+        <TimeAxis :times="axisTimes" :active="animPos" @update:active="v => setTimeIndex(v)" :dark="dark" />
       </div>
     </div>
 
@@ -129,7 +128,7 @@
 <script setup>
 import { computed, inject, onBeforeUnmount, ref, watch } from "vue";
 import { ArrowLeft, ArrowRight, Check, CircleCheck, Close, Connection, DArrowLeft, DArrowRight, DataAnalysis, Document, FolderOpened, Grid, MapLocation, Monitor, Operation, Position, RefreshRight, VideoPlay, VideoPause } from "@element-plus/icons-vue";
-import { displayKeyFromParseResult, parseFile } from "../api";
+import { parseFile } from "../api";
 import MapBase from "../components/MapBase.vue";
 import MetaPanel from "../components/MetaPanel.vue";
 import TimeAxis from "../components/TimeAxis.vue";
@@ -168,7 +167,7 @@ const files = [
   { name: "himawari_20250616_1000.hsd", time: "2025-06-16 10:00", size: "380 MB", key: "himawari" }
 ];
 
-const processing = [
+const defaultProcessing = [
   { step: "下载", state: "成功", t: "06-16 09:58", ok: true },
   { step: "解析", state: "成功", t: "06-16 09:59", ok: true },
   { step: "渲染 PNG", state: "成功", t: "06-16 10:02", ok: true },
@@ -190,11 +189,6 @@ const propsOpen = ref(true);
 const active = ref("radar");
 const selected = ref(0);
 const file = ref(null);
-const fileInput = ref(null);
-const directoryInput = ref(null);
-const filesToParse = ref([]);
-const parseBusy = ref(false);
-const parseError = ref("");
 const path = ref("D:/weather_data/radar/");
 const projection = ref("等经纬");
 const basemap = ref("矢量底图");
@@ -202,23 +196,18 @@ const variable = ref("组合反射率 DBZH");
 const level = ref("500hPa");
 const tIndex = ref(5);
 const parsed = ref(null);
-const layerDisplays = ref({});
-const displayRefresh = ref({ himawari: 0 });
+const parsedLayerKey = ref(null);
+const parseProcessing = ref(null);
 const playing = ref(false);
 const speed = ref(1);
 const animPos = ref(tIndex.value);
 const linked = ref(false);
 const syncRect = ref(null);
-const sceneMode = ref('2D');
+const sceneMode = ref("2D");
 const emitterIdx = ref(-1);
-const sharedBorders = ref(false);
 const latestCam = {};
 let animTimer = null;
 let lastTs = null;
-
-function onToggleBorders() {
-  sharedBorders.value = !sharedBorders.value;
-}
 
 function onCameraChange(i, cam) {
   latestCam[i] = cam;
@@ -228,8 +217,74 @@ function onCameraChange(i, cam) {
 }
 
 watch(linked, v => {
-  if (v && latestCam[0]) { emitterIdx.value = 0; syncRect.value = latestCam[0]; }
+  if (v && latestCam[0]) {
+    emitterIdx.value = 0;
+    syncRect.value = latestCam[0];
+  }
 });
+
+const axisTimes = computed(() => defaultTimes);
+
+const parsedFrameCount = computed(() => {
+  if (!parsed.value || parsedLayerKey.value !== active.value) {
+    return defaultTimes.length;
+  }
+
+  const pngUrls =
+    parsed.value?.png_urls ||
+    parsed.value?.meta?.png_urls ||
+    parsed.value?.weather_info?.png_urls ||
+    parsed.value?.meta_json?.meta?.png_urls ||
+    parsed.value?.meta_json?.weather_info?.png_urls ||
+    parsed.value?.extra?.png_urls ||
+    [];
+
+  if (Array.isArray(pngUrls) && pngUrls.length) {
+    return pngUrls.length;
+  }
+
+  const parsedTimes =
+    parsed.value?.times ||
+    parsed.value?.meta?.times ||
+    parsed.value?.weather_info?.times ||
+    parsed.value?.meta_json?.meta?.times ||
+    parsed.value?.meta_json?.weather_info?.times ||
+    parsed.value?.extra?.times ||
+    [];
+
+  if (Array.isArray(parsedTimes) && parsedTimes.length) {
+    return parsedTimes.length;
+  }
+
+  return defaultTimes.length;
+});
+
+const layerTimeIndex = computed(() => {
+  const uiCount = defaultTimes.length;
+  const frameCount = parsedFrameCount.value;
+
+  if (frameCount <= 1 || uiCount <= 1) {
+    return 0;
+  }
+
+  const uiIndex = clampTimeIndex(tIndex.value);
+
+  // 前端时间轴保持原始 12 个刻度：00时、02时、...、22时。
+  // 这里把 12 个 UI 刻度映射到后端实际 N 张 PNG，
+  // 例如 N=48 时：00时≈step000，02时≈step004，...，22时≈step047。
+  return Math.round((uiIndex / (uiCount - 1)) * (frameCount - 1));
+});
+
+function clampTimeIndex(v) {
+  const max = Math.max(0, axisTimes.value.length - 1);
+  const n = Number.isFinite(Number(v)) ? Math.floor(Number(v)) : 0;
+  return Math.min(max, Math.max(0, n));
+}
+
+function setTimeIndex(v) {
+  tIndex.value = clampTimeIndex(v);
+  animPos.value = tIndex.value;
+}
 
 function startAnim() {
   clearInterval(animTimer);
@@ -238,69 +293,119 @@ function startAnim() {
     const now = Date.now();
     animPos.value += (now - lastTs) * speed.value / 600;
     lastTs = now;
-    if (animPos.value >= times.value.length) animPos.value = 0;
+    if (animPos.value >= axisTimes.value.length) animPos.value = 0;
     const floor = Math.floor(animPos.value);
-    if (floor !== tIndex.value) tIndex.value = floor;
+    if (floor !== tIndex.value) tIndex.value = clampTimeIndex(floor);
   }, 16);
 }
 
 watch(playing, v => {
-  if (v) { animPos.value = tIndex.value; startAnim(); }
-  else { clearInterval(animTimer); animPos.value = tIndex.value; }
+  if (v) {
+    animPos.value = tIndex.value;
+    startAnim();
+  } else {
+    clearInterval(animTimer);
+    animPos.value = tIndex.value;
+  }
 });
-watch(speed, () => { if (playing.value) lastTs = Date.now(); });
-watch(tIndex, v => { if (!playing.value) animPos.value = v; });
+
+watch(speed, () => {
+  if (playing.value) lastTs = Date.now();
+});
+
+watch(tIndex, v => {
+  if (!playing.value) animPos.value = clampTimeIndex(v);
+});
+
+watch(axisTimes, () => {
+  setTimeIndex(Math.min(tIndex.value, axisTimes.value.length - 1));
+});
+
 onBeforeUnmount(() => clearInterval(animTimer));
 
+function businessTypeToLayerKey(type) {
+  const t = String(type || "").toUpperCase();
+
+  if (t === "GFS" || t === "ECMWF" || t === "GFS/ECMWF") return "grib";
+  if (t === "ERA5") return "era5";
+  if (t === "CMA") return "cma";
+  if (t === "RADAR") return "radar";
+  if (t === "HIMAWARI") return "himawari";
+  if (t === "WRF") return "wrf";
+
+  return active.value;
+}
+
+function normalizeParsedMeta(result) {
+  if (!result) return null;
+
+  const panelMeta = result.meta || {};
+  const info = result.weather_info || {};
+
+  return {
+    file: result.file_name || panelMeta.file || info.file || "—",
+    element: panelMeta.element || info.element || "—",
+    time: panelMeta.time || info.time || "—",
+    level: panelMeta.level || info.level || "—",
+    range: panelMeta.range || info.range || "—",
+    grid: panelMeta.grid || info.grid || "—",
+    missing: panelMeta.missing || info.missing || "—",
+    unit: panelMeta.unit || info.unit || "—",
+    vars: panelMeta.vars || info.variables || "—",
+    steps: panelMeta.steps || info.steps || "—",
+    status: panelMeta.status || info.status || "—",
+    extent: panelMeta.extent || info.extent || result.extent || null,
+    png_url: result.png_url || panelMeta.png_url || info.png_url || null,
+    png_urls: result.png_urls || panelMeta.png_urls || info.png_urls || [],
+    times: result.times || panelMeta.times || info.times || [],
+  };
+}
+
 const meta = computed(() => {
-  const display = layerDisplays.value[active.value];
-  if (active.value === "himawari" && display?.meta_json) {
-    const firstVariable = display.variables?.[0] || display.meta_json.variables?.[0] || {};
-    const grid = display.grid || display.meta_json.grid;
-    const extent = display.extent || display.meta_json.extent;
-    return {
-      file: display.meta_json.scene_id,
-      element: firstVariable.name_zh || firstVariable.key,
-      time: display.meta_json.observation_time,
-      level: "等经纬网格 / EPSG:4326",
-      range: Array.isArray(extent) ? `${extent[0]}°E-${extent[2]}°E, ${extent[1]}°N-${extent[3]}°N` : undefined,
-      grid: grid ? `${grid.nx} × ${grid.ny}` : undefined,
-      unit: firstVariable.display_unit || firstVariable.unit,
-      missing: "NaN",
-      status: "解析完成",
-    };
+  if (parsed.value && parsedLayerKey.value === active.value) {
+    return normalizeParsedMeta(parsed.value);
   }
-  return parsed.value?.weather_info || parsed.value || infos[active.value];
+
+  return infos[active.value];
 });
+
+const processing = computed(() => {
+  if (parsed.value && parsedLayerKey.value === active.value && parseProcessing.value) {
+    return parseProcessing.value;
+  }
+
+  return defaultProcessing;
+});
+
 const variableOptions = computed(() => {
-  if (active.value === "himawari") {
-    const display = layerDisplays.value.himawari;
-    const items = [...(display?.composites || []), ...(display?.variables || [])];
-    if (items.length) return items.map(item => item.name_zh || item.key);
+  const text = meta.value?.element || infos[active.value]?.element || "";
+  return String(text).split("、").filter(Boolean);
+});
+
+function layerParsed(key) {
+  if (parsed.value && parsedLayerKey.value === key) {
+    return parsed.value;
   }
-  return infos[active.value].element.split("、");
-});
-const times = computed(() => {
-  const parsedTimes = parsed.value?.business_type === "WRF" ? parsed.value?.meta?.times : null;
-  if (!Array.isArray(parsedTimes) || parsedTimes.length === 0) return defaultTimes;
-  return parsedTimes.map((item) => {
-    const text = String(item);
-    const hour = text.match(/_(\d{2})[:_]\d{2}[:_]\d{2}$/)?.[1] ?? text.slice(11, 13);
-    return `${hour}时`;
-  });
-});
-const fileLabel = computed(() => {
-  if (!filesToParse.value.length) return "选择本地文件…";
-  if (filesToParse.value.length === 1) return filesToParse.value[0].name;
-  return `已选择 ${filesToParse.value.length} 个文件`;
-});
+
+  return null;
+}
+
+function layerInfo(key) {
+  if (parsed.value && parsedLayerKey.value === key) {
+    return normalizeParsedMeta(parsed.value) || infos[key];
+  }
+
+  return infos[key];
+}
 
 const panes = computed(() => {
   if (layout.value === "1") return sources.filter(s => s.key === active.value);
+
   if (layout.value === "2") {
     const idx = sources.findIndex(s => s.key === active.value);
     return [sources[idx], sources[(idx + 1) % sources.length]];
   }
+
   return ["radar", "himawari", "era5", "grib"].map(k => sources.find(s => s.key === k));
 });
 
@@ -319,64 +424,80 @@ function cycleLayout() {
 
 function openTool(name) {
   if (dockOpen.value && tool.value === name) dockOpen.value = false;
-  else { tool.value = name; dockOpen.value = true; }
+  else {
+    tool.value = name;
+    dockOpen.value = true;
+  }
+}
+
+function selectSource(key) {
+  active.value = key;
+  parsed.value = null;
+  parsedLayerKey.value = null;
+  parseProcessing.value = null;
 }
 
 function pickFile(i) {
   selected.value = i;
   active.value = files[i].key;
   parsed.value = null;
+  parsedLayerKey.value = null;
+  parseProcessing.value = null;
 }
 
 function choose(e) {
-  const selectedFiles = Array.from(e.target.files || []);
-  filesToParse.value = selectedFiles;
-  file.value = selectedFiles[0] || null;
-  parseError.value = "";
-  if (selectedFiles.length) {
-    const relativePath = selectedFiles[0].webkitRelativePath;
-    path.value = relativePath ? `本地目录：${relativePath.split("/")[0]}` : `本地选择：${selectedFiles.length} 个文件`;
-  }
-}
-
-function openLocalPicker() {
-  if (["himawari", "wrf"].includes(active.value)) directoryInput.value?.click();
-  else fileInput.value?.click();
+  file.value = e.target.files[0] || null;
 }
 
 async function parse() {
-  if (!filesToParse.value.length) return;
-  parseBusy.value = true;
-  parseError.value = "";
+  if (!file.value) return;
+
+  parseProcessing.value = [
+    { step: "上传/读取", state: "本地文件", t: new Date().toLocaleTimeString(), ok: true },
+    { step: "解析", state: "解析中", t: "", ok: false, running: true },
+    { step: "渲染 PNG", state: "等待", t: "", ok: false },
+    { step: "前端展示", state: "等待", t: "", ok: false },
+  ];
+
   try {
-    const result = await parseFile(filesToParse.value);
+    const result = await parseFile(file.value);
+
+    const businessType =
+      result?.business_type ||
+      result?.data_type ||
+      result?.meta?.business_type ||
+      result?.meta?.data_type;
+
+    const layerKey = businessTypeToLayerKey(businessType);
+
     parsed.value = result;
-    active.value = displayKeyFromParseResult(result, file.value?.name) || active.value;
-    if (result.business_type === "Himawari") {
-      displayRefresh.value = { ...displayRefresh.value, himawari: displayRefresh.value.himawari + 1 };
-    }
-    if (result.business_type === "WRF") {
-      layout.value = "1";
-      tIndex.value = 0;
-      animPos.value = 0;
-    }
+    parsedLayerKey.value = layerKey;
+    active.value = layerKey;
+
+    parseProcessing.value = [
+      { step: "上传/读取", state: "成功", t: new Date().toLocaleTimeString(), ok: true },
+      { step: "解析", state: "成功", t: new Date().toLocaleTimeString(), ok: true },
+      { step: "渲染 PNG", state: "成功", t: new Date().toLocaleTimeString(), ok: true },
+      { step: "前端展示", state: "完成", t: "实时", ok: true },
+    ];
+
+    setTimeIndex(0);
   } catch (err) {
-    parseError.value = err.message || "解析失败";
-  } finally {
-    parseBusy.value = false;
+    console.error("解析失败：", err);
+
+    parseProcessing.value = [
+      { step: "上传/读取", state: "成功", t: new Date().toLocaleTimeString(), ok: true },
+      { step: "解析", state: err?.message || "失败", t: new Date().toLocaleTimeString(), ok: false },
+      { step: "渲染 PNG", state: "未完成", t: "", ok: false },
+      { step: "前端展示", state: "未完成", t: "", ok: false },
+    ];
   }
 }
 
-function onLayerDisplayLoaded(key, data) {
-  layerDisplays.value = { ...layerDisplays.value, [key]: data };
-}
-
-function layerProps(key) {
-  if (key === "himawari") return { refreshKey: displayRefresh.value.himawari };
-  return {};
-}
-
-watch(active, () => { variable.value = variableOptions.value[0]; });
+watch(active, () => {
+  const opts = variableOptions.value;
+  variable.value = opts[0] || "";
+});
 </script>
 
 <style scoped>
@@ -412,7 +533,7 @@ watch(active, () => { variable.value = variableOptions.value[0]; });
 .files li.sel .dot { border-color: var(--accent); background: var(--accent); }
 .files b { display: block; font-size: 12px; font-weight: 500; word-break: break-all; }
 .files span { font-size: 11px; color: var(--muted); }
-.upload { width: 100%; padding: 8px; border: 1px dashed var(--border); border-radius: 10px; background: transparent; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; text-align: center; }
+.upload { padding: 8px; border: 1px dashed var(--border); border-radius: 10px; color: var(--muted); font-size: 12px; cursor: pointer; text-align: center; }
 .parse { width: 100%; }
 .hint { margin: 0; color: var(--muted); font-size: 11px; text-align: center; }
 .vars { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
@@ -431,6 +552,28 @@ watch(active, () => { variable.value = variableOptions.value[0]; });
 .maps { flex: 1; min-height: 0; display: grid; gap: 10px; }
 .cell { position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; }
 .cell .map-base { position: absolute; inset: 0; }
+.map-info {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 9px;
+  border-radius: 9px;
+  background: var(--glass);
+  backdrop-filter: blur(14px) saturate(150%);
+  -webkit-backdrop-filter: blur(14px) saturate(150%);
+  border: 1px solid var(--border);
+  font-size: 10px;
+  color: var(--muted);
+  pointer-events: none;
+  width: 180px;
+}
+.map-info span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.map-info b { color: var(--text); font-weight: 600; }
+
 .timebar { flex-shrink: 0; padding: 6px 14px 8px; overflow: hidden; }
 .tb-head { display: flex; align-items: center; gap: 6px; padding: 0 0 6px; }
 .tc-btn { display: grid; place-items: center; width: 24px; height: 24px; border: 1px solid var(--border); border-radius: 7px; background: var(--field); color: var(--muted); cursor: pointer; transition: 0.15s; }

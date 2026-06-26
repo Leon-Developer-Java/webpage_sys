@@ -179,13 +179,13 @@
 import { computed, ref } from "vue";
 import { DataAnalysis, Delete, Upload, WarningFilled } from "@element-plus/icons-vue";
 import MetaPanel from "../components/MetaPanel.vue";
-import { uploadFileResumable } from "../api.js";
+import { uploadFileResumable, parseFile } from "../api.js";
 
 const files = ref([]);
 const selected = ref(null);
 const dragging = ref(false);
 const input = ref(null);
-const tab = ref('upload');
+const tab = ref("upload");
 const dlgVisible = ref(false);
 const missingTypeFiles = ref([]);
 const pendingUpload = ref([]);
@@ -205,22 +205,63 @@ const checked = computed(() => files.value.filter(f => f.checked));
 const allChecked = computed(() => files.value.length > 0 && files.value.every(f => f.checked));
 const pqChecked = computed(() => parseQueue.value.filter(f => f.checked));
 const pqAllChecked = computed(() => parseQueue.value.length > 0 && parseQueue.value.every(f => f.checked));
+
 const cur = computed(() => {
   const f = files.value.find(f => f.id === selected.value);
-  return f?.status === 'done' ? f : null;
+  return f?.status === "done" ? f : null;
 });
+
 const stats = computed(() => [
-  { label: "已上传", val: files.value.filter(f => f.status === 'done').length, sub: "本次会话", cls: "" },
+  { label: "已上传", val: files.value.filter(f => f.status === "done").length, sub: "本次会话", cls: "" },
   { label: "数据库总量", val: "1,284", sub: "42.3 GB", cls: "" },
-  { label: "已解析", val: 847 + files.value.filter(f => f.status === 'done').length, sub: "36.1 GB", cls: "ok" },
-  { label: "待解析", val: parseQueue.value.filter(f => f.status === 'pending').length, sub: "等待处理", cls: "accent" },
+  { label: "已解析", val: 847 + files.value.filter(f => f.status === "done").length, sub: "36.1 GB", cls: "ok" },
+  { label: "待解析", val: parseQueue.value.filter(f => f.status === "pending").length, sub: "等待处理", cls: "accent" },
 ]);
 
-function fmtSize(b) { return b < 1048576 ? (b / 1024).toFixed(1) + " KB" : (b / 1048576).toFixed(1) + " MB"; }
-function fmtDate(ms) {
-  return new Date(ms).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+function fmtSize(b) {
+  return b < 1048576 ? (b / 1024).toFixed(1) + " KB" : (b / 1048576).toFixed(1) + " MB";
 }
-function now() { return new Date().toLocaleTimeString(); }
+
+function fmtDate(ms) {
+  return new Date(ms).toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+}
+
+function now() {
+  return new Date().toLocaleTimeString();
+}
+
+function buildMetaFromParsed(parsed, fallbackFile) {
+  const result = parsed || {};
+  const adapterResult = result.meta || {};
+  const panelMeta = adapterResult.meta || {};
+  const info = result.weather_info || adapterResult.weather_info || {};
+
+  return {
+    file: result.file_name || panelMeta.file || fallbackFile.name || "—",
+    element: panelMeta.element || info.element || "—",
+    time: panelMeta.time || info.time || "—",
+    level: panelMeta.level || info.level || "—",
+    range: panelMeta.range || info.range || "—",
+    grid: panelMeta.grid || info.grid || "—",
+    missing: panelMeta.missing || info.missing || "—",
+    unit: panelMeta.unit || info.unit || "—",
+    vars: panelMeta.vars || info.variables || "—",
+    steps: panelMeta.steps || info.steps || "—",
+    extent: panelMeta.extent || info.extent || adapterResult.extent || result.extent || "—",
+    png_url:
+      result.png_url ||
+      adapterResult.png_url ||
+      panelMeta.png_url ||
+      info.png_url ||
+      "—",
+  };
+}
 
 function addFiles(list) {
   const incoming = [...list].map(file => file.name);
@@ -228,24 +269,30 @@ function addFiles(list) {
   const hasDupInBatch = name => incoming.filter(n => n === name).length > 1;
   const existingNames = new Set(files.value.map(f => f.name));
 
-  files.value.forEach(f => { if (incomingSet.has(f.name)) f.dup = true; });
+  files.value.forEach(f => {
+    if (incomingSet.has(f.name)) {
+      f.dup = true;
+    }
+  });
 
   for (const file of list) {
     files.value.push({
       id: Date.now() + Math.random(),
       name: file.name,
-      fmt: file.name.includes('.') ? file.name.split('.').pop().toUpperCase() : '—',
+      fmt: file.name.includes(".") ? file.name.split(".").pop().toUpperCase() : "—",
       size: fmtSize(file.size),
-      created: '—',
-      modified: file.lastModified ? fmtDate(file.lastModified) : '—',
-      dataType: '',
-      status: 'pending',
+      created: "—",
+      modified: file.lastModified ? fmtDate(file.lastModified) : "—",
+      dataType: "",
+      status: "pending",
       checked: false,
       dup: existingNames.has(file.name) || hasDupInBatch(file.name),
       steps: [],
       meta: null,
       percent: 0,
       raw: file,
+      uploadResult: null,
+      parseResult: null,
     });
   }
 }
@@ -261,52 +308,117 @@ async function run(f) {
   ];
 
   try {
-    const data = await uploadFileResumable(f.raw, f.dataType, p => {
+    const uploadData = await uploadFileResumable(f.raw, f.dataType, p => {
       f.percent = p;
       f.steps[0].state = `上传中 ${Math.floor(p)}%`;
     });
-    f.steps[0].ok = true; f.steps[0].running = false; f.steps[0].state = "成功"; f.steps[0].t = now();
-    f.meta = {
-      file: data?.file_name ?? f.name,
-      element: "—", time: "—", level: "—", range: "—", grid: "—", unit: "—", missing: "—", vars: "—",
-      steps: `已上传至 ${data?.directory ?? "wait_process/"}`,
-    };
+
+    f.steps[0].ok = true;
+    f.steps[0].running = false;
+    f.steps[0].state = "成功";
+    f.steps[0].t = now();
+
+    f.steps[1].running = true;
+    f.steps[1].state = "解析中";
+
+    const parsedData = await parseFile(f.raw);
+
+    f.steps[1].ok = true;
+    f.steps[1].running = false;
+    f.steps[1].state = "成功";
+    f.steps[1].t = now();
+
+    f.steps[2].ok = true;
+    f.steps[2].running = false;
+    f.steps[2].state = "成功";
+    f.steps[2].t = now();
+
+    f.steps[3].ok = true;
+    f.steps[3].running = false;
+    f.steps[3].state = "完成";
+    f.steps[3].t = now();
+
+    f.meta = buildMetaFromParsed(parsedData, f);
+    f.uploadResult = uploadData;
+    f.parseResult = parsedData;
     f.status = "done";
-    if (!selected.value) selected.value = f.id;
+    selected.value = f.id;
   } catch (err) {
-    f.steps[0].ok = false; f.steps[0].running = false; f.steps[0].state = "失败";
+    const msg = err?.message || "失败";
+
+    const runningStep = f.steps.find(s => s.running);
+    if (runningStep) {
+      runningStep.ok = false;
+      runningStep.running = false;
+      runningStep.state = msg;
+    } else {
+      f.steps[0].ok = false;
+      f.steps[0].running = false;
+      f.steps[0].state = msg;
+    }
+
     f.status = "error";
-    console.error("上传失败：", err);
+    console.error("上传或解析失败：", err);
   }
 }
 
-function toggleAll(e) { files.value.forEach(f => { f.checked = e.target.checked; }); }
-function togglePqAll(e) { parseQueue.value.forEach(f => { if (f.status === 'pending') f.checked = e.target.checked; }); }
+function toggleAll(e) {
+  files.value.forEach(f => {
+    f.checked = e.target.checked;
+  });
+}
+
+function togglePqAll(e) {
+  parseQueue.value.forEach(f => {
+    if (f.status === "pending") {
+      f.checked = e.target.checked;
+    }
+  });
+}
 
 function deleteChecked() {
   const ids = new Set(checked.value.map(f => f.id));
-  if (ids.has(selected.value)) selected.value = null;
+
+  if (ids.has(selected.value)) {
+    selected.value = null;
+  }
+
   files.value = files.value.filter(f => !ids.has(f.id));
+
   const counts = {};
-  files.value.forEach(f => { counts[f.name] = (counts[f.name] || 0) + 1; });
-  files.value.forEach(f => { f.dup = counts[f.name] > 1; });
+  files.value.forEach(f => {
+    counts[f.name] = (counts[f.name] || 0) + 1;
+  });
+
+  files.value.forEach(f => {
+    f.dup = counts[f.name] > 1;
+  });
 }
 
 function uploadChecked() {
-  const sel = files.value.filter(f => f.checked && f.status === 'pending');
+  const sel = files.value.filter(f => f.checked && f.status === "pending");
   const withType = sel.filter(f => f.dataType);
   const withoutType = sel.filter(f => !f.dataType);
+
   if (withoutType.length === 0) {
-    withType.forEach(f => { f.checked = false; run(f); });
+    withType.forEach(f => {
+      f.checked = false;
+      run(f);
+    });
     return;
   }
+
   missingTypeFiles.value = withoutType.map(f => f.name);
   pendingUpload.value = withType;
   dlgVisible.value = true;
 }
 
 function doUpload() {
-  pendingUpload.value.forEach(f => { f.checked = false; run(f); });
+  pendingUpload.value.forEach(f => {
+    f.checked = false;
+    run(f);
+  });
+
   pendingUpload.value = [];
   missingTypeFiles.value = [];
   dlgVisible.value = false;
@@ -323,11 +435,23 @@ function deletePqChecked() {
 }
 
 function parsePqChecked() {
-  parseQueue.value.filter(f => f.checked && f.status === 'pending').forEach(f => { f.checked = false; f.status = 'parsing'; });
+  parseQueue.value
+    .filter(f => f.checked && f.status === "pending")
+    .forEach(f => {
+      f.checked = false;
+      f.status = "parsing";
+    });
 }
 
-function onDrop(e) { dragging.value = false; addFiles(e.dataTransfer.files); }
-function onPick(e) { addFiles(e.target.files); e.target.value = ""; }
+function onDrop(e) {
+  dragging.value = false;
+  addFiles(e.dataTransfer.files);
+}
+
+function onPick(e) {
+  addFiles(e.target.files);
+  e.target.value = "";
+}
 </script>
 
 <style scoped>
