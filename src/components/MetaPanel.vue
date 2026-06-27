@@ -33,10 +33,21 @@ const props = defineProps({
 
 const emit = defineEmits(["close"]);
 
+function normalizeExtraRows(rows) {
+  if (!Array.isArray(rows)) return [];
+  return rows.map((row) => {
+    if (Array.isArray(row)) {
+      const [key, label, value] = row;
+      return [key, label, value];
+    }
+    return [row.key, row.label, row.value];
+  });
+}
+
 const rows = computed(() => {
   const meta = props.meta || {};
   const info = meta.weather_info || meta;
-  return [
+  const baseRows = [
     ["file", "文件", info.file || meta.file?.name || meta.file_name || meta.source_file],
     ["element", "要素", info.element],
     ["time", "时间", info.time],
@@ -46,7 +57,10 @@ const rows = computed(() => {
     ["unit", "单位", info.unit],
     ["missing", "缺测", info.missing],
     ["status", "状态", info.status],
-  ]
+  ];
+  const extraRows = normalizeExtraRows(meta.extraRows || info.extraRows);
+
+  return [...baseRows, ...extraRows]
     .filter(([, , value]) => value !== undefined && value !== null && value !== "")
     .map(([key, label, value]) => ({ key, label, value }));
 });
@@ -131,7 +145,7 @@ const rows = computed(() => {
 /* ── 数据列表 ── */
 .meta-list {
   display: grid;
-  grid-template-columns: 58px 1fr;
+  grid-template-columns: 74px 1fr;
   gap: 7px 8px;
   margin: 0;
   font-size: 12px;

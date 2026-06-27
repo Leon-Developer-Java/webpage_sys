@@ -37,6 +37,7 @@ const props = defineProps({
   label: String,
   file: String,
 });
+const emit = defineEmits(["display-loaded"]);
 
 const API_BASE = "http://127.0.0.1:8002";
 const viewerRef = inject("cesiumViewer", ref(null));
@@ -54,7 +55,8 @@ let gridRequestId = 0;
 
 const products = computed(() => display.value?.grid_products ?? []);
 const currentProduct = computed(() => products.value.find((item) => item.key === selectedProductKey.value) ?? products.value[0] ?? null);
-const currentLevels = computed(() => currentProduct.value?.levels ?? []);
+const allLevels = computed(() => currentProduct.value?.levels ?? []);
+const currentLevels = computed(() => sampleHeightLevels(allLevels.value));
 const currentLevel = computed(() => currentLevels.value.find((item) => item.key === selectedLevelKey.value) ?? currentLevels.value[0] ?? null);
 const fallbackImageSrc = computed(() => props.src || toPublicUrl(display.value?.png) || display.value?.png_data_url || "");
 const imageExtent = computed(() => props.extent || currentLevel.value?.extent || currentProduct.value?.extent || display.value?.extent || display.value?.meta_json?.extent || [73, 15, 135, 55]);
@@ -115,10 +117,36 @@ function syncSelection() {
     selectedProductKey.value = products.value[0].key;
   }
 
-  const levels = currentProduct.value?.levels ?? [];
+  const levels = currentLevels.value;
   if (levels.length && !levels.some((item) => item.key === selectedLevelKey.value)) {
     selectedLevelKey.value = levels[0].key;
   }
+}
+
+function sampleHeightLevels(levels) {
+  if (!Array.isArray(levels) || levels.length === 0) return [];
+
+  const keep = new Set();
+  const add = (level) => {
+    if (level?.key) keep.add(level.key);
+  };
+  const isHeightLevel = (level) => level?.mode === "single_level" || /^level-\d+$/.test(String(level?.key || ""));
+  const heightLevels = levels.filter(isHeightLevel);
+
+  levels.forEach((level) => {
+    if (level?.key === "max" || level?.mode === "vertical_max") add(level);
+  });
+
+  if (heightLevels.length) {
+    heightLevels.forEach((level, index) => {
+      if (index % 5 === 0) add(level);
+    });
+    add(heightLevels[heightLevels.length - 1]);
+  } else if (!keep.size) {
+    levels.forEach(add);
+  }
+
+  return levels.filter((level) => keep.has(level.key));
 }
 
 function apiUrl(path) {
@@ -133,6 +161,85 @@ function toPublicUrl(path) {
   const normalized = String(path).replaceAll("\\", "/");
   const idx = normalized.indexOf("/data/");
   return idx >= 0 ? `${API_BASE}${normalized.slice(idx)}` : "";
+}
+
+function firstValue(...values) {
+  return values.find((value) => value !== undefined && value !== null && value !== "");
+}
+
+function formatSeconds(value) {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds <= 0) return "";
+  if (seconds % 3600 === 0) return `${seconds / 3600} 小时`;
+  if (seconds % 60 === 0) return `${seconds / 60} 分钟`;
+  return `${seconds} 秒`;
+}
+
+function formatResolution(info, spatial) {
+  if (info.resolution) return info.resolution;
+  const lon = Number(spatial?.resolution_lon);
+  const lat = Number(spatial?.resolution_lat);
+  if (Number.isFinite(lon) && Number.isFinite(lat)) {
+    return `${lon.toFixed(4)}° × ${lat.toFixed(4)}°`;
+  }
+  return "";
+}
+
+function formatStationSummary(stations) {
+  if (!Array.isArray(stations) || !stations.length) return "";
+  const names = stations.map((station) => station?.name).filter(Boolean);
+  if (!names.length) return `${stations.length} 个站点`;
+  return `${stations.length} 个：${names.join("、")}`;
+}
+
+function buildPanelMeta() {
+  const meta = display.value?.meta_json || {};
+  const info = { ...(meta.weather_info || {}), ...(display.value?.weather_info || {}) };
+  const spatial = meta.spatial || {};
+  const timeDetail = meta.time_detail || {};
+  const formatSpecific = meta.format_specific || {};
+  const stations = formatSpecific.stations || [];
+  const selectedInfo = {
+    ...info,
+    element: currentProduct.value?.label || info.element,
+    level: currentLevel.value?.label || info.level,
+    unit: currentProduct.value?.unit || info.unit,
+    status: statusText.value || info.status,
+  };
+
+  return {
+    ...meta,
+    business_type: "Radar",
+    data_type: "Radar",
+    weather_info: selectedInfo,
+    extraRows: [
+      ["product", "产品", firstValue(info.product, currentProduct.value?.label)],
+      ["timeResolution", "时间分辨率", formatSeconds(timeDetail.step_seconds)],
+      ["steps", "时次数", info.steps],
+      ["resolution", "空间分辨率", formatResolution(info, spatial)],
+      ["validGrid", "有效格点", info.validGrid],
+      ["coverage", "覆盖率", info.coverage],
+      ["max", "最大值", info.max],
+      ["mean", "平均值", info.mean],
+      ["min", "最小值", info.min],
+      ["quality", "质量", info.quality],
+      ["alert", "预警", info.alert],
+      ["stations", "雷达站", formatStationSummary(stations)],
+      ["variables", "产品数量", firstValue(info.variables, info.vars)],
+      ["levelCount", "高度层数", Array.isArray(meta.levels) && meta.levels.length ? `${meta.levels.length} 层` : ""],
+    ],
+  };
+}
+
+function emitDisplayLoaded() {
+  if (!display.value) return;
+  emit("display-loaded", {
+    ...display.value,
+    meta: buildPanelMeta(),
+    file: resolvedFile.value,
+    product: currentProduct.value,
+    level: currentLevel.value,
+  });
 }
 
 function zoomToData() {
@@ -196,6 +303,7 @@ async function loadRadarDisplay() {
     syncSelection();
     loadGrid();
     error.value = "";
+    emitDisplayLoaded();
   } catch (err) {
     error.value = "雷达数据未加载";
     console.error(err);
@@ -213,6 +321,10 @@ onBeforeUnmount(() => {
 
 watch(products, syncSelection);
 watch(selectedProductKey, syncSelection);
+watch(
+  () => [display.value, currentProduct.value?.key, currentLevel.value?.key, gridLoading.value, gridError.value, error.value],
+  emitDisplayLoaded,
+);
 watch(
   () => [currentProduct.value?.key, currentLevel.value?.key, currentLevel.value?.grid_url],
   loadGrid,

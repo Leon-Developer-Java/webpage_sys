@@ -365,8 +365,10 @@ const meta = computed(() => {
   if (parsed.value && parsedLayerKey.value === active.value) {
     return normalizeParsedMeta(parsed.value);
   }
-
-  return infos[active.value];
+  if (active.value === "radar" && display?.meta) {
+    return display.meta;
+  }
+  return parsed.value?.weather_info || parsed.value || infos[active.value];
 });
 
 const processing = computed(() => {
