@@ -19,7 +19,6 @@
 </template>
 
 <script setup>
-import { Rectangle, SingleTileImageryProvider } from "cesium";
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import LayerCard from "../components/LayerCard.vue";
 import WebglLayer from "../components/WebglLayer.vue";
@@ -33,7 +32,7 @@ const props = defineProps({
 const emit = defineEmits(["display-loaded"]);
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8002";
-const viewerRef = inject("cesiumViewer", ref(null));
+const surface = inject("mapSurface", null);
 const flyToExtent = inject("flyToExtent", null);
 const layerRefreshKeys = inject("layerRefreshKeys", ref({}));
 
@@ -46,7 +45,6 @@ const selectedVariable = ref("");
 const loading = ref(false);
 const error = ref("");
 
-let imageryLayer = null;
 let renderCanvas = null;
 let gl = null;
 let program = null;
@@ -264,15 +262,12 @@ function colorRamp(t) {
 }
 
 function removeImageryLayer() {
-  const viewer = viewerRef?.value;
-  if (viewer && imageryLayer) viewer.imageryLayers.remove(imageryLayer, true);
-  imageryLayer = null;
+  surface?.clear();
 }
 
 function applyImageryLayer() {
-  const viewer = viewerRef?.value;
   const payload = grid.value;
-  if (!viewer || !payload?.extent || !payload?.values?.length) return;
+  if (!payload?.extent || !payload?.values?.length) { surface?.clear(); return; }
 
   const [west, south, east, north] = payload.extent.map(Number);
   if ([west, south, east, north].some(value => !Number.isFinite(value)) || west >= east || south >= north) {
@@ -280,24 +275,10 @@ function applyImageryLayer() {
     return;
   }
 
-  removeImageryLayer();
-  try {
-    const imageUrl = renderGridImage(payload);
-    imageryLayer = viewer.imageryLayers.addImageryProvider(new SingleTileImageryProvider({
-      url: imageUrl,
-      rectangle: Rectangle.fromDegrees(west, south, east, north),
-      tileWidth: payload.width,
-      tileHeight: payload.height,
-    }));
-    imageryLayer.alpha = 1;
-    const dx = Math.max((east - west) * 0.35, 0.5);
-    const dy = Math.max((north - south) * 0.35, 0.5);
-    flyToExtent?.([Math.max(-180, west - dx), Math.max(-90, south - dy), Math.min(180, east + dx), Math.min(90, north + dy)]);
-    viewer.scene.requestRender();
-  } catch (err) {
-    error.value = "ERA5 layer failed";
-    console.error("ERA5 Cesium imagery layer failed", err);
-  }
+  surface?.setData(renderGridImage(payload), [west, south, east, north], 1);
+  const dx = Math.max((east - west) * 0.35, 0.5);
+  const dy = Math.max((north - south) * 0.35, 0.5);
+  flyToExtent?.([Math.max(-180, west - dx), Math.max(-90, south - dy), Math.min(180, east + dx), Math.min(90, north + dy)]);
 }
 
 function emitDisplayLoaded() {
@@ -349,7 +330,6 @@ async function loadDisplay(variableName = selectedVariable.value) {
 }
 
 onMounted(loadDisplay);
-watch(() => viewerRef?.value, () => applyImageryLayer());
 watch(refreshKey, () => loadDisplay());
 watch(selectedVariable, value => {
   if (!syncingSelection && value && value !== grid.value?.variable) loadDisplay(value);

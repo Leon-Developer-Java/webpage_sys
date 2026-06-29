@@ -1,16 +1,9 @@
 <template>
   <WebglLayer :src="imageUrl" :extent="extent" />
-
-  <div class="layer-legend">
-    <small>{{ legendTitle }}</small>
-    <div class="legend-bar" :style="{ background: gradient }"></div>
-    <ul>
-      <li v-for="t in ticks" :key="t">{{ t }}</li>
-    </ul>
-  </div>
 </template>
 
 <script setup>
+import { inject, onMounted } from "vue";
 import WebglLayer from "../components/WebglLayer.vue";
 
 // 成员2：GFS / ECMWF 数据层
@@ -25,9 +18,12 @@ const imageUrl = `${BACKEND_BASE}/data/GFS/wait_process/053031.grib.png`;
 // extent = [west, south, east, north]
 const extent = [114, 27, 123, 35];
 
-const legendTitle = "2m temperature (°C)";
-const gradient = "linear-gradient(to right, #1e40af, #0ea5e9, #22c55e, #facc15, #ef4444)";
-const ticks = ["14", "20", "25", "30", "34"];
+const flyToExtent = inject("flyToExtent", null);
+onMounted(() => {
+  const [w, s, e, n] = extent;
+  const dx = Math.max((e - w) * 0.35, 0.5), dy = Math.max((n - s) * 0.35, 0.5);
+  flyToExtent?.([w - dx, s - dy, e + dx, n + dy]);
+});
 </script>
 <!--<template>-->
 <!--  &lt;!&ndash; GFS / ECMWF 后端 PNG 叠加层 &ndash;&gt;-->

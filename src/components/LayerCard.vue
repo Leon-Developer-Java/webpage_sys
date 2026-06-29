@@ -24,9 +24,6 @@
         <button title="缩小" @click="controls.zoomOut()"><el-icon><Minus /></el-icon></button>
         <button title="复位" @click="controls.home()"><el-icon><Aim /></el-icon></button>
         <button title="全屏" @click="controls.full()"><el-icon><FullScreen /></el-icon></button>
-        <button :class="{ on: controls.borders?.value }" title="国界/省界叠加" @click="controls.toggleBorders()">
-          <b class="lc-dim">界</b>
-        </button>
       </div>
     </div>
 

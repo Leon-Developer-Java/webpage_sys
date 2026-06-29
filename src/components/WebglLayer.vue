@@ -3,7 +3,6 @@
 </template>
 
 <script setup>
-import { ImageryLayer, Rectangle, SingleTileImageryProvider } from "cesium";
 import { inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 const props = defineProps({
@@ -14,18 +13,11 @@ const props = defineProps({
   height: Number,
   product: String,
   missing: { type: Number, default: -9999 },
-  viewer: Object,
   alpha: { type: Number, default: 1 },
 });
 const canvas = ref(null);
-const viewerRef = inject("cesiumViewer", ref(null));
-let gl, program, texture, hasTex = false;
-let renderMode = 0;
-let textureVersion = 0;
-let uModeLoc = null;
-let uMissingLoc = null;
-let imageryLayer = null;
-let imageryViewer = null;
+const surface = inject("mapSurface", null);
+let gl, program, texture, hasTex = false, renderMode = 0, textureVersion = 0, uModeLoc = null, uMissingLoc = null;
 
 const vert = `#version 300 es
 in vec2 aPos;
@@ -83,7 +75,6 @@ void main(){
     frag = texture(uTex, vec2(vUv.x, 1.0 - vUv.y));
     return;
   }
-
   float value = texture(uTex, vUv).r;
   frag = uMode == 2 ? velocity(value) : reflectivity(value);
 }`;
@@ -92,88 +83,33 @@ function compile(type, source) {
   const shader = gl.createShader(type);
   gl.shaderSource(shader, source);
   gl.compileShader(shader);
-  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-    throw new Error(gl.getShaderInfoLog(shader) || "WebGL shader 编译失败");
-  }
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader) || "WebGL shader 编译失败");
   return shader;
 }
 
 function setCanvasSize(width, height) {
-  const nextWidth = Math.max(1, Number(width) || 1);
-  const nextHeight = Math.max(1, Number(height) || 1);
-  if (canvas.value.width !== nextWidth) canvas.value.width = nextWidth;
-  if (canvas.value.height !== nextHeight) canvas.value.height = nextHeight;
-  gl.viewport(0, 0, nextWidth, nextHeight);
+  const w = Math.max(1, Number(width) || 1), h = Math.max(1, Number(height) || 1);
+  if (canvas.value.width !== w) canvas.value.width = w;
+  if (canvas.value.height !== h) canvas.value.height = h;
+  gl.viewport(0, 0, w, h);
 }
 
-function currentRectangle() {
-  const [west, south, east, north] = props.extent ?? [];
-  const values = [west, south, east, north].map(Number);
-  if (values.some((item) => !Number.isFinite(item))) return null;
-  if (values[0] >= values[2] || values[1] >= values[3]) return null;
-  return Rectangle.fromDegrees(values[0], values[1], values[2], values[3]);
-}
-
-function currentViewer() {
-  return props.viewer || viewerRef?.value || null;
-}
-
-function removeImageryLayer() {
-  if (imageryViewer && imageryLayer) {
-    try {
-      imageryViewer.imageryLayers.remove(imageryLayer, true);
-      imageryViewer.scene.requestRender();
-    } catch {
-      // The owning Cesium viewer may already be destroyed during projection changes.
-    }
-  }
-  imageryLayer = null;
-  imageryViewer = null;
-}
-
-function updateCesiumLayer() {
-  const viewer = currentViewer();
-  const rectangle = currentRectangle();
-  if (!viewer || !hasTex || !rectangle) {
-    removeImageryLayer();
-    return;
-  }
-
-  let url = "";
-  try {
-    gl.finish();
-    url = canvas.value.toDataURL("image/png");
-  } catch (err) {
-    console.error("WebGL 渲染结果导出失败", err);
-    removeImageryLayer();
-    return;
-  }
-
-  removeImageryLayer();
-  imageryLayer = new ImageryLayer(new SingleTileImageryProvider({
-    url,
-    rectangle,
-    tileWidth: canvas.value.width,
-    tileHeight: canvas.value.height,
-  }));
-  imageryLayer.alpha = Math.min(1, Math.max(0, Number(props.alpha) || 0));
-  viewer.imageryLayers.add(imageryLayer);
-  imageryViewer = viewer;
-  viewer.scene.requestRender();
+function pushSurface() {
+  if (!surface) return;
+  if (!hasTex) { surface.setData(null); return; }
+  gl.finish();
+  surface.setData(canvas.value.toDataURL("image/png"), props.extent, props.alpha);
 }
 
 function draw() {
   if (!gl) return;
   gl.clear(gl.COLOR_BUFFER_BIT);
-  if (!hasTex) {
-    updateCesiumLayer();
-    return;
-  }
+  if (!hasTex) { pushSurface(); return; }
   gl.useProgram(program);
   gl.uniform1i(uModeLoc, renderMode);
   gl.uniform1f(uMissingLoc, props.missing);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-  updateCesiumLayer();
+  pushSurface();
 }
 
 function bindCommonTextureParams(filter) {
@@ -199,38 +135,19 @@ function loadImageTexture() {
     hasTex = true;
     draw();
   };
-  image.onerror = () => {
-    if (currentVersion !== textureVersion) return;
-    hasTex = false;
-    draw();
-  };
+  image.onerror = () => { if (currentVersion === textureVersion) { hasTex = false; draw(); } };
   image.src = props.src;
 }
 
 function loadGridTexture() {
   ++textureVersion;
-  if (!props.values || !props.width || !props.height) {
-    hasTex = false;
-    draw();
-    return;
-  }
-
+  if (!props.values || !props.width || !props.height) { hasTex = false; draw(); return; }
   setCanvasSize(props.width, props.height);
   texture = texture || gl.createTexture();
   gl.activeTexture(gl.TEXTURE0);
   gl.bindTexture(gl.TEXTURE_2D, texture);
   gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-  gl.texImage2D(
-    gl.TEXTURE_2D,
-    0,
-    gl.R32F,
-    props.width,
-    props.height,
-    0,
-    gl.RED,
-    gl.FLOAT,
-    props.values,
-  );
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, props.width, props.height, 0, gl.RED, gl.FLOAT, props.values);
   bindCommonTextureParams(gl.NEAREST);
   renderMode = props.product === "VRAD" ? 2 : 1;
   hasTex = true;
@@ -240,14 +157,9 @@ function loadGridTexture() {
 function updateTexture() {
   if (!gl) return;
   hasTex = false;
-  if (props.values && props.width && props.height) {
-    loadGridTexture();
-  } else if (props.src) {
-    loadImageTexture();
-  } else {
-    ++textureVersion;
-    draw();
-  }
+  if (props.values && props.width && props.height) loadGridTexture();
+  else if (props.src) loadImageTexture();
+  else { ++textureVersion; draw(); }
 }
 
 onMounted(() => {
@@ -257,9 +169,7 @@ onMounted(() => {
   gl.attachShader(program, compile(gl.VERTEX_SHADER, vert));
   gl.attachShader(program, compile(gl.FRAGMENT_SHADER, frag));
   gl.linkProgram(program);
-  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-    throw new Error(gl.getProgramInfoLog(program) || "WebGL program 链接失败");
-  }
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program) || "WebGL program 链接失败");
   gl.useProgram(program);
   gl.uniform1i(gl.getUniformLocation(program, "uTex"), 0);
   uModeLoc = gl.getUniformLocation(program, "uMode");
@@ -276,27 +186,12 @@ onMounted(() => {
   updateTexture();
 });
 
-watch(
-  () => [props.src, props.values, props.width, props.height, props.product, props.missing],
-  updateTexture,
-);
-
-watch(() => props.extent, updateCesiumLayer, { deep: true });
-
-watch(() => props.viewer, updateCesiumLayer);
-
-watch(() => props.alpha, updateCesiumLayer);
-
-watch(
-  () => viewerRef?.value,
-  (viewer) => {
-    if (viewer) updateCesiumLayer();
-    else removeImageryLayer();
-  },
-);
+watch(() => [props.src, props.values, props.width, props.height, props.product, props.missing], updateTexture);
+watch(() => props.alpha, pushSurface);
+watch(() => props.extent, pushSurface, { deep: true });
 
 onBeforeUnmount(() => {
-  removeImageryLayer();
+  surface?.clear();
   if (texture && gl) gl.deleteTexture(texture);
 });
 </script>

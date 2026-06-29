@@ -6,16 +6,15 @@
       <button :class="{ on: propsOpen }" @click="propsOpen = !propsOpen"><el-icon><Document /></el-icon><span>信息</span></button>
       <button :class="{ on: dockOpen && tool === 'proj' }" @click="openTool('proj')"><el-icon><Position /></el-icon><span>投影</span></button>
       <button :class="{ on: dockOpen && tool === 'base' }" @click="openTool('base')"><el-icon><MapLocation /></el-icon><span>底图</span></button>
-      <button :class="{ on: showGrid }" @click="showGrid = !showGrid"><el-icon><Grid /></el-icon><span>网格</span></button>
+      <button :class="{ on: showGrid }" @click="showGrid = !showGrid"><el-icon><Grid /></el-icon><span>经纬网</span></button>
+      <button :class="{ on: showVector }" @click="showVector = !showVector"><b class="dim-icon">界</b><span>边界</span></button>
+      <button :class="{ on: mapDark }" @click="mapDark = !mapDark"><el-icon><Moon /></el-icon><span>暗色</span></button>
       <button @click="cycleLayout">
         <el-icon><Monitor v-if="layout === '1'" /><Operation v-else-if="layout === '2'" /><Grid v-else /></el-icon>
         <span>{{ { '1': '单屏', '2': '双屏', '4': '四屏' }[layout] }}</span>
       </button>
       <button v-if="layout !== '1'" :class="{ on: linked }" @click="linked = !linked">
         <el-icon><Connection /></el-icon><span>联动</span>
-      </button>
-      <button @click="sceneMode = sceneMode === '2D' ? '3D' : '2D'">
-        <b class="dim-icon">{{ sceneMode }}</b><span>视角</span>
       </button>
     </aside>
 
@@ -55,12 +54,10 @@
           <button
             v-for="p in projections" :key="p"
             :class="{ on: projection === p }"
-            :disabled="!PROJ_SUPPORTED.has(p)"
             @click="projection = p"
           >
             <span>{{ p }}</span>
             <el-icon v-if="projection === p"><Check /></el-icon>
-            <span v-else-if="!PROJ_SUPPORTED.has(p)" class="soon-tag">暂不支持</span>
           </button>
         </div>
       </template>
@@ -77,15 +74,15 @@
 
     <div class="center">
       <div class="maps" :style="mapsGrid">
-        <div :class="['cell', { 'cell-4': layout === '4' }]" v-for="(p, i) in panes" :key="layout + '-' + p.key">
+        <div :class="['cell', { 'cell-4': layout === '4' }]" v-for="(p, i) in panes" :key="layout + '-' + i">
           <MapBase
             :grid="showGrid"
-            :dark="dark"
+            :dark="mapDark"
+            :vector="showVector"
             :basemap="basemap"
-            :mode="sceneMode"
             :projection="projection"
-            :syncRect="linked && emitterIdx !== i ? syncRect : null"
-            @camera-change="cam => onCameraChange(i, cam)"
+            :sync-view="linked && emitterIdx !== i ? syncView : null"
+            @view-change="v => onViewChange(i, v)"
           >
             <component
               :is="p.comp"
@@ -93,11 +90,6 @@
               :time-index="layerTimeIndex"
             />
           </MapBase>
-          <div v-if="layout !== '4'" class="map-info">
-            <span><b>{{ p.btn }}</b></span>
-            <span><b>{{ layerInfo(p.key).file }}</b></span>
-            <span>{{ projection }}</span>
-          </div>
         </div>
       </div>
 
@@ -127,7 +119,7 @@
 
 <script setup>
 import { computed, inject, onBeforeUnmount, ref, watch } from "vue";
-import { ArrowLeft, ArrowRight, Check, CircleCheck, Close, Connection, DArrowLeft, DArrowRight, DataAnalysis, Document, FolderOpened, Grid, MapLocation, Monitor, Operation, Position, RefreshRight, VideoPlay, VideoPause } from "@element-plus/icons-vue";
+import { ArrowLeft, ArrowRight, Check, CircleCheck, Close, Connection, DArrowLeft, DArrowRight, DataAnalysis, Document, FolderOpened, Grid, MapLocation, Monitor, Moon, Operation, Position, RefreshRight, VideoPlay, VideoPause } from "@element-plus/icons-vue";
 import { parseFile } from "../api";
 import MapBase from "../components/MapBase.vue";
 import MetaPanel from "../components/MetaPanel.vue";
@@ -175,8 +167,7 @@ const defaultProcessing = [
 ];
 
 const versions = ["文件存储：原始数据 + meta.json + PNG", "前端渲染：PNG 显示（后续升级 WebGL2）", "数据处理：后端完成、前端轻展示"];
-const projections = ["墨卡托", "等经纬", "兰博托", "罗宾逊", "正弦", "卫星正视"];
-const PROJ_SUPPORTED = new Set(["墨卡托", "等经纬"]);
+const projections = ["等经纬", "墨卡托", "正弦", "罗宾逊", "兰博托", "卫星正视", "北极", "南极"];
 const basemaps = ["矢量底图", "影像底图", "地形晕渲", "全球境界"];
 const levels = ["地面", "850hPa", "500hPa", "200hPa"];
 const defaultTimes = ["00时", "02时", "04时", "06时", "08时", "10时", "12时", "14时", "16时", "18时", "20时", "22时"];
@@ -202,24 +193,25 @@ const playing = ref(false);
 const speed = ref(1);
 const animPos = ref(tIndex.value);
 const linked = ref(false);
-const syncRect = ref(null);
-const sceneMode = ref("2D");
+const syncView = ref(null);
+const showVector = ref(false);
+const mapDark = ref(dark.value);
 const emitterIdx = ref(-1);
-const latestCam = {};
+const latestView = {};
 let animTimer = null;
 let lastTs = null;
 
-function onCameraChange(i, cam) {
-  latestCam[i] = cam;
+function onViewChange(i, view) {
+  latestView[i] = view;
   if (!linked.value) return;
   emitterIdx.value = i;
-  syncRect.value = cam;
+  syncView.value = view;
 }
 
 watch(linked, v => {
-  if (v && latestCam[0]) {
+  if (v && latestView[0]) {
     emitterIdx.value = 0;
-    syncRect.value = latestCam[0];
+    syncView.value = latestView[0];
   }
 });
 
@@ -365,9 +357,6 @@ const meta = computed(() => {
   if (parsed.value && parsedLayerKey.value === active.value) {
     return normalizeParsedMeta(parsed.value);
   }
-  if (active.value === "radar" && display?.meta) {
-    return display.meta;
-  }
   return parsed.value?.weather_info || parsed.value || infos[active.value];
 });
 
@@ -390,14 +379,6 @@ function layerParsed(key) {
   }
 
   return null;
-}
-
-function layerInfo(key) {
-  if (parsed.value && parsedLayerKey.value === key) {
-    return normalizeParsedMeta(parsed.value) || infos[key];
-  }
-
-  return infos[key];
 }
 
 const panes = computed(() => {
@@ -554,27 +535,6 @@ watch(active, () => {
 .maps { flex: 1; min-height: 0; display: grid; gap: 10px; }
 .cell { position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; }
 .cell .map-base { position: absolute; inset: 0; }
-.map-info {
-  position: absolute;
-  top: 10px;
-  left: 10px;
-  z-index: 5;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  padding: 6px 9px;
-  border-radius: 9px;
-  background: var(--glass);
-  backdrop-filter: blur(14px) saturate(150%);
-  -webkit-backdrop-filter: blur(14px) saturate(150%);
-  border: 1px solid var(--border);
-  font-size: 10px;
-  color: var(--muted);
-  pointer-events: none;
-  width: 180px;
-}
-.map-info span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.map-info b { color: var(--text); font-weight: 600; }
 
 .timebar { flex-shrink: 0; padding: 6px 14px 8px; overflow: hidden; }
 .tb-head { display: flex; align-items: center; gap: 6px; padding: 0 0 6px; }

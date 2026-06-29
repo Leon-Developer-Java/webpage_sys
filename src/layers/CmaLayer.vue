@@ -10,7 +10,6 @@
 </template>
 
 <script setup>
-import { Rectangle, SingleTileImageryProvider } from "cesium";
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import LayerCard from "../components/LayerCard.vue";
 
@@ -21,7 +20,7 @@ const props = defineProps({
 });
 const emit = defineEmits(["display-loaded"]);
 
-const viewerRef = inject("cesiumViewer", ref(null));
+const surface = inject("mapSurface", null);
 const flyToExtent = inject("flyToExtent", null);
 const layerRefreshKeys = inject("layerRefreshKeys", ref({}));
 const colors = ["#1d4ed8", "#0891b2", "#16a34a", "#facc15", "#dc2626"];
@@ -37,7 +36,6 @@ const renderStatus = ref("等待 CMA 数据");
 const layerStatus = ref("等待地图图层");
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8002";
 
-let imageryLayer = null;
 let renderCanvas = null;
 let gl = null;
 let program = null;
@@ -230,44 +228,23 @@ function colorRamp(t) {
 }
 
 function removeImageryLayer() {
-  const viewer = viewerRef?.value;
-  if (viewer && imageryLayer) viewer.imageryLayers.remove(imageryLayer, true);
-  imageryLayer = null;
+  surface?.clear();
   layerStatus.value = "地图图层未添加";
 }
 
 function applyImageryLayer() {
-  const viewer = viewerRef?.value;
   const payload = grid.value;
-  if (!viewer) {
-    layerStatus.value = "等待 Cesium 地图初始化";
-    return;
-  }
   if (!payload?.extent || !payload?.values?.length) {
     layerStatus.value = "没有可叠加的格点数据";
+    surface?.clear();
     return;
   }
-
-  removeImageryLayer();
   const [west, south, east, north] = payload.extent;
-  const imageUrl = renderGridImage(payload);
-  try {
-    imageryLayer = viewer.imageryLayers.addImageryProvider(new SingleTileImageryProvider({
-      url: imageUrl,
-      rectangle: Rectangle.fromDegrees(west, south, east, north),
-      tileWidth: payload.width,
-      tileHeight: payload.height,
-    }));
-    imageryLayer.alpha = 1;
-    layerStatus.value = `Cesium 图层已添加：${west.toFixed(3)}, ${south.toFixed(3)} - ${east.toFixed(3)}, ${north.toFixed(3)}`;
-    const dx = Math.max((east - west) * 0.35, 0.5);
-    const dy = Math.max((north - south) * 0.35, 0.5);
-    flyToExtent?.([Math.max(-180, west - dx), Math.max(-90, south - dy), Math.min(180, east + dx), Math.min(90, north + dy)]);
-    viewer.scene.requestRender();
-  } catch (err) {
-    console.error("CMA Cesium imagery layer failed", err);
-    layerStatus.value = `Cesium 图层添加失败：${err?.message || err}`;
-  }
+  surface?.setData(renderGridImage(payload), payload.extent, 1);
+  layerStatus.value = `图层已添加：${west.toFixed(3)}, ${south.toFixed(3)} - ${east.toFixed(3)}, ${north.toFixed(3)}`;
+  const dx = Math.max((east - west) * 0.35, 0.5);
+  const dy = Math.max((north - south) * 0.35, 0.5);
+  flyToExtent?.([Math.max(-180, west - dx), Math.max(-90, south - dy), Math.min(180, east + dx), Math.min(90, north + dy)]);
 }
 
 function emitDisplay(display) {
@@ -315,7 +292,6 @@ async function loadDisplay(variableName = selectedVariable.value) {
 
 onMounted(() => loadDisplay());
 
-watch(() => viewerRef?.value, () => applyImageryLayer());
 watch(selectedVariable, value => {
   if (value) loadDisplay(value);
 });
