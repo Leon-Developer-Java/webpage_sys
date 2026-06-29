@@ -48,7 +48,7 @@ let viewLon = LON0, orthoLat = ORTHO_LAT0;
 let dragging = false, lastX = 0, lastY = 0, ro;
 
 function centerLon() { return (PROJ[props.projection] ?? 0) === 5 ? viewLon : LON0; }
-let mosaicToken = 0, mosaicTimer = 0, animRAF = 0, applyingSync = false;
+let mosaicToken = 0, mosaicTimer = 0, animRAF = 0, applyingSync = false, dataTextureToken = 0;
 const tileCache = new Map();
 
 const quadVert = `#version 300 es
@@ -340,15 +340,20 @@ function makeTexture(source, slot, lonBox, merc) {
   if (slot === 0) { baseTex = tex; hasBase = true; baseBox = lonBox; baseMerc = !!merc; } else { dataTex = tex; hasData = true; }
 }
 
-function loadImage(url, cb) {
+function loadDataTexture(url, token) {
   const img = new Image();
   img.crossOrigin = "anonymous";
-  img.onload = () => cb(img);
+  img.onload = () => {
+    if (token !== dataTextureToken) return;
+    makeTexture(img, 1);
+    render();
+  };
+  img.onerror = () => {
+    if (token !== dataTextureToken) return;
+    hasData = false;
+    render();
+  };
   img.src = url;
-}
-
-function loadDataTexture(url) {
-  loadImage(url, img => { makeTexture(img, 1); render(); });
 }
 
 function visibleBox() {
@@ -558,7 +563,7 @@ onMounted(() => {
   fitView();
   if (props.tileUrl) scheduleMosaic();
   if (props.vector) loadVectors();
-  if (props.data?.src) loadDataTexture(props.data.src);
+  if (props.data?.src) loadDataTexture(props.data.src, ++dataTextureToken);
   ro = new ResizeObserver(resize);
   ro.observe(box.value);
   canvas.value.addEventListener("pointerdown", onDown);
@@ -571,7 +576,12 @@ watch(() => props.projection, () => { viewLon = LON0; orthoLat = ORTHO_LAT0; fit
 watch(() => [props.grid, props.dark], render);
 watch(() => props.tileUrl, v => { hasBase = false; ++mosaicToken; if (v) scheduleMosaic(); else render(); });
 watch(() => props.vector, v => { if (v) { if (allLines.length) rebuildLines(); else loadVectors(); } render(); });
-watch(() => props.data, () => { hasData = false; if (props.data?.src) loadDataTexture(props.data.src); else render(); }, { deep: true });
+watch(() => props.data, () => {
+  ++dataTextureToken;
+  hasData = false;
+  render();
+  if (props.data?.src) loadDataTexture(props.data.src, dataTextureToken);
+}, { deep: true });
 watch(() => props.syncView, v => {
   if (!v || applyingSync) return;
   applyingSync = true;

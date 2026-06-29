@@ -159,7 +159,6 @@ const variables = [
 const domain = ref("d02");
 const variable = ref("PM2_5_DRY");
 const selectedDate = ref(defaultDates[0]);
-const viewerRef = inject("cesiumViewer", ref(null));
 const flyToExtent = inject("flyToExtent", null);
 
 const currentDomain = computed(() => domains[domain.value] ?? domains.d02);
@@ -284,8 +283,8 @@ function formatTime(value) {
 
 let zoomedKey = "";
 function zoomToDomain() {
-  // 和 CMA 一致：等数据(wrfMeta)和 viewer 就绪后再飞，避免多屏下画布宽高比未稳定时飞偏。
-  if (!viewerRef?.value || !wrfMeta.value) return;
+  // 和 CMA 一致：等数据(wrfMeta)就绪后再飞，避免空数据时复位到默认范围。
+  if (!wrfMeta.value) return;
   const ext = extent.value;
   if (!Array.isArray(ext) || ext.length !== 4) return;
   const [west, south, east, north] = ext.map(Number);
@@ -307,7 +306,7 @@ watch(
   },
   { immediate: true },
 );
-watch(() => [viewerRef?.value, wrfMeta.value, extent.value], zoomToDomain, { immediate: true });
+watch(() => [wrfMeta.value, extent.value], zoomToDomain, { immediate: true });
 
 onMounted(() => {
   loadWrfDisplay();

@@ -8,7 +8,7 @@
       <button :class="{ on: dockOpen && tool === 'base' }" @click="openTool('base')"><el-icon><MapLocation /></el-icon><span>底图</span></button>
       <button :class="{ on: showGrid }" @click="showGrid = !showGrid"><el-icon><Grid /></el-icon><span>经纬网</span></button>
       <button :class="{ on: showVector }" @click="showVector = !showVector"><b class="dim-icon">界</b><span>边界</span></button>
-      <button :class="{ on: mapDark }" @click="mapDark = !mapDark"><el-icon><Moon /></el-icon><span>暗色</span></button>
+      <button v-if="showVector" :class="{ on: mapDark }" @click="mapDark = !mapDark"><el-icon><Moon /></el-icon><span>暗色</span></button>
       <button @click="cycleLayout">
         <el-icon><Monitor v-if="layout === '1'" /><Operation v-else-if="layout === '2'" /><Grid v-else /></el-icon>
         <span>{{ { '1': '单屏', '2': '双屏', '4': '四屏' }[layout] }}</span>
@@ -85,6 +85,7 @@
             @view-change="v => onViewChange(i, v)"
           >
             <component
+              :key="`${layout}-${i}-${p.key}-${active}`"
               :is="p.comp"
               :parsed="layerParsed(p.key)"
               :time-index="layerTimeIndex"
@@ -389,7 +390,8 @@ const panes = computed(() => {
     return [sources[idx], sources[(idx + 1) % sources.length]];
   }
 
-  return ["radar", "himawari", "era5", "grib"].map(k => sources.find(s => s.key === k));
+  const idx = sources.findIndex(s => s.key === active.value);
+  return Array.from({ length: 4 }, (_, i) => sources[(idx + i) % sources.length]);
 });
 
 const mapsGrid = computed(() => {

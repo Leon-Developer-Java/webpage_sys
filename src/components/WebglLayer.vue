@@ -101,6 +101,12 @@ function pushSurface() {
   surface.setData(canvas.value.toDataURL("image/png"), props.extent, props.alpha);
 }
 
+function clearSurface() {
+  hasTex = false;
+  surface?.clear?.();
+  surface?.setData?.(null);
+}
+
 function draw() {
   if (!gl) return;
   gl.clear(gl.COLOR_BUFFER_BIT);
@@ -119,8 +125,7 @@ function bindCommonTextureParams(filter) {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 }
 
-function loadImageTexture() {
-  const currentVersion = ++textureVersion;
+function loadImageTexture(currentVersion) {
   const image = new Image();
   image.crossOrigin = "anonymous";
   image.onload = () => {
@@ -139,8 +144,8 @@ function loadImageTexture() {
   image.src = props.src;
 }
 
-function loadGridTexture() {
-  ++textureVersion;
+function loadGridTexture(currentVersion) {
+  if (currentVersion !== textureVersion) return;
   if (!props.values || !props.width || !props.height) { hasTex = false; draw(); return; }
   setCanvasSize(props.width, props.height);
   texture = texture || gl.createTexture();
@@ -156,9 +161,10 @@ function loadGridTexture() {
 
 function updateTexture() {
   if (!gl) return;
-  hasTex = false;
-  if (props.values && props.width && props.height) loadGridTexture();
-  else if (props.src) loadImageTexture();
+  const currentVersion = ++textureVersion;
+  clearSurface();
+  if (props.values && props.width && props.height) loadGridTexture(currentVersion);
+  else if (props.src) loadImageTexture(currentVersion);
   else { ++textureVersion; draw(); }
 }
 
@@ -186,9 +192,8 @@ onMounted(() => {
   updateTexture();
 });
 
-watch(() => [props.src, props.values, props.width, props.height, props.product, props.missing], updateTexture);
+watch(() => [props.src, props.values, props.width, props.height, props.product, props.missing, props.extent], updateTexture, { deep: true });
 watch(() => props.alpha, pushSurface);
-watch(() => props.extent, pushSurface, { deep: true });
 
 onBeforeUnmount(() => {
   surface?.clear();

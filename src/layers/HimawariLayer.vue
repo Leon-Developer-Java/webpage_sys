@@ -31,7 +31,6 @@ const props = defineProps({
 const emit = defineEmits(["display-loaded"]);
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8002";
-const viewerRef = inject("cesiumViewer", ref(null));
 const flyToExtent = inject("flyToExtent", null);
 const display = ref(null);
 const error = ref("");
@@ -80,7 +79,7 @@ function syncSelection() {
 }
 
 function flyToData() {
-  if (!viewerRef?.value || !display.value) return;
+  if (!display.value) return;
   const ext = imageExtent.value;
   if (!Array.isArray(ext) || ext.length !== 4) return;
   const [west, south, east, north] = ext.map(Number);
@@ -119,7 +118,7 @@ watch(() => props.refreshKey, () => {
   loadHimawariDisplay();
 });
 
-watch(() => [viewerRef?.value, display.value, imageExtent.value], flyToData, { immediate: true });
+watch(() => [display.value, imageExtent.value], flyToData, { immediate: true });
 
 onBeforeUnmount(() => {
   if (timer) window.clearInterval(timer);

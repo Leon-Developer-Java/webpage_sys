@@ -40,7 +40,6 @@ const props = defineProps({
 const emit = defineEmits(["display-loaded"]);
 
 const API_BASE = "http://127.0.0.1:8002";
-const viewerRef = inject("cesiumViewer", ref(null));
 const flyToExtent = inject("flyToExtent", null);
 const display = ref(null);
 let zoomedKey = "";
@@ -244,7 +243,7 @@ function emitDisplayLoaded() {
 
 function zoomToData() {
   const ext = currentLevel.value?.extent || currentProduct.value?.extent || display.value?.extent;
-  if (!viewerRef?.value || !Array.isArray(ext) || ext.length !== 4) return;
+  if (!Array.isArray(ext) || ext.length !== 4) return;
   const [west, south, east, north] = ext.map(Number);
   if ([west, south, east, north].some(v => !Number.isFinite(v)) || west >= east || south >= north) return;
   const key = ext.join(",");
@@ -330,7 +329,7 @@ watch(
   loadGrid,
 );
 watch(
-  () => [viewerRef?.value, currentLevel.value?.extent, currentProduct.value?.extent],
+  () => [currentLevel.value?.extent, currentProduct.value?.extent],
   zoomToData,
   { immediate: true },
 );
