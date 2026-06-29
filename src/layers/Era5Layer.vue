@@ -11,7 +11,7 @@
       <span>要素</span>
       <select v-model="selectedVariable" :disabled="loading || !variables.length">
         <option v-for="item in variables" :key="item.name" :value="item.name">
-          {{ item.label || item.name }}
+          {{ optionLabel(item) }}
         </option>
       </select>
     </label>
@@ -28,6 +28,8 @@ const props = defineProps({
   extent: { type: Array, default: null },
   label: String,
   file: String,
+  parsed: { type: Object, default: null },
+  timeIndex: { type: Number, default: 0 },
 });
 const emit = defineEmits(["display-loaded"]);
 
@@ -91,6 +93,15 @@ const imageSrc = computed(() => props.src || toPublicUrl(display.value?.png));
 const imageExtent = computed(() => props.extent || meta.value?.extent || meta.value?.bbox || [73, 15, 135, 55]);
 const resolvedFile = computed(() => grid.value?.file || fileName(meta.value?.source_file) || fileName(display.value?.meta_file) || props.file || "");
 const refreshKey = computed(() => layerRefreshKeys.value?.era5 || 0);
+const parsedKey = computed(() => {
+  const parsed = props.parsed;
+  return parsed?.dataset_id
+    || parsed?.meta?.dataset_id
+    || parsed?.source_file
+    || parsed?.meta?.source_file
+    || parsed?.file_name
+    || "";
+});
 
 const legendTitle = computed(() => {
   if (loading.value) return "ERA5 loading";
@@ -107,7 +118,7 @@ const ticks = computed(() => {
   const source = grid.value || meta.value?.weather_info || {};
   const min = Number(source.min);
   const max = Number(source.max);
-  if (!Number.isFinite(min) || !Number.isFinite(max)) return ["low", "", "", "", "high"];
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return ["低", "", "", "", "高"];
   return Array.from({ length: 5 }, (_, index) => formatTick(min + ((max - min) * index) / 4));
 });
 
@@ -128,6 +139,12 @@ function formatTick(value) {
   const abs = Math.abs(value);
   if (abs >= 1000 || (abs > 0 && abs < 0.01)) return value.toExponential(1);
   return value.toFixed(abs >= 100 ? 0 : abs >= 10 ? 1 : 2);
+}
+
+function optionLabel(item) {
+  const labelText = item?.label || item?.name || "";
+  const unit = item?.unit || item?.units || "";
+  return unit ? `${labelText} (${unit})` : labelText;
 }
 
 function compile(type, source) {
@@ -267,7 +284,10 @@ function removeImageryLayer() {
 
 function applyImageryLayer() {
   const payload = grid.value;
-  if (!payload?.extent || !payload?.values?.length) { surface?.clear(); return; }
+  if (!payload?.extent || !payload?.values?.length) {
+    surface?.clear();
+    return;
+  }
 
   const [west, south, east, north] = payload.extent.map(Number);
   if ([west, south, east, north].some(value => !Number.isFinite(value)) || west >= east || south >= north) {
@@ -322,7 +342,7 @@ async function loadDisplay(variableName = selectedVariable.value) {
     grid.value = null;
     variables.value = [];
     removeImageryLayer();
-    error.value = "ERA5 data not loaded";
+    error.value = "ERA5 数据未加载";
     console.error(err);
   } finally {
     loading.value = false;
@@ -331,6 +351,9 @@ async function loadDisplay(variableName = selectedVariable.value) {
 
 onMounted(loadDisplay);
 watch(refreshKey, () => loadDisplay());
+watch(parsedKey, value => {
+  if (value) loadDisplay("");
+});
 watch(selectedVariable, value => {
   if (!syncingSelection && value && value !== grid.value?.variable) loadDisplay(value);
 });
