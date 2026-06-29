@@ -36,6 +36,8 @@ const props = defineProps({
   extent: { type: Array, default: null },
   label: String,
   file: String,
+  parsed: { type: Object, default: null },
+  timeIndex: { type: Number, default: 0 },
 });
 const emit = defineEmits(["display-loaded"]);
 
@@ -53,17 +55,24 @@ let timer = null;
 let gridRequestId = 0;
 
 const products = computed(() => display.value?.grid_products ?? []);
+const frames = computed(() => Array.isArray(display.value?.frames) ? display.value.frames : []);
+const currentFrame = computed(() => {
+  if (!frames.value.length) return null;
+  const index = Math.min(Math.max(Number(props.timeIndex) || 0, 0), frames.value.length - 1);
+  return frames.value[index] || frames.value[0];
+});
 const currentProduct = computed(() => products.value.find((item) => item.key === selectedProductKey.value) ?? products.value[0] ?? null);
 const allLevels = computed(() => currentProduct.value?.levels ?? []);
 const currentLevels = computed(() => sampleHeightLevels(allLevels.value));
 const currentLevel = computed(() => currentLevels.value.find((item) => item.key === selectedLevelKey.value) ?? currentLevels.value[0] ?? null);
-const fallbackImageSrc = computed(() => props.src || toPublicUrl(display.value?.png) || display.value?.png_data_url || "");
-const imageExtent = computed(() => props.extent || currentLevel.value?.extent || currentProduct.value?.extent || display.value?.extent || display.value?.meta_json?.extent || [73, 15, 135, 55]);
+const selectedGridUrl = computed(() => gridUrlForFrame(currentLevel.value, currentFrame.value));
+const fallbackImageSrc = computed(() => props.src || toPublicUrl(currentFrame.value?.default_png || currentFrame.value?.png) || toPublicUrl(display.value?.png) || display.value?.png_data_url || "");
+const imageExtent = computed(() => props.extent || currentLevel.value?.extent || currentProduct.value?.extent || currentFrame.value?.extent || display.value?.extent || display.value?.meta_json?.extent || [73, 15, 135, 55]);
 const gridWidth = computed(() => currentLevel.value?.grid?.nx || currentProduct.value?.grid?.nx || 0);
 const gridHeight = computed(() => currentLevel.value?.grid?.ny || currentProduct.value?.grid?.ny || 0);
 const gridMissing = computed(() => currentLevel.value?.missing ?? currentProduct.value?.missing ?? -9999);
-const weatherInfo = computed(() => display.value?.weather_info || display.value?.meta_json?.weather_info || {});
-const resolvedFile = computed(() => weatherInfo.value.file || props.file || "");
+const weatherInfo = computed(() => currentFrame.value?.weather_info || display.value?.weather_info || display.value?.meta_json?.weather_info || {});
+const resolvedFile = computed(() => currentFrame.value?.file || weatherInfo.value.file || props.file || "");
 const legendTitle = computed(() => {
   if (!currentProduct.value) return weatherInfo.value.unit || "dBZ";
   const unit = currentProduct.value.unit ? ` (${currentProduct.value.unit})` : "";
@@ -154,6 +163,21 @@ function apiUrl(path) {
   return `${API_BASE}${path}`;
 }
 
+function frameFileName(frame) {
+  const value = frame?.file || frame?.source_file || "";
+  return String(value).replaceAll("\\", "/").split("/").pop() || "";
+}
+
+function gridUrlForFrame(level, frame) {
+  const url = level?.grid_url || "";
+  const file = frameFileName(frame);
+  if (!url || !file) return url;
+  const [path, query = ""] = url.split("?");
+  const params = new URLSearchParams(query);
+  params.set("file", file);
+  return `${path}?${params.toString()}`;
+}
+
 function toPublicUrl(path) {
   if (!path) return "";
   if (/^https?:\/\//i.test(path) || path.startsWith("data:")) return path;
@@ -164,6 +188,13 @@ function toPublicUrl(path) {
 
 function firstValue(...values) {
   return values.find((value) => value !== undefined && value !== null && value !== "");
+}
+
+function formatNumber(value) {
+  if (value === undefined || value === null || value === "") return "";
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return value ?? "";
+  return Math.abs(numeric) >= 100 ? numeric.toFixed(0) : numeric.toFixed(2);
 }
 
 function formatSeconds(value) {
@@ -193,13 +224,16 @@ function formatStationSummary(stations) {
 
 function buildPanelMeta() {
   const meta = display.value?.meta_json || {};
-  const info = { ...(meta.weather_info || {}), ...(display.value?.weather_info || {}) };
+  const frame = currentFrame.value || {};
+  const info = { ...(display.value?.weather_info || {}), ...(meta.weather_info || {}), ...(frame.weather_info || {}) };
   const spatial = meta.spatial || {};
   const timeDetail = meta.time_detail || {};
   const formatSpecific = meta.format_specific || {};
-  const stations = formatSpecific.stations || [];
+  const radarExtra = meta.extra?.radar || {};
+  const stations = radarExtra.stations || formatSpecific.stations || [];
   const selectedInfo = {
     ...info,
+    file: frame.file || info.file,
     element: currentProduct.value?.label || info.element,
     level: currentLevel.value?.label || info.level,
     unit: currentProduct.value?.unit || info.unit,
@@ -208,23 +242,28 @@ function buildPanelMeta() {
 
   return {
     ...meta,
+    file: frame.file || meta.file,
+    source_file: frame.source_file || meta.source_file,
     business_type: "Radar",
     data_type: "Radar",
     weather_info: selectedInfo,
     extraRows: [
+      ["radarName", "雷达名称", firstValue(radarExtra.radar_name, formatSpecific.radar_name)],
+      ["radarType", "雷达类型", firstValue(radarExtra.radar_type, formatSpecific.radar_type)],
       ["product", "产品", firstValue(info.product, currentProduct.value?.label)],
       ["timeResolution", "时间分辨率", formatSeconds(timeDetail.step_seconds)],
-      ["steps", "时次数", info.steps],
+      ["steps", "时次数", firstValue(info.step_count, info.steps)],
       ["resolution", "空间分辨率", formatResolution(info, spatial)],
-      ["validGrid", "有效格点", info.validGrid],
+      ["validGrid", "有效格点", firstValue(info.valid_grid, info.validGrid)],
       ["coverage", "覆盖率", info.coverage],
-      ["max", "最大值", info.max],
-      ["mean", "平均值", info.mean],
-      ["min", "最小值", info.min],
+      ["max", "最大值", formatNumber(info.max)],
+      ["mean", "平均值", formatNumber(info.mean)],
+      ["min", "最小值", formatNumber(info.min)],
       ["quality", "质量", info.quality],
       ["alert", "预警", info.alert],
+      ["updatedAt", "更新时间", firstValue(info.updated_at, info.update)],
       ["stations", "雷达站", formatStationSummary(stations)],
-      ["variables", "产品数量", firstValue(info.variables, info.vars)],
+      ["variables", "产品数量", firstValue(info.variable_count, info.variables, info.vars)],
       ["levelCount", "高度层数", Array.isArray(meta.levels) && meta.levels.length ? `${meta.levels.length} 层` : ""],
     ],
   };
@@ -242,7 +281,7 @@ function emitDisplayLoaded() {
 }
 
 function zoomToData() {
-  const ext = currentLevel.value?.extent || currentProduct.value?.extent || display.value?.extent;
+  const ext = currentLevel.value?.extent || currentProduct.value?.extent || currentFrame.value?.extent || display.value?.extent;
   if (!Array.isArray(ext) || ext.length !== 4) return;
   const [west, south, east, north] = ext.map(Number);
   if ([west, south, east, north].some(v => !Number.isFinite(v)) || west >= east || south >= north) return;
@@ -255,8 +294,7 @@ function zoomToData() {
 }
 
 async function loadGrid() {
-  const level = currentLevel.value;
-  const url = apiUrl(level?.grid_url);
+  const url = apiUrl(selectedGridUrl.value);
   const expectedSize = gridWidth.value * gridHeight.value;
   const requestId = ++gridRequestId;
 
@@ -320,16 +358,17 @@ onBeforeUnmount(() => {
 
 watch(products, syncSelection);
 watch(selectedProductKey, syncSelection);
+watch(() => props.parsed, () => loadRadarDisplay());
 watch(
-  () => [display.value, currentProduct.value?.key, currentLevel.value?.key, gridLoading.value, gridError.value, error.value],
+  () => [display.value, currentProduct.value?.key, currentLevel.value?.key, currentFrame.value?.file, gridLoading.value, gridError.value, error.value],
   emitDisplayLoaded,
 );
 watch(
-  () => [currentProduct.value?.key, currentLevel.value?.key, currentLevel.value?.grid_url],
+  () => [currentProduct.value?.key, currentLevel.value?.key, selectedGridUrl.value, props.timeIndex],
   loadGrid,
 );
 watch(
-  () => [currentLevel.value?.extent, currentProduct.value?.extent],
+  () => [currentLevel.value?.extent, currentProduct.value?.extent, currentFrame.value?.extent, display.value?.extent],
   zoomToData,
   { immediate: true },
 );

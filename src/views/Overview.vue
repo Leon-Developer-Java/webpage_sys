@@ -30,7 +30,7 @@
             <div><b>{{ f.name }}</b><span>{{ f.time }} · {{ f.size }}</span></div>
           </li>
         </ul>
-        <label class="upload"><input type="file" hidden @change="choose" />{{ file ? file.name : "选择本地文件…" }}</label>
+        <label class="upload"><input type="file" multiple hidden @change="choose" />{{ selectedFileLabel }}</label>
         <el-button type="primary" size="small" class="parse" @click="parse">打开并解析</el-button>
         <p class="hint">解析后生成 meta.json + PNG</p>
         <div class="vars">
@@ -89,6 +89,7 @@
               :is="p.comp"
               :parsed="layerParsed(p.key)"
               :time-index="layerTimeIndex"
+              @display-loaded="payload => onLayerDisplayLoaded(p.key, payload)"
             />
           </MapBase>
         </div>
@@ -180,7 +181,7 @@ const layout = ref("1");
 const propsOpen = ref(true);
 const active = ref("radar");
 const selected = ref(0);
-const file = ref(null);
+const file = ref([]);
 const path = ref("D:/weather_data/radar/");
 const projection = ref("等经纬");
 const basemap = ref("矢量底图");
@@ -190,6 +191,7 @@ const tIndex = ref(5);
 const parsed = ref(null);
 const parsedLayerKey = ref(null);
 const parseProcessing = ref(null);
+const layerDisplays = ref({});
 const playing = ref(false);
 const speed = ref(1);
 const animPos = ref(tIndex.value);
@@ -201,6 +203,13 @@ const emitterIdx = ref(-1);
 const latestView = {};
 let animTimer = null;
 let lastTs = null;
+
+const selectedFileLabel = computed(() => {
+  const files = Array.isArray(file.value) ? file.value : [];
+  if (!files.length) return "选择本地文件…";
+  if (files.length === 1) return files[0].name;
+  return `已选择 ${files.length} 个文件`;
+});
 
 function onViewChange(i, view) {
   latestView[i] = view;
@@ -216,9 +225,52 @@ watch(linked, v => {
   }
 });
 
-const axisTimes = computed(() => defaultTimes);
+function onLayerDisplayLoaded(key, payload) {
+  if (key !== "radar" || !payload) return;
+  layerDisplays.value = { ...layerDisplays.value, [key]: payload };
+}
+
+function collectTimes(source) {
+  const meta = source?.meta || source?.meta_json || source || {};
+  const frames = source?.frames || meta.frames || [];
+  const candidates = [
+    source?.times,
+    meta.times,
+    source?.weather_info?.times,
+    meta.weather_info?.times,
+    Array.isArray(frames) ? frames.map((frame) => frame?.time || frame?.time_label).filter(Boolean) : [],
+  ];
+  return candidates.find((items) => Array.isArray(items) && items.length) || [];
+}
+
+function formatAxisTime(value) {
+  const text = String(value || "");
+  const match = text.match(/T(\d{2}):?(\d{2})?/) || text.match(/\s(\d{2}):?(\d{2})?/);
+  if (match) return `${match[1]}:${match[2] || "00"}`;
+  return text.slice(0, 16) || text;
+}
+
+const radarTimes = computed(() => {
+  if (active.value !== "radar") return [];
+  const values = collectTimes(parsed.value && parsedLayerKey.value === "radar" ? parsed.value : null)
+    .concat(collectTimes(layerDisplays.value.radar))
+    .filter(Boolean);
+  return [...new Set(values.map(String))];
+});
+
+const axisTimes = computed(() => {
+  if (active.value === "radar" && radarTimes.value.length > 1) {
+    return radarTimes.value.map(formatAxisTime);
+  }
+  return defaultTimes;
+});
 
 const parsedFrameCount = computed(() => {
+  if (active.value === "radar") {
+    const radarFrameCount = collectTimes(layerDisplays.value.radar).length || collectTimes(parsed.value).length;
+    if (radarFrameCount) return radarFrameCount;
+  }
+
   if (!parsed.value || parsedLayerKey.value !== active.value) {
     return defaultTimes.length;
   }
@@ -253,7 +305,7 @@ const parsedFrameCount = computed(() => {
 });
 
 const layerTimeIndex = computed(() => {
-  const uiCount = defaultTimes.length;
+  const uiCount = axisTimes.value.length;
   const frameCount = parsedFrameCount.value;
 
   if (frameCount <= 1 || uiCount <= 1) {
@@ -358,7 +410,12 @@ const meta = computed(() => {
   if (parsed.value && parsedLayerKey.value === active.value) {
     return normalizeParsedMeta(parsed.value);
   }
-  return parsed.value?.weather_info || parsed.value || infos[active.value];
+  if (active.value === "radar") {
+    const radarDisplay = layerDisplays.value.radar;
+    const radarMeta = radarDisplay?.meta || radarDisplay?.weather_info || null;
+    if (radarMeta) return radarMeta;
+  }
+  return infos[active.value];
 });
 
 const processing = computed(() => {
@@ -431,11 +488,12 @@ function pickFile(i) {
 }
 
 function choose(e) {
-  file.value = e.target.files[0] || null;
+  file.value = Array.from(e.target.files || []);
 }
 
 async function parse() {
-  if (!file.value) return;
+  const uploadFiles = Array.isArray(file.value) ? file.value : [file.value].filter(Boolean);
+  if (!uploadFiles.length) return;
 
   parseProcessing.value = [
     { step: "上传/读取", state: "本地文件", t: new Date().toLocaleTimeString(), ok: true },
@@ -445,7 +503,7 @@ async function parse() {
   ];
 
   try {
-    const result = await parseFile(file.value);
+    const result = await parseFile(uploadFiles);
 
     const businessType =
       result?.business_type ||
@@ -454,6 +512,9 @@ async function parse() {
       result?.meta?.data_type;
 
     const layerKey = businessTypeToLayerKey(businessType);
+    if (layerKey === "radar") {
+      layerDisplays.value = { ...layerDisplays.value, radar: null };
+    }
 
     parsed.value = result;
     parsedLayerKey.value = layerKey;
