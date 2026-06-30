@@ -900,7 +900,7 @@ onBeforeUnmount(() => {
 .gfs-current {
   display: grid;
   gap: 2px;
-  margin-top: 8px;
+  margin: 8px 9px 0;
   padding: 7px 8px;
   border-radius: 8px;
   background: rgba(15, 23, 42, 0.42);
@@ -923,7 +923,7 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 4px;
-  margin-top: 7px;
+  margin: 7px 9px 0;
   font-size: 10px;
   color: #cbd5e1;
 }
@@ -944,7 +944,7 @@ onBeforeUnmount(() => {
 }
 
 .gfs-status {
-  margin-top: 6px;
+  margin: 6px 9px 9px;
   font-size: 10px;
   color: #86efac;
   line-height: 1.4;
@@ -959,7 +959,7 @@ onBeforeUnmount(() => {
 }
 
 .gfs-pick {
-  margin-top: 8px;
+  margin: 8px 9px 0;
   padding-top: 8px;
   border-top: 1px solid rgba(148, 163, 184, 0.25);
   font-size: 10px;
@@ -978,7 +978,7 @@ onBeforeUnmount(() => {
 }
 
 .gfs-pick-hint {
-  margin-top: 8px;
+  margin: 8px 9px 9px;
   color: #94a3b8;
   font-size: 10px;
   line-height: 1.45;

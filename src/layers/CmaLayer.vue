@@ -466,7 +466,14 @@ watch(() => props.timeIndex, () => loadDisplay(selectedVariable.value));
 watch(() => props.parsed, () => loadDisplay(selectedVariable.value));
 watch(refreshKey, () => loadDisplay(selectedVariable.value));
 
-onBeforeUnmount(clearImageryLayer);
+onBeforeUnmount(() => {
+  clearImageryLayer();
+  if (gl) {
+    if (valueTexture) gl.deleteTexture(valueTexture);
+    gl.getExtension("WEBGL_lose_context")?.loseContext();
+    gl = null;
+  }
+});
 </script>
 
 <style scoped>

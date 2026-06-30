@@ -498,5 +498,12 @@ watch(selectedVariable, async value => {
 });
 watch(() => props.timeIndex, () => loadBinaryFrame());
 watch(() => props.src, emitLayerMeta);
-onBeforeUnmount(removeImageryLayer);
+onBeforeUnmount(() => {
+  removeImageryLayer();
+  if (gl) {
+    if (valueTexture) gl.deleteTexture(valueTexture);
+    gl.getExtension("WEBGL_lose_context")?.loseContext();
+    gl = null;
+  }
+});
 </script>
