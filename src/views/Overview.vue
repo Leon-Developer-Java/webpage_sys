@@ -6,15 +6,16 @@
       <button :class="{ on: propsOpen }" @click="propsOpen = !propsOpen"><el-icon><Document /></el-icon><span>信息</span></button>
       <button :class="{ on: dockOpen && tool === 'proj' }" @click="openTool('proj')"><el-icon><Position /></el-icon><span>投影</span></button>
       <button :class="{ on: dockOpen && tool === 'base' }" @click="openTool('base')"><el-icon><MapLocation /></el-icon><span>底图</span></button>
-      <button :class="{ on: showGrid }" @click="showGrid = !showGrid"><el-icon><Grid /></el-icon><span>经纬网</span></button>
-      <button :class="{ on: showVector }" @click="showVector = !showVector"><b class="dim-icon">界</b><span>边界</span></button>
-      <button v-if="showVector" :class="{ on: mapDark }" @click="mapDark = !mapDark"><el-icon><Moon /></el-icon><span>暗色</span></button>
+      <button :class="{ on: showGrid }" @click="showGrid = !showGrid"><el-icon><Grid /></el-icon><span>网格</span></button>
       <button @click="cycleLayout">
         <el-icon><Monitor v-if="layout === '1'" /><Operation v-else-if="layout === '2'" /><Grid v-else /></el-icon>
         <span>{{ { '1': '单屏', '2': '双屏', '4': '四屏' }[layout] }}</span>
       </button>
       <button v-if="layout !== '1'" :class="{ on: linked }" @click="linked = !linked">
         <el-icon><Connection /></el-icon><span>联动</span>
+      </button>
+      <button @click="sceneMode = sceneMode === '2D' ? '3D' : '2D'">
+        <b class="dim-icon">{{ sceneMode }}</b><span>视角</span>
       </button>
     </aside>
 
@@ -30,7 +31,7 @@
             <div><b>{{ f.name }}</b><span>{{ f.time }} · {{ f.size }}</span></div>
           </li>
         </ul>
-        <label class="upload"><input type="file" multiple hidden @change="choose" />{{ selectedFileLabel }}</label>
+        <label class="upload"><input type="file" hidden @change="choose" />{{ file ? file.name : "选择本地文件…" }}</label>
         <el-button type="primary" size="small" class="parse" @click="parse">打开并解析</el-button>
         <p class="hint">解析后生成 meta.json + PNG</p>
         <div class="vars">
@@ -54,10 +55,12 @@
           <button
             v-for="p in projections" :key="p"
             :class="{ on: projection === p }"
+            :disabled="!PROJ_SUPPORTED.has(p)"
             @click="projection = p"
           >
             <span>{{ p }}</span>
             <el-icon v-if="projection === p"><Check /></el-icon>
+            <span v-else-if="!PROJ_SUPPORTED.has(p)" class="soon-tag">暂不支持</span>
           </button>
         </div>
       </template>
@@ -74,24 +77,29 @@
 
     <div class="center">
       <div class="maps" :style="mapsGrid">
-        <div :class="['cell', { 'cell-4': layout === '4' }]" v-for="(p, i) in panes" :key="layout + '-' + i">
+        <div :class="['cell', { 'cell-4': layout === '4' }]" v-for="(p, i) in panes" :key="layout + '-' + p.key">
           <MapBase
             :grid="showGrid"
-            :dark="mapDark"
-            :vector="showVector"
+            :dark="dark"
             :basemap="basemap"
+            :mode="sceneMode"
             :projection="projection"
-            :sync-view="linked && emitterIdx !== i ? syncView : null"
-            @view-change="v => onViewChange(i, v)"
+            :syncRect="linked && emitterIdx !== i ? syncRect : null"
+            @camera-change="cam => onCameraChange(i, cam)"
           >
             <component
-              :key="`${layout}-${i}-${p.key}-${active}`"
               :is="p.comp"
               :parsed="layerParsed(p.key)"
               :time-index="layerTimeIndex"
-              @display-loaded="payload => onLayerDisplayLoaded(p.key, payload)"
+              @variable-change="onLayerVariableChange"
             />
+
           </MapBase>
+          <div v-if="layout !== '4'" class="map-info">
+            <span><b>{{ p.btn }}</b></span>
+            <span><b>{{ layerInfo(p.key).file }}</b></span>
+            <span>{{ projection }}</span>
+          </div>
         </div>
       </div>
 
@@ -121,7 +129,7 @@
 
 <script setup>
 import { computed, inject, onBeforeUnmount, ref, watch } from "vue";
-import { ArrowLeft, ArrowRight, Check, CircleCheck, Close, Connection, DArrowLeft, DArrowRight, DataAnalysis, Document, FolderOpened, Grid, MapLocation, Monitor, Moon, Operation, Position, RefreshRight, VideoPlay, VideoPause } from "@element-plus/icons-vue";
+import { ArrowLeft, ArrowRight, Check, CircleCheck, Close, Connection, DArrowLeft, DArrowRight, DataAnalysis, Document, FolderOpened, Grid, MapLocation, Monitor, Operation, Position, RefreshRight, VideoPlay, VideoPause } from "@element-plus/icons-vue";
 import { parseFile } from "../api";
 import MapBase from "../components/MapBase.vue";
 import MetaPanel from "../components/MetaPanel.vue";
@@ -169,7 +177,8 @@ const defaultProcessing = [
 ];
 
 const versions = ["文件存储：原始数据 + meta.json + PNG", "前端渲染：PNG 显示（后续升级 WebGL2）", "数据处理：后端完成、前端轻展示"];
-const projections = ["等经纬", "墨卡托", "正弦", "罗宾逊", "兰博托", "卫星正视", "北极", "南极"];
+const projections = ["墨卡托", "等经纬", "兰博托", "罗宾逊", "正弦", "卫星正视"];
+const PROJ_SUPPORTED = new Set(["墨卡托", "等经纬"]);
 const basemaps = ["矢量底图", "影像底图", "地形晕渲", "全球境界"];
 const levels = ["地面", "850hPa", "500hPa", "200hPa"];
 const defaultTimes = ["00时", "02时", "04时", "06时", "08时", "10时", "12时", "14时", "16时", "18时", "20时", "22时"];
@@ -181,7 +190,7 @@ const layout = ref("1");
 const propsOpen = ref(true);
 const active = ref("radar");
 const selected = ref(0);
-const file = ref([]);
+const file = ref(null);
 const path = ref("D:/weather_data/radar/");
 const projection = ref("等经纬");
 const basemap = ref("矢量底图");
@@ -191,88 +200,107 @@ const tIndex = ref(5);
 const parsed = ref(null);
 const parsedLayerKey = ref(null);
 const parseProcessing = ref(null);
-const layerDisplays = ref({});
+const layerMetaOverride = ref(null);
+const layerMetaOverrideKey = ref(null);
 const playing = ref(false);
 const speed = ref(1);
 const animPos = ref(tIndex.value);
 const linked = ref(false);
-const syncView = ref(null);
-const showVector = ref(false);
-const mapDark = ref(dark.value);
+const syncRect = ref(null);
+const sceneMode = ref("2D");
 const emitterIdx = ref(-1);
-const latestView = {};
+const latestCam = {};
 let animTimer = null;
 let lastTs = null;
 
-const selectedFileLabel = computed(() => {
-  const files = Array.isArray(file.value) ? file.value : [];
-  if (!files.length) return "选择本地文件…";
-  if (files.length === 1) return files[0].name;
-  return `已选择 ${files.length} 个文件`;
-});
-
-function onViewChange(i, view) {
-  latestView[i] = view;
+function onCameraChange(i, cam) {
+  latestCam[i] = cam;
   if (!linked.value) return;
   emitterIdx.value = i;
-  syncView.value = view;
+  syncRect.value = cam;
 }
 
 watch(linked, v => {
-  if (v && latestView[0]) {
+  if (v && latestCam[0]) {
     emitterIdx.value = 0;
-    syncView.value = latestView[0];
+    syncRect.value = latestCam[0];
   }
 });
 
-function onLayerDisplayLoaded(key, payload) {
-  if (key !== "radar" || !payload) return;
-  layerDisplays.value = { ...layerDisplays.value, [key]: payload };
+function formatAxisTime(value, index) {
+  if (!value) return defaultTimes[index] || `${String(index).padStart(2, "0")}时`;
+
+  const text = String(value);
+
+  // 兼容 2026-06-27T06:00:00 / 2026-06-27 06:00:00
+  const match = text.match(/(\d{2})-(\d{2})[T\s](\d{2}):(\d{2})/);
+  if (match) {
+    return `${match[1]}-${match[2]} ${match[3]}:${match[4]}`;
+  }
+
+  const hourMatch = text.match(/T(\d{2}):/);
+  if (hourMatch) return `${hourMatch[1]}时`;
+
+  return text.length > 12 ? text.slice(0, 12) : text;
 }
 
-function collectTimes(source) {
-  const meta = source?.meta || source?.meta_json || source || {};
-  const frames = source?.frames || meta.frames || [];
-  const candidates = [
-    source?.times,
-    meta.times,
-    source?.weather_info?.times,
-    meta.weather_info?.times,
-    Array.isArray(frames) ? frames.map((frame) => frame?.time || frame?.time_label).filter(Boolean) : [],
-  ];
-  return candidates.find((items) => Array.isArray(items) && items.length) || [];
-}
+function currentLayerTimes() {
+  if (layerMetaOverride.value && layerMetaOverrideKey.value === active.value) {
+    const axis = layerMetaOverride.value.axis_times || [];
+    if (Array.isArray(axis) && axis.length) return axis;
+    const times = layerMetaOverride.value.times || [];
+    if (Array.isArray(times) && times.length) return times;
+  }
 
-function formatAxisTime(value) {
-  const text = String(value || "");
-  const match = text.match(/T(\d{2}):?(\d{2})?/) || text.match(/\s(\d{2}):?(\d{2})?/);
-  if (match) return `${match[1]}:${match[2] || "00"}`;
-  return text.slice(0, 16) || text;
+  return [];
 }
-
-const radarTimes = computed(() => {
-  if (active.value !== "radar") return [];
-  const values = collectTimes(parsed.value && parsedLayerKey.value === "radar" ? parsed.value : null)
-    .concat(collectTimes(layerDisplays.value.radar))
-    .filter(Boolean);
-  return [...new Set(values.map(String))];
-});
 
 const axisTimes = computed(() => {
-  if (active.value === "radar" && radarTimes.value.length > 1) {
-    return radarTimes.value.map(formatAxisTime);
+  const times = currentLayerTimes();
+
+  // 小样本测试时，例如 f000/f006/f012，直接显示真实时次，避免“10时”对不上“06:00”。
+  if (times.length > 0 && times.length <= defaultTimes.length) {
+    return times.map((t, i) => formatAxisTime(t, i));
   }
+
+  // 正式 48 小时逐小时时次时，仍保持原 UI：00时、02时、...、22时。
   return defaultTimes;
 });
 
 const parsedFrameCount = computed(() => {
-  if (active.value === "radar") {
-    const radarFrameCount = collectTimes(layerDisplays.value.radar).length || collectTimes(parsed.value).length;
-    if (radarFrameCount) return radarFrameCount;
+  if (layerMetaOverride.value && layerMetaOverrideKey.value === active.value) {
+    const urls = layerMetaOverride.value.png_urls || [];
+    if (Array.isArray(urls) && urls.length) return urls.length;
+
+    const times = layerMetaOverride.value.times || [];
+    if (Array.isArray(times) && times.length) return times.length;
   }
 
   if (!parsed.value || parsedLayerKey.value !== active.value) {
-    return defaultTimes.length;
+    return axisTimes.value.length;
+  }
+
+  const defaultVariable =
+    parsed.value?.default_variable ||
+    parsed.value?.weather_info?.default_variable ||
+    parsed.value?.meta?.default_variable ||
+    parsed.value?.extra?.default_variable;
+
+  const variableLayers =
+    parsed.value?.variable_layers ||
+    parsed.value?.weather_info?.variable_layers ||
+    parsed.value?.meta?.variable_layers ||
+    parsed.value?.extra?.variable_layers ||
+    {};
+
+  const defaultLayer = defaultVariable ? variableLayers?.[defaultVariable] : null;
+
+  if (Array.isArray(defaultLayer?.png_urls) && defaultLayer.png_urls.length) {
+    return defaultLayer.png_urls.length;
+  }
+
+  if (Array.isArray(defaultLayer?.times) && defaultLayer.times.length) {
+    return defaultLayer.times.length;
   }
 
   const pngUrls =
@@ -314,9 +342,8 @@ const layerTimeIndex = computed(() => {
 
   const uiIndex = clampTimeIndex(tIndex.value);
 
-  // 前端时间轴保持原始 12 个刻度：00时、02时、...、22时。
-  // 这里把 12 个 UI 刻度映射到后端实际 N 张 PNG，
-  // 例如 N=48 时：00时≈step000，02时≈step004，...，22时≈step047。
+  // 当轴上只有 3 个真实时次时：0/1/2 直接映射到 step000/001/002。
+  // 当正式 48 时次但 UI 只显示 12 个刻度时：12 个 UI 刻度映射到 48 张 PNG。
   return Math.round((uiIndex / (uiCount - 1)) * (frameCount - 1));
 });
 
@@ -389,6 +416,7 @@ function normalizeParsedMeta(result) {
 
   return {
     file: result.file_name || panelMeta.file || info.file || "—",
+    productCategory: panelMeta.productCategory || info.productCategory || "—",
     element: panelMeta.element || info.element || "—",
     time: panelMeta.time || info.time || "—",
     level: panelMeta.level || info.level || "—",
@@ -403,18 +431,23 @@ function normalizeParsedMeta(result) {
     png_url: result.png_url || panelMeta.png_url || info.png_url || null,
     png_urls: result.png_urls || panelMeta.png_urls || info.png_urls || [],
     times: result.times || panelMeta.times || info.times || [],
+    quality: panelMeta.quality || info.quality || "—",
+    max: panelMeta.max ?? info.max,
+    min: panelMeta.min ?? info.min,
+    mean: panelMeta.mean ?? info.mean,
+    alert: panelMeta.alert || info.alert || "无",
   };
 }
 
 const meta = computed(() => {
+  if (layerMetaOverride.value && layerMetaOverrideKey.value === active.value) {
+    return layerMetaOverride.value;
+  }
+
   if (parsed.value && parsedLayerKey.value === active.value) {
     return normalizeParsedMeta(parsed.value);
   }
-  if (active.value === "radar") {
-    const radarDisplay = layerDisplays.value.radar;
-    const radarMeta = radarDisplay?.meta || radarDisplay?.weather_info || null;
-    if (radarMeta) return radarMeta;
-  }
+
   return infos[active.value];
 });
 
@@ -439,6 +472,49 @@ function layerParsed(key) {
   return null;
 }
 
+function layerInfo(key) {
+  if (layerMetaOverride.value && layerMetaOverrideKey.value === key) {
+    return layerMetaOverride.value;
+  }
+
+  if (parsed.value && parsedLayerKey.value === key) {
+    return normalizeParsedMeta(parsed.value) || infos[key];
+  }
+
+  return infos[key];
+}
+
+function onLayerVariableChange(payload) {
+  if (!payload) return;
+
+  layerMetaOverride.value = {
+    file: payload.file || "—",
+    productCategory: payload.productCategory || "—",
+    forecast: payload.forecast || "—",
+    element: payload.element || "—",
+    time: payload.time || "—",
+    level: payload.level || "—",
+    range: payload.range || "—",
+    grid: payload.grid || "—",
+    missing: payload.missing || "—",
+    unit: payload.unit || "—",
+    vars: payload.vars || "—",
+    steps: payload.steps || "—",
+    status: payload.status || "解析成功",
+    quality: payload.quality || "—",
+    max: payload.max,
+    min: payload.min,
+    mean: payload.mean,
+    alert: payload.alert || "无",
+    extent: payload.extent || null,
+    png_url: payload.png_url || null,
+    png_urls: payload.png_urls || [],
+    times: payload.times || [],
+    axis_times: payload.axis_times || payload.forecast_labels || payload.times || [],
+  };
+
+  layerMetaOverrideKey.value = active.value;
+}
 const panes = computed(() => {
   if (layout.value === "1") return sources.filter(s => s.key === active.value);
 
@@ -447,8 +523,7 @@ const panes = computed(() => {
     return [sources[idx], sources[(idx + 1) % sources.length]];
   }
 
-  const idx = sources.findIndex(s => s.key === active.value);
-  return Array.from({ length: 4 }, (_, i) => sources[(idx + i) % sources.length]);
+  return ["radar", "himawari", "era5", "grib"].map(k => sources.find(s => s.key === k));
 });
 
 const mapsGrid = computed(() => {
@@ -477,6 +552,8 @@ function selectSource(key) {
   parsed.value = null;
   parsedLayerKey.value = null;
   parseProcessing.value = null;
+  layerMetaOverride.value = null;
+  layerMetaOverrideKey.value = null;
 }
 
 function pickFile(i) {
@@ -485,15 +562,19 @@ function pickFile(i) {
   parsed.value = null;
   parsedLayerKey.value = null;
   parseProcessing.value = null;
+  layerMetaOverride.value = null;
+  layerMetaOverrideKey.value = null;
 }
 
 function choose(e) {
-  file.value = Array.from(e.target.files || []);
+  file.value = e.target.files[0] || null;
 }
 
 async function parse() {
-  const uploadFiles = Array.isArray(file.value) ? file.value : [file.value].filter(Boolean);
-  if (!uploadFiles.length) return;
+  if (!file.value) return;
+
+  layerMetaOverride.value = null;
+  layerMetaOverrideKey.value = null;
 
   parseProcessing.value = [
     { step: "上传/读取", state: "本地文件", t: new Date().toLocaleTimeString(), ok: true },
@@ -503,7 +584,7 @@ async function parse() {
   ];
 
   try {
-    const result = await parseFile(uploadFiles);
+    const result = await parseFile(file.value);
 
     const businessType =
       result?.business_type ||
@@ -512,9 +593,6 @@ async function parse() {
       result?.meta?.data_type;
 
     const layerKey = businessTypeToLayerKey(businessType);
-    if (layerKey === "radar") {
-      layerDisplays.value = { ...layerDisplays.value, radar: null };
-    }
 
     parsed.value = result;
     parsedLayerKey.value = layerKey;
@@ -598,6 +676,27 @@ watch(active, () => {
 .maps { flex: 1; min-height: 0; display: grid; gap: 10px; }
 .cell { position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; }
 .cell .map-base { position: absolute; inset: 0; }
+.map-info {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 9px;
+  border-radius: 9px;
+  background: var(--glass);
+  backdrop-filter: blur(14px) saturate(150%);
+  -webkit-backdrop-filter: blur(14px) saturate(150%);
+  border: 1px solid var(--border);
+  font-size: 10px;
+  color: var(--muted);
+  pointer-events: none;
+  width: 180px;
+}
+.map-info span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.map-info b { color: var(--text); font-weight: 600; }
 
 .timebar { flex-shrink: 0; padding: 6px 14px 8px; overflow: hidden; }
 .tb-head { display: flex; align-items: center; gap: 6px; padding: 0 0 6px; }

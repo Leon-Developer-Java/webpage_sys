@@ -1,256 +1,943 @@
 <template>
-  <WebglLayer :src="imageUrl" :extent="extent" />
-  <LayerCard badge="GFS·ECMWF" file="053031.grib.png" legend-title="2m temperature (°C)" :gradient="gradient" :ticks="ticks" />
+  <WebglLayer
+    :src="currentImageUrl"
+    :extent="imageExtent"
+    :values="gridValues"
+    :width="gridWidth"
+    :height="gridHeight"
+    :product="currentVariable?.key"
+    :missing="gridMissing"
+  />
+
+  <LayerCard
+    :badge="label || 'GFS·ECMWF'"
+    :file="resolvedFile"
+    :legend-title="legendTitle"
+    :gradient="gradient"
+    :ticks="ticks"
+  >
+    <template v-if="variableOptions.length">
+      <label class="lc-row">
+        <span>产品类型</span>
+        <select v-model="selectedProductCategory">
+          <option v-for="item in productCategories" :key="item" :value="item">{{ item }}</option>
+        </select>
+      </label>
+
+      <label class="lc-row">
+        <span>气象要素</span>
+        <select v-model="selectedVariableKey">
+          <option
+            v-for="item in filteredVariableOptions"
+            :key="item.key"
+            :value="item.key"
+          >
+            {{ item.label }}
+          </option>
+        </select>
+      </label>
+
+      <label class="lc-row">
+        <span>预报层级</span>
+        <select v-model="selectedLevelKey">
+          <option
+            v-for="item in levelOptions"
+            :key="item.key"
+            :value="item.key"
+          >
+            {{ item.label }}
+          </option>
+        </select>
+      </label>
+
+      <div class="gfs-current">
+        <span>当前时次</span>
+        <b>{{ currentTimeLabel }}</b>
+        <small>{{ safeIndex + 1 }} / {{ currentPngUrls.length }} · {{ statusText }}</small>
+      </div>
+
+      <div class="gfs-stat-row">
+        <span>Min {{ formatStat(currentStepStats?.min) }}</span>
+        <span>Mean {{ formatStat(currentStepStats?.mean) }}</span>
+        <span>Max {{ formatStat(currentStepStats?.max) }}</span>
+        <em>{{ displayUnit }}</em>
+      </div>
+
+      <div v-if="pickedPoint" class="gfs-pick compact">
+        <b>点查信息</b>
+        <p>{{ pickedPoint.lon.toFixed(3) }}°, {{ pickedPoint.lat.toFixed(3) }}°</p>
+        <p>{{ pickedPoint.variable }} · {{ pickedPoint.time }}</p>
+        <p>
+          数值：
+          <span v-if="pickedPoint.missing">缺测</span>
+          <span v-else>{{ pickedPoint.value.toFixed(2) }} {{ pickedPoint.unit }}</span>
+        </p>
+      </div>
+
+      <div v-else class="gfs-pick-hint">
+        点击地图查看该点经纬度和当前变量值
+      </div>
+
+      <div class="gfs-status" :class="{ error: !!error || !!gridError }">
+        {{ error || gridError }}
+      </div>
+    </template>
+
+    <template v-else>
+      <div class="gfs-status" :class="{ error: !!error }">
+        {{ statusText }}
+      </div>
+    </template>
+  </LayerCard>
 </template>
 
 <script setup>
-import { inject, onMounted } from "vue";
-import LayerCard from "../components/LayerCard.vue";
+import { computed, inject, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
+import { ScreenSpaceEventHandler, ScreenSpaceEventType, Cartographic, Math as CesiumMath } from "cesium";
 import WebglLayer from "../components/WebglLayer.vue";
+import LayerCard from "../components/LayerCard.vue";
 
-// 成员2：GFS / ECMWF 数据层
-// 后端负责生成 PNG + meta.json，本组件负责把 PNG 和 extent 传给 WebglLayer。
+/*
+  刘家鹤：GFS / ECMWF 数据层
 
-const BACKEND_BASE = "http://127.0.0.1:8002";
+  功能：
+  1. 读取后端 /api/display/GFS 返回的 GFS/ECMWF 解析结果
+  2. 支持后端 variable_options / variable_layers 多变量结构
+  3. 左上角 LayerCard 风格变量选择
+  4. 根据底部时间轴 timeIndex 切换当前变量的多时次 PNG
+  5. 支持全球 GFS extent: [0, -90, 359.75, 90]
+  6. 兼容旧版后端只返回 png_url / png_urls 的情况
+*/
 
-// 优先使用上传后台 wait_process 目录下的 GFS PNG。
-// 若该路径无法访问，可改为：`${BACKEND_BASE}/data/GFS/053031.grib.png`
-const imageUrl = `${BACKEND_BASE}/data/GFS/wait_process/053031.grib.png`;
+const props = defineProps({
+  src: String,
+  extent: { type: Array, default: null },
+  label: { type: String, default: "GFS·ECMWF" },
+  file: String,
 
-// extent = [west, south, east, north]
-const extent = [114, 27, 123, 35];
-const gradient = "linear-gradient(to right, #1e40af, #0ea5e9, #22c55e, #facc15, #ef4444)";
-const ticks = ["14", "20", "25", "30", "34"];
+  // Overview.vue 传入的当前解析结果
+  parsed: {
+    type: Object,
+    default: null
+  },
 
+  // Overview.vue 底部时间轴传入的时次索引
+  timeIndex: {
+    type: Number,
+    default: 0
+  }
+});
+
+const emit = defineEmits(["variable-change"]);
+
+const API_BASE = "http://127.0.0.1:8002";
+const FALLBACK_EXTENT = [0, -90, 359.75, 90];
+const FALLBACK_IMAGE = `${API_BASE}/data/GFS/053031.grib.png`;
+const DEFAULT_MISSING = -9999;
+
+const viewerRef = inject("cesiumViewer", ref(null));
 const flyToExtent = inject("flyToExtent", null);
+
+const display = ref(null);
+const error = ref("");
+const loading = ref(false);
+
+const selectedProductCategory = ref("");
+const selectedVariableKey = ref("");
+const selectedLevelKey = ref("surface");
+
+const gridValues = shallowRef(null);
+const gridLoading = ref(false);
+const gridError = ref("");
+let gridRequestId = 0;
+
+const pickedPoint = ref(null);
+
+let timer = null;
+let zoomedKey = "";
+let clickHandler = null;
+
+const variableLayers = computed(() => {
+  const data = display.value || {};
+
+  const layers =
+    data.variable_layers ||
+    data.weather_info?.variable_layers ||
+    data.meta?.variable_layers ||
+    data.extra?.variable_layers ||
+    data.meta_json?.variable_layers ||
+    data.meta_json?.weather_info?.variable_layers ||
+    data.meta_json?.meta?.variable_layers ||
+    {};
+
+  if (layers && typeof layers === "object" && Object.keys(layers).length) {
+    return layers;
+  }
+
+  // 兼容旧接口：只有一个默认 PNG 图层时，也伪造成一个变量层
+  const info = data.weather_info || data.meta_json?.weather_info || data.meta || data.meta_json?.meta || {};
+  const urls =
+    data.png_urls ||
+    info.png_urls ||
+    data.extra?.png_urls ||
+    data.meta_json?.png_urls ||
+    [];
+
+  const singleUrl =
+    data.png_url ||
+    info.png_url ||
+    data.extra?.png_url ||
+    data.meta_json?.png_url ||
+    "";
+
+  return {
+    default: {
+      key: "default",
+      label: info.mainVariableName || info.element || "GFS field",
+      element: info.element || "GFS field",
+      unit: info.unit || info.displayUnit || "",
+      level: info.level || "surface",
+      time: info.time || "",
+      times: info.times || data.times || [],
+      extent: info.extent || data.extent || FALLBACK_EXTENT,
+      png_urls: Array.isArray(urls) && urls.length ? urls : [singleUrl || FALLBACK_IMAGE],
+      min: info.min,
+      max: info.max,
+      mean: info.mean,
+      missing: DEFAULT_MISSING,
+      missingText: info.missing,
+      grid: info.gridShape || null,
+      range: info.range,
+      quality: info.quality,
+      alert: info.alert,
+      gradient: "linear-gradient(to right, #1e40af, #0ea5e9, #22c55e, #facc15, #ef4444)",
+      legend_ticks: ["低", "较低", "中", "较高", "高"]
+    }
+  };
+});
+
+const variableOptions = computed(() => {
+  const data = display.value || {};
+
+  const options =
+    data.variable_options ||
+    data.weather_info?.variable_options ||
+    data.meta?.variable_options ||
+    data.extra?.variable_options ||
+    data.meta_json?.variable_options ||
+    data.meta_json?.weather_info?.variable_options ||
+    data.meta_json?.meta?.variable_options ||
+    [];
+
+  if (Array.isArray(options) && options.length) {
+    return options.map(item => ({
+      key: String(item.key),
+      label: item.label || item.element || String(item.key),
+      unit: item.unit || item.displayUnit || "",
+      varType: item.varType || "generic",
+      ...item
+    }));
+  }
+
+  return Object.entries(variableLayers.value).map(([key, layer]) => ({
+    key,
+    label: layer.label || layer.element || key,
+    unit: layer.unit || layer.displayUnit || "",
+    varType: layer.varType || "generic"
+  }));
+});
+
+const productCategories = computed(() => {
+  const arr = variableOptions.value
+    .map(item => item.productCategory || item.productType || categoryByVarType(item.varType) || "数值预报产品")
+    .filter(Boolean);
+  return [...new Set(arr)];
+});
+
+const filteredVariableOptions = computed(() => {
+  if (!selectedProductCategory.value) return variableOptions.value;
+  return variableOptions.value.filter(item => {
+    const cat = item.productCategory || item.productType || categoryByVarType(item.varType) || "数值预报产品";
+    return cat === selectedProductCategory.value;
+  });
+});
+
+const currentVariable = computed(() => {
+  return (
+    filteredVariableOptions.value.find(item => item.key === selectedVariableKey.value) ||
+    filteredVariableOptions.value[0] ||
+    variableOptions.value[0] ||
+    null
+  );
+});
+
+const currentLayer = computed(() => {
+  const key = currentVariable.value?.key || selectedVariableKey.value;
+  return variableLayers.value[key] || Object.values(variableLayers.value)[0] || null;
+});
+
+const levelOptions = computed(() => {
+  const levelText =
+    currentLayer.value?.level ||
+    currentLayer.value?.typeOfLevel ||
+    currentLayer.value?.GRIB_typeOfLevel ||
+    "surface";
+
+  return [
+    {
+      key: "surface",
+      label: levelText
+    }
+  ];
+});
+
+const currentPngUrls = computed(() => {
+  const urls = currentLayer.value?.png_urls || currentLayer.value?.pngUrls || [];
+  const normalized = urls.map(toPublicUrl).filter(Boolean);
+
+  if (normalized.length) {
+    return normalized;
+  }
+
+  const single = toPublicUrl(currentLayer.value?.png_url || currentLayer.value?.png || props.src);
+  return single ? [single] : [FALLBACK_IMAGE];
+});
+
+const imageExtent = computed(() => {
+  const candidate =
+    props.extent ||
+    currentLayer.value?.extent ||
+    display.value?.extent ||
+    display.value?.weather_info?.extent ||
+    display.value?.meta_json?.extent ||
+    display.value?.meta_json?.weather_info?.extent ||
+    FALLBACK_EXTENT;
+
+  if (Array.isArray(candidate) && candidate.length === 4) {
+    return candidate.map(Number);
+  }
+
+  return FALLBACK_EXTENT;
+});
+
+const safeIndex = computed(() => {
+  const count = currentPngUrls.value.length;
+
+  if (!count) {
+    return 0;
+  }
+
+  const idx = Number.isFinite(props.timeIndex)
+    ? Math.floor(props.timeIndex)
+    : 0;
+
+  return ((idx % count) + count) % count;
+});
+
+const currentImageUrl = computed(() => {
+  return currentPngUrls.value[safeIndex.value] || FALLBACK_IMAGE;
+});
+
+const currentTimes = computed(() => {
+  const times = currentLayer.value?.times || [];
+
+  if (Array.isArray(times) && times.length) {
+    return times.map(String);
+  }
+
+  return Array.from(
+    { length: currentPngUrls.value.length },
+    (_, i) => `step${String(i).padStart(3, "0")}`
+  );
+});
+
+const currentRawTimeLabel = computed(() => {
+  return currentTimes.value[safeIndex.value] || `step${String(safeIndex.value).padStart(3, "0")}`;
+});
+
+const currentForecastLabel = computed(() => {
+  const labels = currentLayer.value?.forecast_labels || currentLayer.value?.forecastLabels || [];
+  return labels[safeIndex.value] || `F${String(safeIndex.value).padStart(3, "0")}`;
+});
+
+const currentTimeLabel = computed(() => {
+  return `${currentForecastLabel.value} · ${formatTimeLabel(currentRawTimeLabel.value)}`;
+});
+
+const gridWidth = computed(() => {
+  return Number(currentLayer.value?.grid?.nx || currentLayer.value?.gridShape?.nx || 0);
+});
+
+const gridHeight = computed(() => {
+  return Number(currentLayer.value?.grid?.ny || currentLayer.value?.gridShape?.ny || 0);
+});
+
+const gridMissing = computed(() => {
+  return Number(currentLayer.value?.missing ?? DEFAULT_MISSING);
+});
+
+const currentGridUrl = computed(() => {
+  const urls = currentLayer.value?.grid_urls || currentLayer.value?.gridUrls || [];
+  const url = urls[safeIndex.value] || "";
+  return toPublicUrl(url);
+});
+
+const currentStepStats = computed(() => {
+  const stats = currentLayer.value?.step_stats || currentLayer.value?.stepStats || [];
+
+  return stats[safeIndex.value] || {
+    min: currentLayer.value?.min,
+    max: currentLayer.value?.max,
+    mean: currentLayer.value?.mean,
+  };
+});
+
+const weatherInfo = computed(() => {
+  return display.value?.weather_info || display.value?.meta_json?.weather_info || display.value?.meta || {};
+});
+
+const resolvedFile = computed(() => {
+  return (
+    props.file ||
+    display.value?.file_name ||
+    display.value?.meta?.file ||
+    weatherInfo.value.file ||
+    display.value?.source_file?.split(/[\\/]/).pop() ||
+    "GFS realtime"
+  );
+});
+
+const displayUnit = computed(() => {
+  return currentLayer.value?.unit || currentVariable.value?.unit || currentLayer.value?.displayUnit || "";
+});
+
+const legendTitle = computed(() => {
+  const label = currentVariable.value?.label || currentLayer.value?.label || currentLayer.value?.element || "GFS field";
+  const unit = displayUnit.value;
+  return unit ? `${label} (${unit})` : label;
+});
+
+const gradient = computed(() => {
+  return (
+    currentLayer.value?.gradient ||
+    currentVariable.value?.gradient ||
+    gradientByVarType(currentLayer.value?.varType || currentVariable.value?.varType)
+  );
+});
+
+const ticks = computed(() => {
+  if (Array.isArray(currentLayer.value?.legend_ticks) && currentLayer.value.legend_ticks.length) {
+    return currentLayer.value.legend_ticks;
+  }
+
+  const min = Number(currentLayer.value?.min);
+  const max = Number(currentLayer.value?.max);
+
+  if (Number.isFinite(min) && Number.isFinite(max) && Math.abs(max - min) > 1e-9) {
+    return Array.from({ length: 5 }, (_, i) => {
+      const value = min + (max - min) * i / 4;
+      return Math.abs(value) >= 10 ? value.toFixed(0) : value.toFixed(1);
+    });
+  }
+
+  return ["低", "较低", "中", "较高", "高"];
+});
+
+const statusText = computed(() => {
+  if (error.value) return error.value;
+  if (gridError.value) return gridError.value;
+  if (loading.value) return "图层读取中";
+  if (gridLoading.value) return "数值矩阵加载中";
+
+  const gridText = currentLayer.value?.grid?.text || currentLayer.value?.gridText || "";
+  const levelText = currentLayer.value?.level || "";
+
+  return [levelText, gridText ? `网格 ${gridText}` : ""].filter(Boolean).join(" · ") || "已加载";
+});
+
+function formatTimeLabel(value) {
+  if (!value) return "—";
+
+  const text = String(value);
+  const match = text.match(/(\d{2})-(\d{2})[T\s](\d{2}):(\d{2})/);
+
+  if (match) {
+    return `${match[1]}-${match[2]} ${match[3]}:${match[4]}`;
+  }
+
+  return text.length > 16 ? text.slice(0, 16) : text;
+}
+
+function categoryByVarType(type) {
+  if (type === "temperature") return "温度产品";
+  if (type === "precipitation") return "降水产品";
+  if (type === "pressure") return "气压产品";
+  if (type === "wind") return "风场产品";
+  return "数值预报产品";
+}
+
+function gradientByVarType(type) {
+  if (type === "precipitation") {
+    return "linear-gradient(to right, #f8fafc, #93c5fd, #22c55e, #facc15, #ef4444)";
+  }
+
+  if (type === "pressure") {
+    return "linear-gradient(to right, #7c3aed, #2563eb, #22c55e, #facc15, #ef4444)";
+  }
+
+  if (type === "wind") {
+    return "linear-gradient(to right, #e0f2fe, #38bdf8, #2563eb, #7c3aed, #ef4444)";
+  }
+
+  return "linear-gradient(to right, #1e40af, #0ea5e9, #22c55e, #facc15, #ef4444)";
+}
+
+function toPublicUrl(path) {
+  if (!path) return "";
+
+  if (/^https?:\/\//i.test(path) || String(path).startsWith("data:")) {
+    return path;
+  }
+
+  const normalized = String(path).replaceAll("\\", "/");
+  const idx = normalized.indexOf("/data/");
+
+  if (idx >= 0) {
+    return `${API_BASE}${normalized.slice(idx)}`;
+  }
+
+  if (normalized.startsWith("/data/")) {
+    return `${API_BASE}${normalized}`;
+  }
+
+  return normalized.startsWith("/")
+    ? `${API_BASE}${normalized}`
+    : `${API_BASE}/data/GFS/${normalized}`;
+}
+
+function syncSelection() {
+  if (!variableOptions.value.length) return;
+
+  if (!productCategories.value.includes(selectedProductCategory.value)) {
+    selectedProductCategory.value = productCategories.value[0] || "数值预报产品";
+  }
+
+  if (!filteredVariableOptions.value.some(item => item.key === selectedVariableKey.value)) {
+    selectedVariableKey.value = filteredVariableOptions.value[0]?.key || variableOptions.value[0].key;
+  }
+
+  if (!levelOptions.value.some(item => item.key === selectedLevelKey.value)) {
+    selectedLevelKey.value = levelOptions.value[0]?.key || "surface";
+  }
+}
+
+function pickPayload(payload) {
+  if (!payload) return null;
+  return payload.data || payload;
+}
+
+function applyDisplayData(payload) {
+  const data = pickPayload(payload);
+
+  if (!data) {
+    return;
+  }
+
+  display.value = data;
+  syncSelection();
+  pickedPoint.value = null;
+  emitCurrentVariable();
+}
+
+async function loadGfsDisplay() {
+  if (props.parsed) {
+    applyDisplayData(props.parsed);
+    return;
+  }
+
+  loading.value = true;
+
+  try {
+    const response = await fetch(`${API_BASE}/api/display/GFS?t=${Date.now()}`, {
+      method: "GET",
+      cache: "no-store"
+    });
+
+    const payload = await response.json();
+
+    if (!response.ok || (payload.code !== undefined && payload.code !== 0)) {
+      throw new Error(payload.detail || payload.message || "GFS/ECMWF 图层数据读取失败");
+    }
+
+    applyDisplayData(payload);
+    error.value = "";
+  } catch (err) {
+    error.value = "GFS/ECMWF 数据未加载";
+    console.error(err);
+  } finally {
+    loading.value = false;
+  }
+}
+
+
+async function loadGrid() {
+  const url = currentGridUrl.value;
+  const expectedSize = gridWidth.value * gridHeight.value;
+  const requestId = ++gridRequestId;
+
+  if (!url || !expectedSize) {
+    gridValues.value = null;
+    return;
+  }
+
+  gridLoading.value = true;
+  gridError.value = "";
+
+  try {
+    const response = await fetch(url, { cache: "no-store" });
+
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(detail || "GFS 数值矩阵读取失败");
+    }
+
+    const buffer = await response.arrayBuffer();
+    const values = new Float32Array(buffer);
+
+    if (values.length !== expectedSize) {
+      throw new Error(`GFS 数值矩阵尺寸不匹配：${values.length} != ${expectedSize}`);
+    }
+
+    if (requestId !== gridRequestId) return;
+
+    gridValues.value = values;
+  } catch (err) {
+    if (requestId !== gridRequestId) return;
+
+    gridValues.value = null;
+    gridError.value = `GFS 数值矩阵未加载：${err.message}`;
+    console.error(err);
+  } finally {
+    if (requestId === gridRequestId) {
+      gridLoading.value = false;
+    }
+  }
+}
+
+function normalizeLonForExtent(lon, extent) {
+  const [west, , east] = extent;
+  let x = Number(lon);
+
+  if (west >= 0 && east > 180 && x < 0) {
+    x += 360;
+  }
+
+  return x;
+}
+
+function getValueAtLonLat(lon, lat) {
+  if (!gridValues.value || !gridWidth.value || !gridHeight.value) {
+    return null;
+  }
+
+  const [west, south, east, north] = imageExtent.value.map(Number);
+  const xLon = normalizeLonForExtent(lon, imageExtent.value);
+  const yLat = Number(lat);
+
+  if (xLon < west || xLon > east || yLat < south || yLat > north) {
+    return null;
+  }
+
+  const col = Math.round((xLon - west) / (east - west) * (gridWidth.value - 1));
+  const row = Math.round((north - yLat) / (north - south) * (gridHeight.value - 1));
+
+  if (row < 0 || row >= gridHeight.value || col < 0 || col >= gridWidth.value) {
+    return null;
+  }
+
+  const idx = row * gridWidth.value + col;
+  const value = gridValues.value[idx];
+
+  if (!Number.isFinite(value) || value === gridMissing.value) {
+    return { lon, lat, row, col, value: null, missing: true };
+  }
+
+  return { lon, lat, row, col, value, missing: false };
+}
+
+function getViewer() {
+  return viewerRef?.value || viewerRef || null;
+}
+
+function setupClickHandler() {
+  const viewer = getViewer();
+
+  if (!viewer || !viewer.scene || clickHandler) {
+    return;
+  }
+
+  clickHandler = new ScreenSpaceEventHandler(viewer.scene.canvas);
+
+  clickHandler.setInputAction((movement) => {
+    const scene = viewer.scene;
+    let cartesian = null;
+
+    if (scene.pickPosition) {
+      try {
+        cartesian = scene.pickPosition(movement.position);
+      } catch {
+        cartesian = null;
+      }
+    }
+
+    if (!cartesian && viewer.camera?.pickEllipsoid) {
+      cartesian = viewer.camera.pickEllipsoid(movement.position, scene.globe?.ellipsoid);
+    }
+
+    if (!cartesian) return;
+
+    const cartographic = Cartographic.fromCartesian(cartesian);
+    const lon = CesiumMath.toDegrees(cartographic.longitude);
+    const lat = CesiumMath.toDegrees(cartographic.latitude);
+
+    onPointPick(lon, lat);
+  }, ScreenSpaceEventType.LEFT_CLICK);
+}
+
+function destroyClickHandler() {
+  if (clickHandler) {
+    clickHandler.destroy();
+    clickHandler = null;
+  }
+}
+
+function onPointPick(lon, lat) {
+  const picked = getValueAtLonLat(lon, lat);
+
+  if (!picked) {
+    pickedPoint.value = null;
+    return;
+  }
+
+  pickedPoint.value = {
+    ...picked,
+    variable: currentVariable.value?.label || currentVariable.value?.key || "GFS field",
+    unit: displayUnit.value,
+    time: currentTimeLabel.value,
+    min: currentStepStats.value?.min,
+    max: currentStepStats.value?.max,
+    mean: currentStepStats.value?.mean,
+  };
+}
+
+function zoomToData() {
+  const ext = imageExtent.value;
+
+  if (!viewerRef?.value || !Array.isArray(ext) || ext.length !== 4) {
+    return;
+  }
+
+  const [west, south, east, north] = ext.map(Number);
+
+  if ([west, south, east, north].some(value => !Number.isFinite(value))) {
+    return;
+  }
+
+  // 全球 0~360 范围不要强制飞行，避免视角跳转异常。
+  if (west <= 0 && east >= 359) {
+    return;
+  }
+
+  if (west >= east || south >= north) {
+    return;
+  }
+
+  const key = ext.join(",");
+
+  if (key === zoomedKey) {
+    return;
+  }
+
+  zoomedKey = key;
+
+  const dx = Math.max((east - west) * 0.3, 0.05);
+  const dy = Math.max((north - south) * 0.3, 0.05);
+
+  flyToExtent?.([west - dx, south - dy, east + dx, north + dy]);
+}
+
+function emitCurrentVariable() {
+  if (!currentLayer.value) return;
+
+  emit("variable-change", {
+    file: resolvedFile.value,
+    element: currentLayer.value.element || currentLayer.value.label || legendTitle.value,
+    time: currentTimeLabel.value,
+    level: currentLayer.value.level || "",
+    range: currentLayer.value.range || "",
+    grid: currentLayer.value.grid?.text || currentLayer.value.gridText || "",
+    missing: currentLayer.value.missingText || "",
+    unit: displayUnit.value,
+    vars: variableOptions.value.map(item => item.label || item.key).join("、"),
+    steps: currentLayer.value.steps || String(currentPngUrls.value.length),
+    status: "解析成功",
+    quality: currentLayer.value.quality || "",
+    max: currentStepStats.value?.max,
+    min: currentStepStats.value?.min,
+    mean: currentStepStats.value?.mean,
+    alert: currentLayer.value.alert || "无",
+    extent: imageExtent.value,
+    png_url: currentImageUrl.value,
+    png_urls: currentPngUrls.value,
+    times: currentTimes.value,
+  });
+}
+
+function formatStat(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) {
+    return "—";
+  }
+  const n = Number(value);
+  return Math.abs(n) >= 10 ? n.toFixed(2) : n.toFixed(3);
+}
+
+watch(
+  () => props.parsed,
+  value => {
+    if (value) {
+      applyDisplayData(value);
+    }
+  },
+  { immediate: true, deep: true }
+);
+
+watch(variableOptions, syncSelection);
+watch(selectedVariableKey, () => {
+  syncSelection();
+  pickedPoint.value = null;
+  emitCurrentVariable();
+});
+watch(currentLayer, () => {
+  pickedPoint.value = null;
+  emitCurrentVariable();
+});
+watch(
+  () => [currentVariable.value?.key, safeIndex.value, currentGridUrl.value],
+  () => {
+    pickedPoint.value = null;
+    loadGrid();
+    emitCurrentVariable();
+  },
+  { immediate: true }
+);
+watch(
+  () => [viewerRef?.value, imageExtent.value],
+  () => {
+    zoomToData();
+    setupClickHandler();
+  },
+  { immediate: true }
+);
+
 onMounted(() => {
-  const [w, s, e, n] = extent;
-  const dx = Math.max((e - w) * 0.35, 0.5), dy = Math.max((n - s) * 0.35, 0.5);
-  flyToExtent?.([w - dx, s - dy, e + dx, n + dy]);
+  loadGfsDisplay();
+  setupClickHandler();
+  timer = window.setInterval(loadGfsDisplay, 30000);
+});
+
+onBeforeUnmount(() => {
+  if (timer) {
+    window.clearInterval(timer);
+  }
+  destroyClickHandler();
 });
 </script>
-<!--<template>-->
-<!--  &lt;!&ndash; GFS / ECMWF 后端 PNG 叠加层 &ndash;&gt;-->
-<!--  <WebglLayer :src="imageUrl" :extent="extent" />-->
 
-<!--  &lt;!&ndash; GFS / ECMWF 图例与状态 &ndash;&gt;-->
-<!--  <div class="layer-legend gfs-legend">-->
-<!--    <div class="legend-head">-->
-<!--      <div>-->
-<!--        <b>GFS·ECMWF</b>-->
-<!--        <small>{{ fileName }}</small>-->
-<!--      </div>-->
-<!--      <button @click="loadLatestGfs">刷新</button>-->
-<!--    </div>-->
+<style scoped>
+.gfs-current {
+  display: grid;
+  gap: 2px;
+  margin-top: 8px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.42);
+  color: #cbd5e1;
+  font-size: 10px;
+}
 
-<!--    <div class="legend-status" :class="{ error: hasError }">-->
-<!--      {{ statusText }}-->
-<!--    </div>-->
+.gfs-current b {
+  color: #e5e7eb;
+  font-size: 12px;
+  font-weight: 700;
+}
 
-<!--    <small>{{ legendTitle }}</small>-->
-<!--    <div class="legend-bar" :style="{ background: gradient }"></div>-->
-<!--    <ul>-->
-<!--      <li v-for="t in ticks" :key="t">{{ t }}</li>-->
-<!--    </ul>-->
-<!--  </div>-->
-<!--</template>-->
+.gfs-current small {
+  color: #94a3b8;
+  line-height: 1.35;
+}
 
-<!--<script setup>-->
-<!--import { computed, onBeforeUnmount, onMounted, ref } from "vue";-->
-<!--import WebglLayer from "../components/WebglLayer.vue";-->
+.gfs-stat-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  margin-top: 7px;
+  font-size: 10px;
+  color: #cbd5e1;
+}
 
-<!--/*-->
-<!--  成员2：GFS / ECMWF 数据层-->
+.gfs-stat-row span {
+  padding: 4px 5px;
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.38);
+  text-align: center;
+  white-space: nowrap;
+}
 
-<!--  只修改 src/layers/GribLayer.vue，不改公共框架。-->
-<!--  本组件自己读取后端 /api/display/GFS，获取最新 png_url 和 extent。-->
-<!--  这样前端上传并解析 GFS 后，本图层可以刷新到最新结果。-->
-<!--*/-->
+.gfs-stat-row em {
+  grid-column: 1 / -1;
+  color: #94a3b8;
+  font-style: normal;
+  text-align: right;
+}
 
-<!--const BACKEND_BASE = "http://127.0.0.1:8002";-->
+.gfs-status {
+  margin-top: 6px;
+  font-size: 10px;
+  color: #86efac;
+  line-height: 1.4;
+}
 
-<!--// 兜底 PNG：后端未启动或 display 接口暂时失败时仍能展示测试图层。-->
-<!--const FALLBACK_IMAGE = `${BACKEND_BASE}/data/GFS/wait_process/053031.grib.png`;-->
-<!--const FALLBACK_EXTENT = [114, 27, 123, 35];-->
+.gfs-status:empty {
+  display: none;
+}
 
-<!--const imageUrl = ref(FALLBACK_IMAGE);-->
-<!--const extent = ref(FALLBACK_EXTENT);-->
+.gfs-status.error {
+  color: #fca5a5;
+}
 
-<!--const fileName = ref("等待 GFS 数据");-->
-<!--const unit = ref("°C");-->
-<!--const element = ref("2m temperature");-->
-<!--const statusText = ref("正在读取最新 GFS 数据...");-->
-<!--const hasError = ref(false);-->
+.gfs-pick {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(148, 163, 184, 0.25);
+  font-size: 10px;
+  color: #cbd5e1;
+}
 
-<!--let timer = null;-->
+.gfs-pick b {
+  display: block;
+  margin-bottom: 5px;
+  color: #e5e7eb;
+  font-size: 11px;
+}
 
-<!--const legendTitle = computed(() => {-->
-<!--  return `${element.value} (${unit.value})`;-->
-<!--});-->
+.gfs-pick p {
+  margin: 3px 0;
+}
 
-<!--const gradient = "linear-gradient(to right, #1e40af, #0ea5e9, #22c55e, #facc15, #ef4444)";-->
-<!--const ticks = ["14", "20", "25", "30", "34"];-->
-
-<!--function toFullUrl(url) {-->
-<!--  if (!url) return FALLBACK_IMAGE;-->
-<!--  return url.startsWith("http") ? url : `${BACKEND_BASE}${url}`;-->
-<!--}-->
-
-<!--function bboxToExtent(bbox) {-->
-<!--  if (!bbox) return null;-->
-
-<!--  const west = bbox.west;-->
-<!--  const south = bbox.south;-->
-<!--  const east = bbox.east;-->
-<!--  const north = bbox.north;-->
-
-<!--  if ([west, south, east, north].every(v => typeof v === "number")) {-->
-<!--    return [west, south, east, north];-->
-<!--  }-->
-
-<!--  return null;-->
-<!--}-->
-
-<!--function normalizeExtent(data) {-->
-<!--  const candidate =-->
-<!--    data?.extent ||-->
-<!--    data?.meta?.extent ||-->
-<!--    data?.weather_info?.extent ||-->
-<!--    data?.meta_json?.extent ||-->
-<!--    data?.meta_json?.meta?.extent ||-->
-<!--    bboxToExtent(data?.bbox) ||-->
-<!--    bboxToExtent(data?.meta_json?.bbox);-->
-
-<!--  if (Array.isArray(candidate) && candidate.length === 4) {-->
-<!--    return candidate.map(Number);-->
-<!--  }-->
-
-<!--  return FALLBACK_EXTENT;-->
-<!--}-->
-
-<!--function normalizePngUrl(data) {-->
-<!--  const candidate =-->
-<!--    data?.png_url ||-->
-<!--    data?.meta?.png_url ||-->
-<!--    data?.weather_info?.png_url ||-->
-<!--    data?.meta_json?.png_url ||-->
-<!--    data?.meta_json?.meta?.png_url ||-->
-<!--    (Array.isArray(data?.png_urls) ? data.png_urls[0] : "");-->
-
-<!--  return toFullUrl(candidate);-->
-<!--}-->
-
-<!--function normalizeFileName(data) {-->
-<!--  return (-->
-<!--    data?.file_name ||-->
-<!--    data?.meta?.file ||-->
-<!--    data?.weather_info?.file ||-->
-<!--    data?.source_file?.split(/[\\/]/).pop() ||-->
-<!--    "GFS PNG"-->
-<!--  );-->
-<!--}-->
-
-<!--async function loadLatestGfs() {-->
-<!--  try {-->
-<!--    const response = await fetch(`${BACKEND_BASE}/api/display/GFS?t=${Date.now()}`, {-->
-<!--      method: "GET",-->
-<!--      cache: "no-store"-->
-<!--    });-->
-
-<!--    if (!response.ok) {-->
-<!--      throw new Error(`HTTP ${response.status}`);-->
-<!--    }-->
-
-<!--    const payload = await response.json();-->
-<!--    const data = payload?.data || payload;-->
-
-<!--    imageUrl.value = normalizePngUrl(data);-->
-<!--    extent.value = normalizeExtent(data);-->
-<!--    fileName.value = normalizeFileName(data);-->
-
-<!--    const info = data?.weather_info || data?.meta || {};-->
-<!--    element.value = info.element || info.mainVariableName || "GFS field";-->
-<!--    unit.value = info.unit || info.displayUnit || "unknown";-->
-
-<!--    statusText.value = "已加载后端最新 GFS 图层";-->
-<!--    hasError.value = false;-->
-<!--  } catch (error) {-->
-<!--    console.warn("GFS display fetch failed:", error);-->
-
-<!--    imageUrl.value = FALLBACK_IMAGE;-->
-<!--    extent.value = FALLBACK_EXTENT;-->
-<!--    fileName.value = "053031.grib.png";-->
-<!--    element.value = "2m temperature";-->
-<!--    unit.value = "°C";-->
-
-<!--    statusText.value = "未能读取最新接口，当前显示本地测试 PNG";-->
-<!--    hasError.value = true;-->
-<!--  }-->
-<!--}-->
-
-<!--onMounted(() => {-->
-<!--  loadLatestGfs();-->
-
-<!--  // 上传并解析后，后端会更新最新 meta/png。-->
-<!--  // 这里轮询刷新，避免改 Overview.vue。-->
-<!--  timer = window.setInterval(loadLatestGfs, 5000);-->
-<!--});-->
-
-<!--onBeforeUnmount(() => {-->
-<!--  if (timer) {-->
-<!--    window.clearInterval(timer);-->
-<!--  }-->
-<!--});-->
-<!--</script>-->
-
-<!--<style scoped>-->
-<!--.gfs-legend {-->
-<!--  min-width: 190px;-->
-<!--}-->
-
-<!--.legend-head {-->
-<!--  display: flex;-->
-<!--  align-items: flex-start;-->
-<!--  justify-content: space-between;-->
-<!--  gap: 8px;-->
-<!--  margin-bottom: 8px;-->
-<!--}-->
-
-<!--.legend-head b {-->
-<!--  display: block;-->
-<!--  font-size: 12px;-->
-<!--  color: #f8fafc;-->
-<!--}-->
-
-<!--.legend-head small {-->
-<!--  display: block;-->
-<!--  margin-top: 3px;-->
-<!--  max-width: 135px;-->
-<!--  color: #cbd5e1;-->
-<!--  font-size: 10px;-->
-<!--  word-break: break-all;-->
-<!--}-->
-
-<!--.legend-head button {-->
-<!--  border: none;-->
-<!--  border-radius: 6px;-->
-<!--  padding: 3px 8px;-->
-<!--  color: #dbeafe;-->
-<!--  background: rgba(59, 130, 246, 0.28);-->
-<!--  cursor: pointer;-->
-<!--}-->
-
-<!--.legend-head button:hover {-->
-<!--  background: rgba(59, 130, 246, 0.42);-->
-<!--}-->
-
-<!--.legend-status {-->
-<!--  margin-bottom: 8px;-->
-<!--  font-size: 10px;-->
-<!--  color: #86efac;-->
-<!--}-->
-
-<!--.legend-status.error {-->
-<!--  color: #fca5a5;-->
-<!--}-->
-<!--</style>-->
+.gfs-pick-hint {
+  margin-top: 8px;
+  color: #94a3b8;
+  font-size: 10px;
+  line-height: 1.45;
+}
+</style>
