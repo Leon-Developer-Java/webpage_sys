@@ -54,12 +54,13 @@ const controls = inject("mapControls", null);
 /* 定位容器：负责贴左、下移、滑入滑出动画；把手可以溢出到右侧 */
 .layer-card {
   position: absolute;
-  /* 以卡片"中心"对齐底图竖直中线：不同高度的卡片都围绕同一中心展开，
-     大卡片自然向上下扩展，把手始终落在卡片正中且位置固定不跳动 */
   top: 50%;
   left: 0;
   z-index: 5;
   width: min(240px, calc(100% - 10px));
+  max-height: calc(100% - 16px);
+  display: flex;
+  flex-direction: column;
   transform: translateY(-50%);
   transition: transform 0.3s cubic-bezier(0.22, 0.61, 0.36, 1);
 }
@@ -70,6 +71,8 @@ const controls = inject("mapControls", null);
 
 /* 卡片主体：玻璃质感 + 左侧直角，内容裁切 */
 .lc-body {
+  flex: 1;
+  min-height: 0;
   border: 1px solid var(--border);
   border-left: 0;
   border-radius: 0 10px 10px 0;
@@ -78,7 +81,13 @@ const controls = inject("mapControls", null);
   -webkit-backdrop-filter: blur(14px) saturate(150%);
   font-size: 11px;
   color: var(--text);
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: none;
+}
+
+.lc-body::-webkit-scrollbar {
+  display: none;
 }
 
 /* ── 右侧中部把手（突出、强调色） ── */
