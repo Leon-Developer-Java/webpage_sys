@@ -8,7 +8,10 @@
       <button :class="{ on: dockOpen && tool === 'base' }" @click="openTool('base')"><el-icon><MapLocation /></el-icon><span>底图</span></button>
       <button :class="{ on: showGrid }" @click="showGrid = !showGrid"><el-icon><Grid /></el-icon><span>经纬网</span></button>
       <button :class="{ on: showVector }" @click="toggleVector"><b class="dim-icon">界</b><span>边界</span></button>
-      <button v-if="showVector" :class="{ on: mapDark }" @click="mapDark = !mapDark"><el-icon><Moon /></el-icon><span>暗色</span></button>
+      <button v-if="showVector" @click="mapDark = !mapDark">
+        <el-icon><Sunny v-if="mapDark" /><Moon v-else /></el-icon>
+        <span>{{ mapDark ? '亮' : '暗' }}</span>
+      </button>
       <button @click="cycleLayout">
         <el-icon><Monitor v-if="layout === '1'" /><Operation v-else-if="layout === '2'" /><Grid v-else /></el-icon>
         <span>{{ { '1': '单屏', '2': '双屏', '4': '四屏' }[layout] }}</span>
@@ -122,7 +125,7 @@
 
 <script setup>
 import { computed, inject, onBeforeUnmount, ref, watch } from "vue";
-import { ArrowLeft, ArrowRight, Check, CircleCheck, Close, Connection, DArrowLeft, DArrowRight, DataAnalysis, Document, FolderOpened, Grid, MapLocation, Monitor, Moon, Operation, Position, RefreshRight, VideoPlay, VideoPause } from "@element-plus/icons-vue";
+import { ArrowLeft, ArrowRight, Check, CircleCheck, Close, Connection, DArrowLeft, DArrowRight, DataAnalysis, Document, FolderOpened, Grid, MapLocation, Monitor, Moon, Operation, Position, RefreshRight, Sunny, VideoPlay, VideoPause } from "@element-plus/icons-vue";
 import { parseFile } from "../api";
 import ProjMap from "../components/ProjMap.vue";
 import MetaPanel from "../components/MetaPanel.vue";
@@ -864,7 +867,7 @@ const dockTitle = computed(() => ({ file: "选择文件", data: "数据类型", 
 
 function toggleVector() {
   showVector.value = !showVector.value;
-  if (showVector.value) mapDark.value = true;
+  if (showVector.value) mapDark.value = false;
 }
 
 function cycleLayout() {
