@@ -28,6 +28,8 @@
 
 <script setup>
 import { computed, inject, onMounted, ref, watch } from "vue";
+
+const emit = defineEmits(["display-loaded"]);
 import WebglLayer from "../components/WebglLayer.vue";
 import LayerCard from "../components/LayerCard.vue";
 
@@ -53,9 +55,20 @@ function toPublicUrl(path) {
 }
 
 function loadWrfDisplay() {
-  fetch(`${API_BASE}/api/display/WRF`).then((response) => response.json()).then((payload) => {
-    if (payload?.code === 0) display.value = payload.data;
-  });
+  fetch(`${API_BASE}/api/display/WRF`)
+    .then(r => r.json())
+    .then(payload => { if (payload?.code === 0) display.value = payload.data; })
+    .catch(() => {})
+    .finally(() => {
+      emit("display-loaded", {
+        meta: {
+          file: wrfMeta.value?.source_file || "",
+          element: currentVariable.value?.name || "WRF",
+          unit: currentVariable.value?.unit || "",
+          extent: extent.value,
+        },
+      });
+    });
 }
 
 const domains = {
