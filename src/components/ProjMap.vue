@@ -595,8 +595,15 @@ watch(() => props.syncView, v => {
 onBeforeUnmount(() => {
   ro?.disconnect();
   clearTimeout(mosaicTimer);
+  cancelAnimationFrame(animRAF);
   removeEventListener("pointermove", onMove);
   removeEventListener("pointerup", onUp);
+  if (gl) {
+    if (baseTex) gl.deleteTexture(baseTex);
+    if (dataTex) gl.deleteTexture(dataTex);
+    gl.getExtension("WEBGL_lose_context")?.loseContext();
+    gl = null;
+  }
 });
 </script>
 
