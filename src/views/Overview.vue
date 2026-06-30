@@ -7,7 +7,7 @@
       <button :class="{ on: dockOpen && tool === 'proj' }" @click="openTool('proj')"><el-icon><Position /></el-icon><span>投影</span></button>
       <button :class="{ on: dockOpen && tool === 'base' }" @click="openTool('base')"><el-icon><MapLocation /></el-icon><span>底图</span></button>
       <button :class="{ on: showGrid }" @click="showGrid = !showGrid"><el-icon><Grid /></el-icon><span>经纬网</span></button>
-      <button :class="{ on: showVector }" @click="showVector = !showVector"><b class="dim-icon">界</b><span>边界</span></button>
+      <button :class="{ on: showVector }" @click="toggleVector"><b class="dim-icon">界</b><span>边界</span></button>
       <button v-if="showVector" :class="{ on: mapDark }" @click="mapDark = !mapDark"><el-icon><Moon /></el-icon><span>暗色</span></button>
       <button @click="cycleLayout">
         <el-icon><Monitor v-if="layout === '1'" /><Operation v-else-if="layout === '2'" /><Grid v-else /></el-icon>
@@ -42,7 +42,7 @@
       <template v-else-if="tool === 'data'">
         <p class="pick-hint">选择数据类型</p>
         <div class="picker">
-          <button v-for="s in sources" :key="s.key" :class="{ on: active === s.key }" @click="selectSource(s.key)">
+          <button v-for="s in sources" :key="s.key" :class="{ on: active === s.key }" :disabled="switching && s.key !== active" @click="selectSource(s.key)">
             <span>{{ s.btn }}</span><el-icon v-if="active === s.key"><Check /></el-icon>
           </button>
         </div>
@@ -201,9 +201,11 @@ const syncView = ref(null);
 const showVector = ref(false);
 const mapDark = ref(dark.value);
 const emitterIdx = ref(-1);
+const switching = ref(false);
 const latestView = {};
 let animTimer = null;
 let lastTs = null;
+let switchingTimer = null;
 
 const selectedFileLabel = computed(() => {
   const files = Array.isArray(file.value) ? file.value : [];
@@ -228,6 +230,10 @@ watch(linked, v => {
 
 function onLayerDisplayLoaded(key, payload) {
   if (!payload) return;
+  if (key === active.value && switching.value) {
+    switching.value = false;
+    clearTimeout(switchingTimer);
+  }
   layerDisplays.value = { ...layerDisplays.value, [key]: payload };
 }
 
@@ -760,7 +766,7 @@ watch(
 );
 
 
-onBeforeUnmount(() => clearInterval(animTimer));
+onBeforeUnmount(() => { clearInterval(animTimer); clearTimeout(switchingTimer); });
 
 function businessTypeToLayerKey(type) {
   const t = String(type || "").toUpperCase();
@@ -856,6 +862,11 @@ const mapsGrid = computed(() => {
 
 const dockTitle = computed(() => ({ file: "选择文件", data: "数据类型", proj: "投影方式", base: "底图图层" }[tool.value]));
 
+function toggleVector() {
+  showVector.value = !showVector.value;
+  if (showVector.value) mapDark.value = true;
+}
+
 function cycleLayout() {
   layout.value = layout.value === "1" ? "2" : layout.value === "2" ? "4" : "1";
   if (layout.value === "1") linked.value = false;
@@ -870,6 +881,10 @@ function openTool(name) {
 }
 
 function selectSource(key) {
+  if (key === active.value) return;
+  switching.value = true;
+  clearTimeout(switchingTimer);
+  switchingTimer = setTimeout(() => { switching.value = false; }, 10000);
   active.value = key;
   parsed.value = null;
   parsedLayerKey.value = null;
