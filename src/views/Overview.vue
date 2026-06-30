@@ -75,7 +75,7 @@
     <div class="center">
       <div class="maps" :style="mapsGrid">
         <div :class="['cell', { 'cell-4': layout === '4' }]" v-for="(p, i) in panes" :key="layout + '-' + i">
-          <MapBase
+          <ProjMap
             :grid="showGrid"
             :dark="mapDark"
             :vector="showVector"
@@ -92,7 +92,7 @@
               @display-loaded="payload => onLayerDisplayLoaded(p.key, payload)"
               @variable-change="payload => onLayerVariableChange(p.key, payload)"
             />
-          </MapBase>
+          </ProjMap>
         </div>
       </div>
 
@@ -124,7 +124,7 @@
 import { computed, inject, onBeforeUnmount, ref, watch } from "vue";
 import { ArrowLeft, ArrowRight, Check, CircleCheck, Close, Connection, DArrowLeft, DArrowRight, DataAnalysis, Document, FolderOpened, Grid, MapLocation, Monitor, Moon, Operation, Position, RefreshRight, VideoPlay, VideoPause } from "@element-plus/icons-vue";
 import { parseFile } from "../api";
-import MapBase from "../components/MapBase.vue";
+import ProjMap from "../components/ProjMap.vue";
 import MetaPanel from "../components/MetaPanel.vue";
 import TimeAxis from "../components/TimeAxis.vue";
 import VariableSelect from "../components/VariableSelect.vue";
@@ -1011,7 +1011,7 @@ watch(active, () => {
 .center { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
 .maps { flex: 1; min-height: 0; display: grid; gap: 10px; }
 .cell { position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; }
-.cell .map-base { position: absolute; inset: 0; }
+.cell :deep(.projmap) { position: absolute; inset: 0; }
 
 .timebar { flex-shrink: 0; padding: 6px 14px 8px; overflow: hidden; }
 .tb-head { display: flex; align-items: center; gap: 6px; padding: 0 0 6px; }

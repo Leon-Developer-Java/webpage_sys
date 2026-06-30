@@ -6,13 +6,13 @@
 </template>
 
 <script setup>
-import { onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, provide, ref, watch } from "vue";
 
 const props = defineProps({
   projection: { type: String, default: "等经纬" },
   tileUrl: String,
+  basemap: String,
   vector: Boolean,
-  data: Object,
   grid: { type: Boolean, default: true },
   dark: Boolean,
   syncView: Object,
@@ -37,8 +37,17 @@ const MAXZ = 19;
 const NE_COAST = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_110m_coastline.geojson";
 const NE_BORDER = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_110m_admin_0_boundary_lines_land.geojson";
 
+const TILE_URLS = {
+  "矢量底图": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+  "影像底图": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+  "地形晕渲": "https://tile.opentopomap.org/{z}/{x}/{y}.png",
+  "全球境界": "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
+};
+
 const box = ref(null);
 const canvas = ref(null);
+const dataRef = ref(null);
+const computedTileUrl = computed(() => props.tileUrl || TILE_URLS[props.basemap] || "");
 let gl, quadProg, lineProg, qloc = {}, lloc = {};
 let quadBuf, lineBuf, lineCount = 0, allLines = [];
 let baseTex, dataTex, hasBase = false, hasData = false, baseMerc = false;
@@ -300,7 +309,7 @@ function animateTo(target) {
     scale = s0 + (target.scale - s0) * e;
     render();
     if (k < 1) animRAF = requestAnimationFrame(step);
-    else if (props.tileUrl) scheduleMosaic();
+    else if (computedTileUrl.value) scheduleMosaic();
   };
   animRAF = requestAnimationFrame(step);
 }
@@ -314,22 +323,35 @@ function flyTo(ext) {
 function zoomBy(factor) {
   scale = Math.min(20, Math.max(0.02, scale * factor));
   render();
-  if (props.tileUrl) scheduleMosaic();
+  if (computedTileUrl.value) scheduleMosaic();
 }
 
 function home() {
   viewLon = LON0; orthoLat = ORTHO_LAT0;
   fitView(); render();
-  if (props.tileUrl) scheduleMosaic();
+  if (computedTileUrl.value) scheduleMosaic();
 }
 
 function emitView() {
   emit("view-change", { center: center.slice(), scale, viewLon, orthoLat });
 }
 
-defineExpose({ flyTo, zoomBy, home });
+defineExpose({ flyTo, zoomBy, home, clearData: () => { dataRef.value = null; } });
+
+provide("mapSurface", {
+  setData: (src, extent, alpha = 1) => { dataRef.value = src && extent ? { src, extent, alpha } : null; },
+  clear: () => { dataRef.value = null; },
+});
+provide("flyToExtent", flyTo);
+provide("mapControls", {
+  zoomIn: () => zoomBy(0.8),
+  zoomOut: () => zoomBy(1.25),
+  home,
+  full: () => box.value?.requestFullscreen?.(),
+});
 
 function makeTexture(source, slot, lonBox, merc) {
+  if (!gl) return;
   const tex = slot === 0 ? (baseTex || gl.createTexture()) : (dataTex || gl.createTexture());
   gl.bindTexture(gl.TEXTURE_2D, tex);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
@@ -412,7 +434,7 @@ function buildMosaic() {
 }
 
 function loadTile(z, x, y) {
-  const url = props.tileUrl.replace("{z}", z).replace("{y}", y).replace("{x}", x);
+  const url = computedTileUrl.value.replace("{z}", z).replace("{y}", y).replace("{x}", x);
   if (tileCache.has(url)) return Promise.resolve(tileCache.get(url));
   return new Promise(resolve => {
     const img = new Image();
@@ -469,7 +491,7 @@ function resize() {
   canvas.value.width = w * dpr; canvas.value.height = h * dpr;
   aspect = w / h;
   gl.viewport(0, 0, canvas.value.width, canvas.value.height);
-  if (props.tileUrl) scheduleMosaic();
+  if (computedTileUrl.value) scheduleMosaic();
   render();
 }
 
@@ -497,9 +519,9 @@ function render() {
   gl.uniform1i(qloc.uHasData, hasData ? 1 : 0);
   gl.uniform1i(qloc.uBaseMerc, baseMerc ? 1 : 0);
   gl.uniform4f(qloc.uBaseBox, baseBox[0], baseBox[1], baseBox[2], baseBox[3]);
-  const e = props.data?.extent;
+  const e = dataRef.value?.extent;
   if (e) gl.uniform4f(qloc.uDataBox, e[0] * D2R, e[1] * D2R, e[2] * D2R, e[3] * D2R);
-  gl.uniform1f(qloc.uDataAlpha, props.data?.alpha ?? 1);
+  gl.uniform1f(qloc.uDataAlpha, dataRef.value?.alpha ?? 1);
   if (hasBase) { gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, baseTex); gl.uniform1i(qloc.uBase, 0); }
   if (hasData) { gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, dataTex); gl.uniform1i(qloc.uData, 1); }
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -526,7 +548,7 @@ function onMove(e) {
     orthoLat = Math.max(-1.4, Math.min(1.4, orthoLat + (e.clientY - lastY) * 0.005));
     lastX = e.clientX; lastY = e.clientY;
     if (props.vector) rebuildLines();
-    if (props.tileUrl) scheduleMosaic();
+    if (computedTileUrl.value) scheduleMosaic();
     render(); emitView();
     return;
   }
@@ -535,12 +557,12 @@ function onMove(e) {
   lastX = e.clientX; lastY = e.clientY;
   render(); emitView();
 }
-function onUp() { if (dragging && props.tileUrl) scheduleMosaic(); dragging = false; }
+function onUp() { if (dragging && computedTileUrl.value) scheduleMosaic(); dragging = false; }
 function onWheel(e) {
   e.preventDefault();
   scale = Math.min(20, Math.max(0.02, scale * Math.exp(e.deltaY * 0.001)));
   render(); emitView();
-  if (props.tileUrl) scheduleMosaic();
+  if (computedTileUrl.value) scheduleMosaic();
 }
 
 onMounted(() => {
@@ -561,9 +583,9 @@ onMounted(() => {
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
   aspect = box.value.clientWidth / box.value.clientHeight;
   fitView();
-  if (props.tileUrl) scheduleMosaic();
+  if (computedTileUrl.value) scheduleMosaic();
   if (props.vector) loadVectors();
-  if (props.data?.src) loadDataTexture(props.data.src, ++dataTextureToken);
+  if (dataRef.value?.src) loadDataTexture(dataRef.value.src, ++dataTextureToken);
   ro = new ResizeObserver(resize);
   ro.observe(box.value);
   canvas.value.addEventListener("pointerdown", onDown);
@@ -572,22 +594,22 @@ onMounted(() => {
   canvas.value.addEventListener("wheel", onWheel, { passive: false });
 });
 
-watch(() => props.projection, () => { viewLon = LON0; orthoLat = ORTHO_LAT0; fitView(); if (props.vector && allLines.length) rebuildLines(); if (props.tileUrl) scheduleMosaic(); render(); });
+watch(() => props.projection, () => { viewLon = LON0; orthoLat = ORTHO_LAT0; fitView(); if (props.vector && allLines.length) rebuildLines(); if (computedTileUrl.value) scheduleMosaic(); render(); });
 watch(() => [props.grid, props.dark], render);
-watch(() => props.tileUrl, v => { hasBase = false; ++mosaicToken; if (v) scheduleMosaic(); else render(); });
+watch(computedTileUrl, v => { hasBase = false; ++mosaicToken; if (v) scheduleMosaic(); else render(); });
 watch(() => props.vector, v => { if (v) { if (allLines.length) rebuildLines(); else loadVectors(); } render(); });
-watch(() => props.data, () => {
+watch(dataRef, () => {
   ++dataTextureToken;
   hasData = false;
   render();
-  if (props.data?.src) loadDataTexture(props.data.src, dataTextureToken);
-}, { deep: true });
+  if (dataRef.value?.src) loadDataTexture(dataRef.value.src, dataTextureToken);
+});
 watch(() => props.syncView, v => {
   if (!v || applyingSync) return;
   applyingSync = true;
   center = v.center.slice(); scale = v.scale; viewLon = v.viewLon; orthoLat = v.orthoLat;
   if (props.vector && allLines.length) rebuildLines();
-  if (props.tileUrl) scheduleMosaic();
+  if (computedTileUrl.value) scheduleMosaic();
   render();
   applyingSync = false;
 }, { deep: true });
@@ -608,7 +630,7 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.projmap { position: relative; width: 100%; height: 100%; overflow: hidden; }
+.projmap { position: absolute; inset: 0; overflow: hidden; }
 .proj-canvas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: grab; }
 .proj-canvas:active { cursor: grabbing; }
 </style>
