@@ -19,7 +19,7 @@
 </template>
 
 <script setup>
-import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import LayerCard from "../components/LayerCard.vue";
 import WebglLayer from "../components/WebglLayer.vue";
 
@@ -361,6 +361,14 @@ function applyImageryLayer(payload) {
   }
 }
 
+async function paintImageryLayer(payload) {
+  await nextTick();
+  applyImageryLayer(payload);
+  requestAnimationFrame(() => {
+    if (framePayload.value === payload) applyImageryLayer(payload);
+  });
+}
+
 function emitLayerMeta() {
   const layer = currentLayer.value;
   if (!layer) return;
@@ -435,7 +443,7 @@ async function loadBinaryFrame() {
 
   framePayload.value = payload;
   gridLayer.value = layer;
-  applyImageryLayer(payload);
+  await paintImageryLayer(payload);
   emitLayerMeta();
 }
 
@@ -463,6 +471,7 @@ async function loadDisplay(variableName = selectedVariable.value) {
     variables.value = display.value.variables || [];
     const nextVariable = variableName || display.value.default_variable || meta.value?.default_variable || variables.value[0]?.name || "";
     syncSelectedVariable(nextVariable);
+    await nextTick();
     await loadBinaryFrame();
   } catch (err) {
     gridLayer.value = null;
