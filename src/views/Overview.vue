@@ -90,6 +90,7 @@
               :parsed="layerParsed(p.key)"
               :time-index="layerTimeIndex"
               @display-loaded="payload => onLayerDisplayLoaded(p.key, payload)"
+              @variable-change="payload => onLayerVariableChange(p.key, payload)"
             />
           </MapBase>
         </div>
@@ -230,15 +231,43 @@ function onLayerDisplayLoaded(key, payload) {
   layerDisplays.value = { ...layerDisplays.value, [key]: payload };
 }
 
+function onLayerVariableChange(key, payload) {
+  if (!payload) return;
+  layerDisplays.value = {
+    ...layerDisplays.value,
+    [key]: {
+      ...(layerDisplays.value[key] || {}),
+      meta: {
+        ...(layerDisplays.value[key]?.meta || {}),
+        weather_info: payload,
+        ...payload,
+      },
+      weather_info: payload,
+      times: payload.times || layerDisplays.value[key]?.times,
+      forecast_hours: payload.forecast_hours || layerDisplays.value[key]?.forecast_hours,
+      forecast_labels: payload.forecast_labels || layerDisplays.value[key]?.forecast_labels,
+      axis_times: payload.axis_times || layerDisplays.value[key]?.axis_times,
+      png_urls: payload.png_urls || layerDisplays.value[key]?.png_urls,
+    },
+  };
+}
+
+function firstArray(...items) {
+  return items.find((item) => Array.isArray(item) && item.length) || [];
+}
+
 function collectTimes(source) {
   const meta = source?.meta || source?.meta_json || source || {};
   const frames = source?.frames || meta.frames || [];
+  const layer = preferredVariableLayer(source);
   const candidates = [
     source?.times,
     meta.times,
     source?.weather_info?.times,
     meta.weather_info?.times,
-    Array.isArray(frames) ? frames.map((frame) => frame?.time || frame?.time_label).filter(Boolean) : [],
+    layer?.times,
+    layer?.valid_times,
+    Array.isArray(frames) ? frames.map((frame) => frame?.time || frame?.time_label || frame?.valid_time).filter(Boolean) : [],
   ];
   return candidates.find((items) => Array.isArray(items) && items.length) || [];
 }
@@ -259,62 +288,216 @@ const activeLayerTimes = computed(() => {
 });
 
 const axisTimes = computed(() => {
+  // GFS/ECMWF 保持业务播放轴：00时、02时、04时...22时。
+  // 真实 F000/F006/F012 用于图层内部匹配和右侧信息，不直接显示到底部轴。
+  if (active.value === "grib") {
+    return defaultTimes;
+  }
+
+  // 其他图层继续沿用团队最新逻辑，避免影响 CMA / ERA5 / 雷达 / 卫星。
   if (activeLayerTimes.value.length > 1) {
     return activeLayerTimes.value.map(formatAxisTime);
   }
+
   return defaultTimes;
 });
 
+function parseAxisHour(text, index = 0) {
+  const raw = String(text || "");
+
+  const m1 = raw.match(/(\d{1,2})时/);
+  if (m1) return Number(m1[1]);
+
+  const m2 = raw.match(/(\d{1,2}):\d{2}/);
+  if (m2) return Number(m2[1]);
+
+  return index * 2;
+}
+
+function parseForecastHour(value, fallbackIndex = 0) {
+  if (value === undefined || value === null || value === "") {
+    return fallbackIndex;
+  }
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  const text = String(value);
+
+  const m1 = text.match(/F\s*(\d{1,3})/i);
+  if (m1) return Number(m1[1]);
+
+  const m2 = text.match(/(\d{1,3})\s*h/i);
+  if (m2) return Number(m2[1]);
+
+  const m3 = text.match(/(\d{1,3})/);
+  if (m3) return Number(m3[1]);
+
+  return fallbackIndex;
+}
+
+function allVariableLayers(source) {
+  const meta = source?.meta || source?.meta_json || {};
+  const weather = source?.weather_info || meta.weather_info || {};
+  const layers =
+    source?.variable_layers ||
+    weather.variable_layers ||
+    meta.variable_layers ||
+    meta.weather_info?.variable_layers ||
+    source?.extra?.variable_layers ||
+    meta.extra?.variable_layers ||
+    {};
+
+  return layers && typeof layers === "object" ? layers : {};
+}
+
+function preferredVariableLayer(source) {
+  if (!source) return null;
+
+  const layers = allVariableLayers(source);
+  const keys = Object.keys(layers);
+  if (!keys.length) return null;
+
+  const productKey =
+    source?.product?.key ||
+    source?.product?.code ||
+    source?.level?.layerKey ||
+    source?.default_variable ||
+    source?.meta?.default_variable ||
+    source?.weather_info?.default_variable;
+
+  if (productKey && layers[productKey]) {
+    return layers[productKey];
+  }
+
+  return layers[keys[0]];
+}
+
+function collectFrameCount(source) {
+  if (!source) return 0;
+
+  const layer = preferredVariableLayer(source);
+  const frames = source?.frames || source?.meta?.frames || [];
+
+  const candidates = [
+    source?.png_urls,
+    source?.meta?.png_urls,
+    source?.weather_info?.png_urls,
+    layer?.png_urls,
+    layer?.grid_urls,
+    layer?.times,
+    layer?.valid_times,
+    layer?.forecast_hours,
+    layer?.forecast_labels,
+    source?.forecast_hours,
+    source?.forecast_labels,
+    collectTimes(source),
+    Array.isArray(frames) ? frames : [],
+  ];
+
+  const arr = firstArray(...candidates);
+  return arr.length || 0;
+}
+
+function currentLayerForecastHours() {
+  const display = layerDisplays.value[active.value];
+  const meta = display?.meta || display?.meta_json || display || {};
+  const weather = meta.weather_info || display?.weather_info || {};
+  const layer = preferredVariableLayer(display);
+  const parsedLayer = parsedLayerKey.value === active.value ? preferredVariableLayer(parsed.value) : null;
+
+  const candidates = [
+    display?.forecast_hours,
+    display?.forecastHours,
+    meta.forecast_hours,
+    meta.forecastHours,
+    weather.forecast_hours,
+    weather.forecastHours,
+    layer?.forecast_hours,
+    layer?.forecastHours,
+    parsedLayer?.forecast_hours,
+    parsedLayer?.forecastHours,
+    parsed.value?.forecast_hours,
+    parsed.value?.forecastHours,
+  ];
+
+  for (const item of candidates) {
+    if (Array.isArray(item) && item.length) {
+      return item.map((v, i) => parseForecastHour(v, i));
+    }
+  }
+
+  const labelCandidates = [
+    display?.forecast_labels,
+    display?.forecastLabels,
+    meta.forecast_labels,
+    meta.forecastLabels,
+    weather.forecast_labels,
+    weather.forecastLabels,
+    layer?.forecast_labels,
+    layer?.forecastLabels,
+    parsedLayer?.forecast_labels,
+    parsedLayer?.forecastLabels,
+    display?.axis_times,
+    meta.axis_times,
+    weather.axis_times,
+  ];
+
+  for (const item of labelCandidates) {
+    if (Array.isArray(item) && item.length) {
+      return item.map((v, i) => parseForecastHour(v, i));
+    }
+  }
+
+  return [];
+}
+
 const parsedFrameCount = computed(() => {
-  const activeFrameCount = collectTimes(layerDisplays.value[active.value]).length || collectTimes(parsed.value).length;
-  if (activeFrameCount) return activeFrameCount;
+  const displayCount = collectFrameCount(layerDisplays.value[active.value]);
+  if (displayCount) return displayCount;
 
-  if (!parsed.value || parsedLayerKey.value !== active.value) {
-    return defaultTimes.length;
-  }
-
-  const pngUrls =
-    parsed.value?.png_urls ||
-    parsed.value?.meta?.png_urls ||
-    parsed.value?.weather_info?.png_urls ||
-    parsed.value?.meta_json?.meta?.png_urls ||
-    parsed.value?.meta_json?.weather_info?.png_urls ||
-    parsed.value?.extra?.png_urls ||
-    [];
-
-  if (Array.isArray(pngUrls) && pngUrls.length) {
-    return pngUrls.length;
-  }
-
-  const parsedTimes =
-    parsed.value?.times ||
-    parsed.value?.meta?.times ||
-    parsed.value?.weather_info?.times ||
-    parsed.value?.meta_json?.meta?.times ||
-    parsed.value?.meta_json?.weather_info?.times ||
-    parsed.value?.extra?.times ||
-    [];
-
-  if (Array.isArray(parsedTimes) && parsedTimes.length) {
-    return parsedTimes.length;
+  if (parsed.value && parsedLayerKey.value === active.value) {
+    const parsedCount = collectFrameCount(parsed.value);
+    if (parsedCount) return parsedCount;
   }
 
   return defaultTimes.length;
 });
 
 const layerTimeIndex = computed(() => {
-  const uiCount = axisTimes.value.length;
   const frameCount = parsedFrameCount.value;
 
-  if (frameCount <= 1 || uiCount <= 1) {
+  if (frameCount <= 1) {
     return 0;
   }
 
   const uiIndex = clampTimeIndex(tIndex.value);
+  const uiHour = parseAxisHour(axisTimes.value[uiIndex], uiIndex);
+  const forecastHours = currentLayerForecastHours();
 
-  // 前端时间轴保持原始 12 个刻度：00时、02时、...、22时。
-  // 这里把 12 个 UI 刻度映射到后端实际 N 张 PNG，
-  // 例如 N=48 时：00时≈step000，02时≈step004，...，22时≈step047。
+  // GFS 优先按真实 forecast_hours 匹配：
+  // 00时 -> F000，06时 -> F006，12时 -> F012。
+  // 其他图层继续使用团队原来的比例映射逻辑。
+  if (active.value === "grib" && forecastHours.length === frameCount) {
+    let bestIndex = 0;
+    let bestDiff = Infinity;
+
+    forecastHours.forEach((hour, index) => {
+      const diff = Math.abs(Number(hour) - uiHour);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        bestIndex = index;
+      }
+    });
+
+    return bestIndex;
+  }
+
+  // 没有 forecast_hours 时，再退回比例映射，兼容雷达/卫星/ERA5。
+  const uiCount = axisTimes.value.length;
+  if (uiCount <= 1) return 0;
+
   return Math.round((uiIndex / (uiCount - 1)) * (frameCount - 1));
 });
 
@@ -408,11 +591,14 @@ const meta = computed(() => {
   if (parsed.value && parsedLayerKey.value === active.value) {
     return normalizeParsedMeta(parsed.value);
   }
-  if (active.value === "radar") {
-    const radarDisplay = layerDisplays.value.radar;
-    const radarMeta = radarDisplay?.meta || radarDisplay?.weather_info || null;
-    if (radarMeta) return radarMeta;
+
+  const display = layerDisplays.value[active.value];
+  const displayMeta = display?.meta || display?.weather_info || null;
+
+  if (displayMeta) {
+    return displayMeta;
   }
+
   return infos[active.value];
 });
 
