@@ -246,6 +246,8 @@ function onLayerVariableChange(key, payload) {
       times: payload.times || layerDisplays.value[key]?.times,
       forecast_hours: payload.forecast_hours || layerDisplays.value[key]?.forecast_hours,
       forecast_labels: payload.forecast_labels || layerDisplays.value[key]?.forecast_labels,
+      valid_hours: payload.valid_hours || payload.validHours || payload.valid_time_hours || layerDisplays.value[key]?.valid_hours,
+      valid_time_hours: payload.valid_time_hours || payload.validTimeHours || payload.valid_hours || layerDisplays.value[key]?.valid_time_hours,
       axis_times: payload.axis_times || layerDisplays.value[key]?.axis_times,
       png_urls: payload.png_urls || layerDisplays.value[key]?.png_urls,
     },
@@ -453,7 +455,196 @@ function currentLayerForecastHours() {
   return [];
 }
 
+function parseValidHour(value, fallbackIndex = null) {
+  if (value === undefined || value === null || value === "") {
+    return fallbackIndex === null ? null : fallbackIndex * 2;
+  }
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return ((Math.floor(value) % 24) + 24) % 24;
+  }
+
+  const text = String(value);
+
+  // ISO 时间：2026-06-30T12:00:00
+  const iso = text.match(/T(\d{1,2}):\d{2}/);
+  if (iso) return Number(iso[1]);
+
+  // 普通时间：06-30 12:00 / F006 · 06-30 12:00
+  const hm = text.match(/(\d{1,2}):\d{2}/);
+  if (hm) return Number(hm[1]);
+
+  // 中文刻度：12时
+  const cn = text.match(/(\d{1,2})时/);
+  if (cn) return Number(cn[1]);
+
+  return fallbackIndex === null ? null : fallbackIndex * 2;
+}
+
+function currentLayerValidHours() {
+  const display = layerDisplays.value[active.value];
+  const meta = display?.meta || display?.meta_json || display || {};
+  const weather = meta.weather_info || display?.weather_info || {};
+  const layer = preferredVariableLayer(display);
+  const parsedLayer = parsedLayerKey.value === active.value ? preferredVariableLayer(parsed.value) : null;
+
+  const hourCandidates = [
+    display?.valid_hours,
+    display?.validHours,
+    display?.valid_time_hours,
+    display?.validTimeHours,
+    meta.valid_hours,
+    meta.validHours,
+    meta.valid_time_hours,
+    meta.validTimeHours,
+    weather.valid_hours,
+    weather.validHours,
+    weather.valid_time_hours,
+    weather.validTimeHours,
+    layer?.valid_hours,
+    layer?.validHours,
+    layer?.valid_time_hours,
+    layer?.validTimeHours,
+    parsedLayer?.valid_hours,
+    parsedLayer?.validHours,
+    parsedLayer?.valid_time_hours,
+    parsedLayer?.validTimeHours,
+  ];
+
+  for (const item of hourCandidates) {
+    if (Array.isArray(item) && item.length) {
+      const parsedHours = item.map((v, i) => parseValidHour(v, i)).filter(v => Number.isFinite(v));
+      if (parsedHours.length) return parsedHours;
+    }
+  }
+
+  const timeCandidates = [
+    display?.times,
+    meta.times,
+    weather.times,
+    layer?.times,
+    layer?.valid_times,
+    layer?.validTimes,
+    parsedLayer?.times,
+    parsedLayer?.valid_times,
+    parsedLayer?.validTimes,
+    parsed.value?.times,
+    parsed.value?.meta?.times,
+    parsed.value?.weather_info?.times,
+  ];
+
+  for (const item of timeCandidates) {
+    if (Array.isArray(item) && item.length) {
+      const parsedHours = item.map((v, i) => parseValidHour(v, i)).filter(v => Number.isFinite(v));
+      if (parsedHours.length) return parsedHours;
+    }
+  }
+
+  return [];
+}
+
+function nearestHourIndex(hours, targetHour) {
+  let bestIndex = 0;
+  let bestDiff = Infinity;
+
+  hours.forEach((hour, index) => {
+    const h = Number(hour);
+    if (!Number.isFinite(h)) return;
+
+    const rawDiff = Math.abs(h - targetHour);
+    const circularDiff = Math.min(rawDiff, 24 - rawDiff);
+
+    if (circularDiff < bestDiff) {
+      bestDiff = circularDiff;
+      bestIndex = index;
+    }
+  });
+
+  return bestIndex;
+}
+
+function nearestAxisIndexForHour(targetHour) {
+  let bestIndex = 0;
+  let bestDiff = Infinity;
+
+  axisTimes.value.forEach((label, index) => {
+    const hour = parseAxisHour(label, index);
+    const rawDiff = Math.abs(hour - targetHour);
+    const circularDiff = Math.min(rawDiff, 24 - rawDiff);
+
+    if (circularDiff < bestDiff) {
+      bestDiff = circularDiff;
+      bestIndex = index;
+    }
+  });
+
+  return bestIndex;
+}
+
+function currentGfsValidAxisIndices() {
+  if (active.value !== "grib") return [];
+
+  const validHours = currentLayerValidHours();
+  if (!validHours.length) return [];
+
+  const indices = validHours
+    .map(hour => nearestAxisIndexForHour(hour))
+    .filter(index => Number.isFinite(index));
+
+  return [...new Set(indices)].sort((a, b) => a - b);
+}
+
+function snapTimeIndexForActive(v) {
+  const max = Math.max(0, axisTimes.value.length - 1);
+  const n = Number.isFinite(Number(v)) ? Math.min(max, Math.max(0, Math.round(Number(v)))) : 0;
+
+  if (active.value !== "grib") {
+    return n;
+  }
+
+  const validIndices = currentGfsValidAxisIndices();
+  if (!validIndices.length) {
+    return n;
+  }
+
+  let bestIndex = validIndices[0];
+  let bestDiff = Infinity;
+
+  validIndices.forEach(index => {
+    const diff = Math.abs(index - n);
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      bestIndex = index;
+    }
+  });
+
+  return bestIndex;
+}
+
+function nextGfsValidAxisIndex(direction = 1) {
+  const validIndices = currentGfsValidAxisIndices();
+  if (!validIndices.length) return clampTimeIndex(tIndex.value + direction);
+
+  const current = snapTimeIndexForActive(tIndex.value);
+  const pos = validIndices.findIndex(index => index === current);
+
+  if (pos < 0) {
+    return validIndices[0];
+  }
+
+  const nextPos = (pos + direction + validIndices.length) % validIndices.length;
+  return validIndices[nextPos];
+}
+
 const parsedFrameCount = computed(() => {
+  if (active.value === "grib") {
+    const validHours = currentLayerValidHours();
+    if (validHours.length) return validHours.length;
+
+    const forecastHours = currentLayerForecastHours();
+    if (forecastHours.length) return forecastHours.length;
+  }
+
   const displayCount = collectFrameCount(layerDisplays.value[active.value]);
   if (displayCount) return displayCount;
 
@@ -474,27 +665,25 @@ const layerTimeIndex = computed(() => {
 
   const uiIndex = clampTimeIndex(tIndex.value);
   const uiHour = parseAxisHour(axisTimes.value[uiIndex], uiIndex);
-  const forecastHours = currentLayerForecastHours();
 
-  // GFS 优先按真实 forecast_hours 匹配：
-  // 00时 -> F000，06时 -> F006，12时 -> F012。
-  // 其他图层继续使用团队原来的比例映射逻辑。
-  if (active.value === "grib" && forecastHours.length === frameCount) {
-    let bestIndex = 0;
-    let bestDiff = Infinity;
+  if (active.value === "grib") {
+    const validHours = currentLayerValidHours();
 
-    forecastHours.forEach((hour, index) => {
-      const diff = Math.abs(Number(hour) - uiHour);
-      if (diff < bestDiff) {
-        bestDiff = diff;
-        bestIndex = index;
-      }
-    });
+    // GFS 最优先按有效时间匹配：
+    // 起报 06Z 时，06时 -> F000，12时 -> F006，18时 -> F012。
+    if (validHours.length === frameCount) {
+      return nearestHourIndex(validHours, uiHour);
+    }
 
-    return bestIndex;
+    const forecastHours = currentLayerForecastHours();
+
+    // 兜底：如果后端没有 valid_time/times，才按 forecast lead hour 匹配。
+    if (forecastHours.length === frameCount) {
+      return nearestHourIndex(forecastHours, uiHour);
+    }
   }
 
-  // 没有 forecast_hours 时，再退回比例映射，兼容雷达/卫星/ERA5。
+  // 其他图层继续使用团队原来的比例映射逻辑。
   const uiCount = axisTimes.value.length;
   if (uiCount <= 1) return 0;
 
@@ -508,12 +697,23 @@ function clampTimeIndex(v) {
 }
 
 function setTimeIndex(v) {
-  tIndex.value = clampTimeIndex(v);
-  animPos.value = tIndex.value;
+  const next = snapTimeIndexForActive(v);
+  tIndex.value = next;
+  animPos.value = next;
 }
 
 function startAnim() {
   clearInterval(animTimer);
+
+  if (active.value === "grib" && currentGfsValidAxisIndices().length) {
+    animTimer = setInterval(() => {
+      const next = nextGfsValidAxisIndex(1);
+      tIndex.value = next;
+      animPos.value = next;
+    }, Math.max(120, 900 / Math.max(0.1, speed.value)));
+    return;
+  }
+
   lastTs = Date.now();
   animTimer = setInterval(() => {
     const now = Date.now();
@@ -521,7 +721,7 @@ function startAnim() {
     lastTs = now;
     if (animPos.value >= axisTimes.value.length) animPos.value = 0;
     const floor = Math.floor(animPos.value);
-    if (floor !== tIndex.value) tIndex.value = clampTimeIndex(floor);
+    if (floor !== tIndex.value) setTimeIndex(floor);
   }, 16);
 }
 
@@ -536,7 +736,7 @@ watch(playing, v => {
 });
 
 watch(speed, () => {
-  if (playing.value) lastTs = Date.now();
+  if (playing.value) startAnim();
 });
 
 watch(tIndex, v => {
@@ -546,6 +746,19 @@ watch(tIndex, v => {
 watch(axisTimes, () => {
   setTimeIndex(Math.min(tIndex.value, axisTimes.value.length - 1));
 });
+
+watch(
+  () => [
+    active.value,
+    currentLayerValidHours().join(","),
+    currentLayerForecastHours().join(","),
+  ],
+  () => {
+    setTimeIndex(tIndex.value);
+    if (playing.value) startAnim();
+  }
+);
+
 
 onBeforeUnmount(() => clearInterval(animTimer));
 
@@ -727,6 +940,8 @@ async function parse() {
 watch(active, () => {
   const opts = variableOptions.value;
   variable.value = opts[0] || "";
+  setTimeIndex(tIndex.value);
+  if (playing.value) startAnim();
 });
 </script>
 
