@@ -3,9 +3,10 @@
     <label class="lc-row">
       <span>要素</span>
       <select v-model="selectedVariable" :disabled="loading || !variables.length">
-        <option v-for="item in variables" :key="item.name" :value="item.name">{{ item.name }}</option>
+        <option v-for="item in variables" :key="item.name" :value="item.name">{{ variableLabel(item) }}</option>
       </select>
     </label>
+    <p v-if="error" class="lc-error">{{ error }}</p>
   </LayerCard>
 </template>
 
@@ -15,8 +16,10 @@ import LayerCard from "../components/LayerCard.vue";
 
 const props = defineProps({
   levelIndex: { type: Number, default: 0 },
+  timeIndex: { type: Number, default: 0 },
   label: String,
   file: String,
+  parsed: { type: Object, default: null },
 });
 const emit = defineEmits(["display-loaded"]);
 
@@ -25,17 +28,29 @@ const flyToExtent = inject("flyToExtent", null);
 const layerRefreshKeys = inject("layerRefreshKeys", ref({}));
 const colors = ["#1d4ed8", "#0891b2", "#16a34a", "#facc15", "#dc2626"];
 const gradient = `linear-gradient(to right, ${colors.join(",")})`;
+const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8002";
+const COMMON_NC_DISPLAY_VARIABLES = [
+  "Tair_f_inst",
+  "Rainf_tavg",
+  "TotalPrecip_tavg",
+  "Wind_f_inst",
+  "Qair_f_inst",
+  "Psurf_f_inst",
+  "AvgSurfT_inst",
+  "SoilMoist_inst",
+  "SoilTemp_inst",
+  "SWdown_f_tavg",
+];
+
 const variables = ref([]);
 const selectedVariable = ref("");
 const grid = ref(null);
-const resolvedFile = computed(() => grid.value?.file || props.file || "");
 const loading = ref(false);
 const error = ref("");
-const renderPreview = ref("");
-const renderStatus = ref("等待 CMA 数据");
-const layerStatus = ref("等待地图图层");
-const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8002";
+const refreshKey = computed(() => layerRefreshKeys.value?.cma || 0);
 
+let binaryRequestId = 0;
+let syncingVariable = false;
 let renderCanvas = null;
 let gl = null;
 let program = null;
@@ -76,11 +91,11 @@ void main() {
   frag = vec4(ramp(t), uOpacity);
 }`;
 
+const resolvedFile = computed(() => grid.value?.file || props.file || "");
 const legendTitle = computed(() => {
   if (!grid.value) return "CMA";
   return `${grid.value.variable}${grid.value.unit ? ` (${grid.value.unit})` : ""}`;
 });
-const refreshKey = computed(() => layerRefreshKeys.value?.cma || 0);
 
 const ticks = computed(() => {
   if (!grid.value) return ["低", "", "", "高"];
@@ -94,6 +109,12 @@ function formatTick(value) {
   const abs = Math.abs(value);
   if (abs >= 1000 || (abs > 0 && abs < 0.01)) return value.toExponential(1);
   return value.toFixed(abs >= 100 ? 0 : abs >= 10 ? 1 : 2);
+}
+
+function variableLabel(item) {
+  const name = item?.name || "";
+  const label = item?.label || "";
+  return label && label !== name ? `${name} - ${label}` : name;
 }
 
 function compile(type, source) {
@@ -159,30 +180,14 @@ function renderGridImage(payload) {
     gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
     gl.bindTexture(gl.TEXTURE_2D, valueTexture);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    gl.texImage2D(
-      gl.TEXTURE_2D,
-      0,
-      gl.R8,
-      payload.width,
-      payload.height,
-      0,
-      gl.RED,
-      gl.UNSIGNED_BYTE,
-      packedValues(payload)
-    );
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, payload.width, payload.height, 0, gl.RED, gl.UNSIGNED_BYTE, packedValues(payload));
     gl.uniform1i(gl.getUniformLocation(program, "uGrid"), 0);
     gl.uniform1f(gl.getUniformLocation(program, "uOpacity"), 0.78);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-    const dataUrl = renderCanvas.toDataURL("image/png");
-    renderPreview.value = dataUrl;
-    renderStatus.value = `WebGL 已生成色彩图：${payload.width} x ${payload.height}，数值 ${payload.min} - ${payload.max}`;
-    return dataUrl;
+    return renderCanvas.toDataURL("image/png");
   } catch (err) {
     console.error("CMA WebGL render failed", err);
-    const dataUrl = renderGridImage2d(payload);
-    renderPreview.value = dataUrl;
-    renderStatus.value = `WebGL 失败，已用 Canvas 2D 兜底：${err?.message || err}`;
-    return dataUrl;
+    return renderGridImage2d(payload);
   }
 }
 
@@ -194,7 +199,7 @@ function renderGridImage2d(payload) {
   const image = ctx.createImageData(payload.width, payload.height);
   const packed = packedValues(payload);
 
-  for (let i = 0; i < packed.length; i++) {
+  for (let i = 0; i < packed.length; i += 1) {
     const offset = i * 4;
     if (packed[i] === 0) {
       image.data[offset + 3] = 0;
@@ -227,21 +232,18 @@ function colorRamp(t) {
   );
 }
 
-function removeImageryLayer() {
+function clearImageryLayer() {
   surface?.clear();
-  layerStatus.value = "地图图层未添加";
 }
 
 function applyImageryLayer() {
   const payload = grid.value;
   if (!payload?.extent || !payload?.values?.length) {
-    layerStatus.value = "没有可叠加的格点数据";
-    surface?.clear();
+    clearImageryLayer();
     return;
   }
   const [west, south, east, north] = payload.extent;
   surface?.setData(renderGridImage(payload), payload.extent, 1);
-  layerStatus.value = `图层已添加：${west.toFixed(3)}, ${south.toFixed(3)} - ${east.toFixed(3)}, ${north.toFixed(3)}`;
   const dx = Math.max((east - west) * 0.35, 0.5);
   const dy = Math.max((north - south) * 0.35, 0.5);
   flyToExtent?.([Math.max(-180, west - dx), Math.max(-90, south - dy), Math.min(180, east + dx), Math.min(90, north + dy)]);
@@ -253,6 +255,8 @@ function emitDisplay(display) {
   emit("display-loaded", {
     meta,
     variables: display.variables || [],
+    times: display.times || [],
+    frames: display.frames || [],
     file: payload?.file || meta?.file || "",
     variable: payload?.variable || "",
   });
@@ -268,22 +272,184 @@ async function fetchCmaDisplay(variable, levelIndex = 0) {
   return payload.data;
 }
 
+function displayFromParsed(parsed, variableName) {
+  const meta = parsed?.meta || {};
+  const cma = meta.extra?.cma || {};
+  const product = Object.values(cma.products || {})[0] || {};
+  const topVariables = Array.isArray(meta.variables) ? meta.variables : [];
+  const productVariables = Array.isArray(product.variables) ? product.variables : [];
+  const allVariables = topVariables.length && typeof topVariables[0] === "object" ? topVariables : productVariables;
+  const displayVariables = allVariables
+    .filter(item => isGridVariable(item))
+    .map(item => ({
+      name: item.name,
+      label: item.long_name || item.name,
+      unit: item.display_unit || item.unit || "",
+      dims: item.dims || [],
+      shape: item.shape || [],
+      float32: item.float32 || null,
+      band: item.band || null,
+      stats: item.stats || null,
+    }));
+  const variables = cma.product_type === "LAND_NC" || product.product_type === "LAND_NC"
+    ? commonNcVariables(displayVariables)
+    : displayVariables;
+  const frames = normalizeFrames(meta, parsed);
+  const firstMetaVariable = topVariables[0]?.name || topVariables[0] || "";
+  const primary = variableName || meta.default_variable || cma.primary_variable || variables[0]?.name || firstMetaVariable || "";
+  return {
+    business_type: "CMA",
+    meta_json: meta,
+    variables,
+    frames,
+    times: frames.map(frame => frame.time).filter(Boolean).length
+      ? frames.map(frame => frame.time).filter(Boolean)
+      : (Array.isArray(meta.times) ? meta.times : []),
+    frame_count: frames.length,
+    grid: {
+      file: frames[0]?.file || parsed?.file_name || meta.file || sourceFileName(meta.source_file) || "",
+      variable: primary,
+      unit: variableUnit(variables, primary) || meta.unit || "",
+      extent: meta.extent || meta.bbox || [73, 15, 135, 55],
+      min: 0,
+      max: 1,
+      mean: 0,
+      nodata: -999999,
+      meta,
+    },
+  };
+}
+
+function isGridVariable(item) {
+  const dims = item?.dims || [];
+  const shape = item?.shape || [];
+  return Boolean(item?.float32) || Boolean(item?.band) || dims.slice(-2).join(",") === "lat,lon" || [2, 3].includes(shape.length);
+}
+
+function commonNcVariables(items) {
+  const byName = new Map(items.filter(item => item.name).map(item => [item.name, item]));
+  const picked = COMMON_NC_DISPLAY_VARIABLES.map(name => byName.get(name)).filter(Boolean);
+  return picked.length ? picked : items;
+}
+
+function variableUnit(items, name) {
+  return items.find(item => item.name === name)?.unit || "";
+}
+
+function variableStats(items, name) {
+  const stats = items.find(item => item.name === name)?.stats;
+  if (!stats) return null;
+  const min = Number(stats.min);
+  const max = Number(stats.max);
+  return Number.isFinite(min) && Number.isFinite(max) && max > min
+    ? { min, max, mean: Number(stats.mean) }
+    : null;
+}
+
+function activeFrame(display) {
+  const frames = Array.isArray(display?.frames) ? display.frames : [];
+  if (!frames.length) return null;
+  const index = Math.min(Math.max(Number(props.timeIndex) || 0, 0), frames.length - 1);
+  return frames[index] || frames[0];
+}
+
+function normalizeFrames(meta, parsed) {
+  if (Array.isArray(meta?.frames) && meta.frames.length) return meta.frames;
+  const source = Array.isArray(meta?.source_file) ? meta.source_file : [meta?.source_file || parsed?.file_name || meta?.file].filter(Boolean);
+  return source.map((item, index) => ({
+    index,
+    file: sourceFileName(item),
+    source_file: item,
+    time: Array.isArray(meta?.times) ? meta.times[index] : "",
+    time_label: Array.isArray(meta?.times) ? meta.times[index] : "",
+    extent: meta?.extent || meta?.bbox || null,
+  }));
+}
+
+function sourceFileName(value) {
+  const text = String(value || "");
+  if (!text) return "";
+  return text.split(/[\\/]/).pop();
+}
+
+function binaryUrl(display, variableName) {
+  const params = new URLSearchParams();
+  const frame = activeFrame(display);
+  const fileName = frame?.file || display?.grid?.file || props.file || "";
+  if (fileName) params.set("file", fileName);
+  if (variableName) params.set("variable", variableName);
+  params.set("level_index", String(props.levelIndex));
+  return `${API_BASE}/api/cma/grid?${params.toString()}`;
+}
+
+function headerNumber(headers, name, fallback = 0) {
+  const raw = headers.get(name);
+  if (raw === null || raw === "") return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function headerExtent(headers, fallback) {
+  const value = headers.get("X-CMA-Extent");
+  if (!value) return fallback;
+  const extent = value.split(",").map(Number);
+  return extent.length === 4 && extent.every(Number.isFinite) ? extent : fallback;
+}
+
+async function loadBinaryGrid(display, variableName) {
+  const requestId = ++binaryRequestId;
+  const response = await fetch(binaryUrl(display, variableName));
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(detail || "CMA 二进制格点读取失败");
+  }
+
+  const buffer = await response.arrayBuffer();
+  if (requestId !== binaryRequestId) return;
+
+  const baseGrid = display.grid || {};
+  const fixedStats = variableStats(display.variables || [], variableName);
+  const values = new Float32Array(buffer);
+  const width = headerNumber(response.headers, "X-CMA-Nx", baseGrid.width);
+  const height = headerNumber(response.headers, "X-CMA-Ny", baseGrid.height);
+  if (values.length !== width * height) {
+    throw new Error(`CMA 二进制格点尺寸不匹配：${values.length} != ${width * height}`);
+  }
+
+  grid.value = {
+    ...baseGrid,
+    file: activeFrame(display)?.file || baseGrid.file,
+    variable: response.headers.get("X-CMA-Variable") || variableName || baseGrid.variable,
+    unit: response.headers.get("X-CMA-Unit") || baseGrid.unit,
+    width,
+    height,
+    extent: headerExtent(response.headers, baseGrid.extent),
+    min: fixedStats?.min ?? headerNumber(response.headers, "X-CMA-Min", baseGrid.min),
+    max: fixedStats?.max ?? headerNumber(response.headers, "X-CMA-Max", baseGrid.max),
+    mean: fixedStats?.mean ?? headerNumber(response.headers, "X-CMA-Mean", baseGrid.mean),
+    nodata: headerNumber(response.headers, "X-CMA-Missing", baseGrid.nodata ?? -999999),
+    values,
+  };
+}
+
 async function loadDisplay(variableName = selectedVariable.value) {
   loading.value = true;
   error.value = "";
   try {
-    const display = await fetchCmaDisplay(variableName, props.levelIndex);
+    const display = props.parsed?.meta
+      ? displayFromParsed(props.parsed, variableName)
+      : await fetchCmaDisplay(variableName, props.levelIndex);
     variables.value = display.variables || [];
-    grid.value = display.grid;
-    renderStatus.value = grid.value ? `已收到格点：${grid.value.width} x ${grid.value.height}` : "后端未返回 grid";
-    selectedVariable.value = grid.value?.variable || display.meta_json?.extra?.cma?.primary_variable || variables.value[0]?.name || "";
-    emitDisplay(display);
+    const nextVariable = display.grid?.variable || display.meta_json?.extra?.cma?.primary_variable || variables.value[0]?.name || "";
+    syncingVariable = true;
+    selectedVariable.value = nextVariable;
+    syncingVariable = false;
+    await loadBinaryGrid(display, nextVariable);
+    emitDisplay({ ...display, grid: grid.value });
     applyImageryLayer();
   } catch (err) {
     grid.value = null;
-    renderPreview.value = "";
-    renderStatus.value = `色彩图未生成：${err?.message || err}`;
-    removeImageryLayer();
+    clearImageryLayer();
     error.value = err.message || String(err);
   } finally {
     loading.value = false;
@@ -293,11 +459,21 @@ async function loadDisplay(variableName = selectedVariable.value) {
 onMounted(() => loadDisplay());
 
 watch(selectedVariable, value => {
-  if (value) loadDisplay(value);
+  if (value && !syncingVariable) loadDisplay(value);
 });
 watch(() => props.levelIndex, () => loadDisplay());
+watch(() => props.timeIndex, () => loadDisplay(selectedVariable.value));
+watch(() => props.parsed, () => loadDisplay(selectedVariable.value));
 watch(refreshKey, () => loadDisplay(selectedVariable.value));
 
-onBeforeUnmount(removeImageryLayer);
+onBeforeUnmount(clearImageryLayer);
 </script>
 
+<style scoped>
+.lc-error {
+  margin: 8px 0 0;
+  color: #dc2626;
+  font-size: 12px;
+  line-height: 1.4;
+}
+</style>

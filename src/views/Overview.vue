@@ -226,7 +226,7 @@ watch(linked, v => {
 });
 
 function onLayerDisplayLoaded(key, payload) {
-  if (key !== "radar" || !payload) return;
+  if (!payload) return;
   layerDisplays.value = { ...layerDisplays.value, [key]: payload };
 }
 
@@ -245,31 +245,29 @@ function collectTimes(source) {
 
 function formatAxisTime(value) {
   const text = String(value || "");
+  if (/^\d{10}$/.test(text)) return `${text.slice(4, 6)}-${text.slice(6, 8)} ${text.slice(8, 10)}时`;
   const match = text.match(/T(\d{2}):?(\d{2})?/) || text.match(/\s(\d{2}):?(\d{2})?/);
   if (match) return `${match[1]}:${match[2] || "00"}`;
   return text.slice(0, 16) || text;
 }
 
-const radarTimes = computed(() => {
-  if (active.value !== "radar") return [];
-  const values = collectTimes(parsed.value && parsedLayerKey.value === "radar" ? parsed.value : null)
-    .concat(collectTimes(layerDisplays.value.radar))
+const activeLayerTimes = computed(() => {
+  const values = collectTimes(parsed.value && parsedLayerKey.value === active.value ? parsed.value : null)
+    .concat(collectTimes(layerDisplays.value[active.value]))
     .filter(Boolean);
   return [...new Set(values.map(String))];
 });
 
 const axisTimes = computed(() => {
-  if (active.value === "radar" && radarTimes.value.length > 1) {
-    return radarTimes.value.map(formatAxisTime);
+  if (activeLayerTimes.value.length > 1) {
+    return activeLayerTimes.value.map(formatAxisTime);
   }
   return defaultTimes;
 });
 
 const parsedFrameCount = computed(() => {
-  if (active.value === "radar") {
-    const radarFrameCount = collectTimes(layerDisplays.value.radar).length || collectTimes(parsed.value).length;
-    if (radarFrameCount) return radarFrameCount;
-  }
+  const activeFrameCount = collectTimes(layerDisplays.value[active.value]).length || collectTimes(parsed.value).length;
+  if (activeFrameCount) return activeFrameCount;
 
   if (!parsed.value || parsedLayerKey.value !== active.value) {
     return defaultTimes.length;
