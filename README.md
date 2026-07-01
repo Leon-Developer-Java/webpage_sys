@@ -40,6 +40,8 @@ webpage_sys/
 │       ├── CmaLayer.vue     # 成员3  CMA
 │       ├── RadarLayer.vue   # 成员4  雷达
 │       ├── HimawariLayer.vue # 成员5  葵花卫星
+│       ├── HimawariTimeAxis.vue       # Himawari 专属时间轴
+│       ├── himawariTimelineTicks.js   # Himawari 专属标签抽稀
 │       └── WrfLayer.vue     # 成员6  WRF
 └── public/
     └── meta.template.json   # 后端 meta.json 字段规范
@@ -64,10 +66,38 @@ webpage_sys/
 ## 快速开始
 
 ```bash
-cd webpage_sys
+cd zhihuiqixiangWEB/webpage_sys
 npm install
-npm run dev
-# 浏览器打开 http://localhost:5177
+npm run dev -- --port 5177
+```
+
+浏览器打开：
+
+```text
+http://127.0.0.1:5177
+```
+
+前端需要后端 `8002` 同时运行。Himawari 展示依赖：
+
+```text
+GET http://127.0.0.1:8002/api/display/HIMAWARI
+GET http://127.0.0.1:8002/api/himawari/auto-status
+```
+
+后端启动参考：
+
+```bash
+cd zhihuiqixiangSQL/backend_system
+conda activate zhihuiqixiang
+export HIMAWARI_FTP_USER="你的 FTP 用户名"
+export HIMAWARI_FTP_PASSWORD="你的 FTP 密码"
+uvicorn main:app --reload --host 127.0.0.1 --port 8002
+```
+
+只看已有样例、不启动自动 FTP 下载时，后端可加：
+
+```bash
+export HIMAWARI_AUTO_DOWNLOAD=0
 ```
 
 ---
@@ -78,6 +108,16 @@ npm run dev
 
 每位成员只需编辑 `src/layers/` 下自己对应的 `.vue` 文件。  
 用户在界面选择数据类型（如"雷达"）后，框架自动加载并渲染对应的 Layer 组件，无需修改任何公共代码。
+
+Himawari 的专属前端逻辑放在：
+
+```text
+src/layers/HimawariLayer.vue
+src/layers/HimawariTimeAxis.vue
+src/layers/himawariTimelineTicks.js
+```
+
+Himawari 不应为了时间轴标签密度修改公共 `src/components/TimeAxis.vue` 或 `src/utils/timeAxisTicks.js`。
 
 ### Layer 组件结构
 
@@ -169,3 +209,22 @@ const meta = computed(() => parsed.value || infos[active.value]);
 ## 主题切换
 
 点击右上角月亮 / 太阳图标，亮色 / 暗色主题切换，Cesium 底图配色同步更新。
+
+## Himawari 展示说明
+
+- 前端不直接读取 HSD raw，只读取后端返回的 `png_url`、`extent`、`grid`、`variables`、`composites` 和 `timeline`。
+- 后端 `/api/display/HIMAWARI` 返回滚动 24 小时窗口内已有的解析结果。
+- 窗口规则由后端统一控制：当前时间向前 60 分钟取 10 分钟整点作为右边界，再向前 24 小时。
+- 前端时间轴播放完整时次列表；标签由 `HimawariTimeAxis.vue` 专属抽稀到 12 个左右，公共时间轴不受影响。
+- 自动下载状态显示在右侧“气象信息”卡片，来源为 `/api/himawari/auto-status`。
+
+## 构建验证
+
+修改前端后运行：
+
+```bash
+cd zhihuiqixiangWEB/webpage_sys
+npm run build
+```
+
+注意 `dist/index.html` 与 `dist/assets` 是构建产物，提交时不要只提交半截构建结果。
