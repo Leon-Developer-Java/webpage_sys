@@ -107,10 +107,18 @@
             <button v-for="s in [0.5, 1, 2, 4]" :key="s" :class="{ on: speed === s }" @click="speed = s">{{ s }}x</button>
           </div>
         </div>
-        <TimeAxis
+        <HimawariTimeAxis
+          v-if="active === 'himawari'"
           :times="axisTimes"
           :active="animPos"
-          :tick-mode="active === 'himawari' ? 'hourly' : 'sampled'"
+          @update:active="v => setTimeIndex(v)"
+          :dark="dark"
+        />
+        <TimeAxis
+          v-else
+          :times="axisTimes"
+          :active="animPos"
+          tick-mode="sampled"
           @update:active="v => setTimeIndex(v)"
           :dark="dark"
         />
@@ -146,6 +154,7 @@ import GribLayer from "../layers/GribLayer.vue";
 import CmaLayer from "../layers/CmaLayer.vue";
 import RadarLayer from "../layers/RadarLayer.vue";
 import HimawariLayer from "../layers/HimawariLayer.vue";
+import HimawariTimeAxis from "../layers/HimawariTimeAxis.vue";
 import WrfLayer from "../layers/WrfLayer.vue";
 
 const dark = inject("theme");
