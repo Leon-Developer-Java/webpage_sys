@@ -28,18 +28,23 @@
 
 <script setup>
 import { computed, inject, onMounted, ref, watch } from "vue";
+
+const emit = defineEmits(["display-loaded"]);
 import WebglLayer from "../components/WebglLayer.vue";
 import LayerCard from "../components/LayerCard.vue";
 
 const props = defineProps({
   timeIndex: { type: Number, default: 12 },
   timelineLabel: { type: String, default: "" },
+  parsed: { type: Object, default: null },
   parsedMeta: { type: Object, default: null },
   label: { type: String, default: "WRF" },
 });
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8002";
 const display = ref(null);
+const binaryImageUrl = ref("");
+let binaryRenderToken = 0;
 
 function toPublicUrl(path) {
   if (!path) return "";
@@ -50,9 +55,20 @@ function toPublicUrl(path) {
 }
 
 function loadWrfDisplay() {
-  fetch(`${API_BASE}/api/display/WRF`).then((response) => response.json()).then((payload) => {
-    if (payload?.code === 0) display.value = payload.data;
-  });
+  fetch(`${API_BASE}/api/display/WRF`)
+    .then(r => r.json())
+    .then(payload => { if (payload?.code === 0) display.value = payload.data; })
+    .catch(() => {})
+    .finally(() => {
+      emit("display-loaded", {
+        meta: {
+          file: wrfMeta.value?.source_file || "",
+          element: currentVariable.value?.name || "WRF",
+          unit: currentVariable.value?.unit || "",
+          extent: extent.value,
+        },
+      });
+    });
 }
 
 const domains = {
@@ -72,6 +88,8 @@ const domainOptions = Object.entries(domains).map(([value, item]) => ({
 }));
 
 const defaultDates = ["2025-07-16"];
+const timelineSlotCount = 12;
+const hiddenVariables = new Set(["PM2_5_DRY", "PM10", "AOD2D_OUT"]);
 
 const variables = [
   {
@@ -157,38 +175,50 @@ const variables = [
 ];
 
 const domain = ref("d02");
-const variable = ref("PM2_5_DRY");
+const variable = ref("T2");
 const selectedDate = ref(defaultDates[0]);
 const flyToExtent = inject("flyToExtent", null);
 
 const currentDomain = computed(() => domains[domain.value] ?? domains.d02);
-const wrfMeta = computed(() => props.parsedMeta || display.value?.meta_json || null);
+const wrfMeta = computed(() => props.parsedMeta || props.parsed?.meta || props.parsed?.meta_json || display.value?.meta_json || null);
 const availableDates = computed(() => {
   const parsedDates = (wrfMeta.value?.times ?? [])
     .map((item) => String(item).slice(0, 10))
     .filter(Boolean);
   return parsedDates.length ? [...new Set(parsedDates)] : defaultDates;
 });
+const dayTimes = computed(() => {
+  const list = Array.isArray(wrfMeta.value?.times) ? wrfMeta.value.times : [];
+  return list
+    .map((item) => String(item))
+    .filter((item) => item.startsWith(selectedDate.value));
+});
 const parsedVariables = computed(() => {
   const list = wrfMeta.value?.variables;
   if (!Array.isArray(list) || list.length === 0) return [];
-  return list.map((item) => ({
-    value: item.name,
-    name: item.label || item.name,
-    unit: item.units || "",
-    desc: item.description || item.name,
-    min: Number(item.min),
-    max: Number(item.max),
-    mean: Number(item.mean),
-    gradient: gradientFor(item.name),
-    ticks: ticksFor(item.name),
-  }));
+  return list
+    .filter((item) => !hiddenVariables.has(item.name))
+    .map((item) => ({
+      value: item.name,
+      name: item.label || item.name,
+      unit: item.units || "",
+      desc: item.description || item.name,
+      min: Number(item.min),
+      max: Number(item.max),
+      mean: Number(item.mean),
+      gradient: gradientFor(item.name),
+      ticks: ticksFor(item.name),
+    }));
 });
-const variableOptions = computed(() => parsedVariables.value.length ? parsedVariables.value : variables);
+const variableOptions = computed(() => {
+  const list = parsedVariables.value.length ? parsedVariables.value : variables;
+  return list.filter((item) => !hiddenVariables.has(item.value));
+});
 const currentVariable = computed(
   () => variableOptions.value.find((item) => item.value === variable.value) ?? variableOptions.value[0],
 );
 const extent = computed(() => {
+  if (hasMixedDomains.value) return currentDomain.value.extent;
   const bbox = wrfMeta.value?.bbox;
   const parsedExtent = [bbox?.west, bbox?.south, bbox?.east, bbox?.north].map(Number);
   if (parsedExtent.every(Number.isFinite) && parsedExtent[0] < parsedExtent[2] && parsedExtent[1] < parsedExtent[3]) {
@@ -196,21 +226,36 @@ const extent = computed(() => {
   }
   return currentDomain.value.extent;
 });
+const hasMixedDomains = computed(() => {
+  const files = wrfMeta.value?.png_files;
+  if (!Array.isArray(files)) return false;
+  const domains = new Set(
+    files
+      .map((item) => String(item).match(/wrfout_(d\d{2})/i)?.[1]?.toLowerCase())
+      .filter(Boolean),
+  );
+  return domains.size > 1;
+});
 const timelineHour = computed(() => {
   const labelHour = String(props.timelineLabel).match(/\d+/)?.[0];
   const hour = labelHour === undefined ? props.timeIndex : Number(labelHour);
   return Math.max(0, Math.min(12, Number.isFinite(hour) ? hour : 0));
 });
+const currentFrameIndex = computed(() => {
+  const count = dayTimes.value.length;
+  if (count <= 1) return 0;
+  const sourceIndex = Number.isFinite(Number(props.timeIndex)) ? Number(props.timeIndex) : 0;
+  const clampedIndex = Math.max(0, Math.min(timelineSlotCount - 1, sourceIndex));
+  return Math.round((clampedIndex / (timelineSlotCount - 1)) * (count - 1));
+});
 const time = computed(() => {
-  const parsedTimes = wrfMeta.value?.times;
-  const parsedTime = Array.isArray(parsedTimes)
-    ? parsedTimes[Math.min(Math.max(props.timeIndex, 0), parsedTimes.length - 1)]
-    : null;
+  const parsedTime = dayTimes.value[currentFrameIndex.value];
   if (parsedTime) return parsedTime.replace(":", "_").replace(":", "_");
   const hour = String(timelineHour.value).padStart(2, "0");
   return `${selectedDate.value}_${hour}_00_00`;
 });
 const imageUrl = computed(() => {
+  if (binaryImageUrl.value) return binaryImageUrl.value;
   const parsedUrl = parsedPngUrl(variable.value);
   if (parsedUrl) return parsedUrl;
   return toPublicUrl(display.value?.png);
@@ -234,13 +279,36 @@ function parsedPngUrl(variableName) {
   const picked = files.find((item) => {
     const name = String(item).replaceAll("\\", "/");
     const base = name.split("/").pop()?.replace(/\.png$/i, "") ?? "";
-    return base.startsWith(`${timePart}_`) && base.endsWith(`_${target}`);
+    return domainMatches(name) && base.startsWith(`${timePart}_`) && base.endsWith(`_${target}`);
+  }) || files.find((item) => {
+    const name = String(item).replaceAll("\\", "/");
+    const base = name.split("/").pop()?.replace(/\.png$/i, "") ?? "";
+    return domainMatches(name) && base.endsWith(`_${target}`);
   }) || files.find((item) => {
     const name = String(item).replaceAll("\\", "/");
     const base = name.split("/").pop()?.replace(/\.png$/i, "") ?? "";
     return base.endsWith(`_${target}`);
   }) || firstRenderablePng(files) || files[0];
   return localDataUrl(picked);
+}
+
+const binaryGrid = computed(() => {
+  const files = wrfMeta.value?.bin_files;
+  if (!Array.isArray(files)) return null;
+  const target = String(variable.value || "");
+  const timePart = time.value;
+  return files.find((item) => {
+    const path = String(item?.path || "").replaceAll("\\", "/");
+    return domainMatches(path) && item?.variable === target && String(item?.time || "").replaceAll(":", "_") === timePart;
+  }) || files.find((item) => {
+    const path = String(item?.path || "").replaceAll("\\", "/");
+    return domainMatches(path) && item?.variable === target;
+  }) || null;
+});
+
+function domainMatches(path) {
+  if (!hasMixedDomains.value) return true;
+  return String(path).toLowerCase().includes(`wrfout_${domain.value}`);
 }
 
 function localDataUrl(path) {
@@ -251,6 +319,115 @@ function localDataUrl(path) {
   return `${url}?v=${version}`;
 }
 
+function colorStops() {
+  const name = variable.value;
+  if (name === "U10" || name === "V10") {
+    return [
+      [29, 78, 216],
+      [147, 197, 253],
+      [248, 250, 252],
+      [253, 186, 116],
+      [185, 28, 28],
+    ];
+  }
+  if (name === "PBLH") {
+    return [
+      [15, 23, 42],
+      [37, 99, 235],
+      [34, 197, 94],
+      [250, 204, 21],
+      [249, 115, 22],
+    ];
+  }
+  if (name === "RAINC" || name === "RAINNC") {
+    return [
+      [248, 250, 252],
+      [191, 219, 254],
+      [56, 189, 248],
+      [37, 99, 235],
+      [30, 58, 138],
+    ];
+  }
+  return [
+    [37, 99, 235],
+    [34, 197, 94],
+    [250, 204, 21],
+    [249, 115, 22],
+    [225, 29, 72],
+  ];
+}
+
+function sampleColor(t) {
+  const stops = colorStops();
+  const scaled = Math.max(0, Math.min(1, t)) * (stops.length - 1);
+  const index = Math.min(stops.length - 2, Math.floor(scaled));
+  const local = scaled - index;
+  const a = stops[index];
+  const b = stops[index + 1];
+  return [
+    Math.round(a[0] + (b[0] - a[0]) * local),
+    Math.round(a[1] + (b[1] - a[1]) * local),
+    Math.round(a[2] + (b[2] - a[2]) * local),
+  ];
+}
+
+async function renderBinaryGrid() {
+  const grid = binaryGrid.value;
+  const token = ++binaryRenderToken;
+  if (!grid?.path) {
+    binaryImageUrl.value = "";
+    return;
+  }
+
+  try {
+    const response = await fetch(localDataUrl(grid.path));
+    if (!response.ok) throw new Error(`WRF binary request failed: ${response.status}`);
+    const buffer = await response.arrayBuffer();
+    if (token !== binaryRenderToken) return;
+
+    const width = Number(grid.width);
+    const height = Number(grid.height);
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+      throw new Error("WRF binary grid has invalid shape.");
+    }
+
+    const values = new Float32Array(buffer);
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    const image = ctx.createImageData(width, height);
+    const min = Number(grid.min);
+    const max = Number(grid.max);
+    const lo = Number.isFinite(min) ? min : currentVariable.value?.min;
+    const hi = Number.isFinite(max) && max !== lo ? max : currentVariable.value?.max;
+    const span = Number.isFinite(hi - lo) && hi !== lo ? hi - lo : 1;
+
+    for (let y = 0; y < height; y += 1) {
+      const sourceY = height - 1 - y;
+      for (let x = 0; x < width; x += 1) {
+        const value = values[sourceY * width + x];
+        const offset = (y * width + x) * 4;
+        if (!Number.isFinite(value)) {
+          image.data[offset + 3] = 0;
+          continue;
+        }
+        const [r, g, b] = sampleColor((value - lo) / span);
+        image.data[offset] = r;
+        image.data[offset + 1] = g;
+        image.data[offset + 2] = b;
+        image.data[offset + 3] = 185;
+      }
+    }
+
+    ctx.putImageData(image, 0, 0);
+    binaryImageUrl.value = canvas.toDataURL("image/png");
+  } catch (err) {
+    console.warn("WRF binary render failed, fallback to PNG.", err);
+    if (token === binaryRenderToken) binaryImageUrl.value = "";
+  }
+}
+
 function isRenderableVariable(item) {
   const min = Number(item?.min);
   const max = Number(item?.max);
@@ -258,7 +435,9 @@ function isRenderableVariable(item) {
 }
 
 function preferredVariable(meta) {
-  const list = Array.isArray(meta?.variables) ? meta.variables : [];
+  const list = Array.isArray(meta?.variables)
+    ? meta.variables.filter((item) => !hiddenVariables.has(item.name))
+    : [];
   const priority = ["T2", "PBLH", "U10", "V10", "PSFC", "RAINC", "RAINNC"];
   return priority
     .map((name) => list.find((item) => item.name === name && isRenderableVariable(item)))
@@ -272,8 +451,9 @@ function firstRenderablePng(files) {
   const name = preferredVariable(wrfMeta.value);
   const timePart = time.value;
   return files.find((item) => {
-    const base = String(item).replaceAll("\\", "/").split("/").pop()?.replace(/\.png$/i, "") ?? "";
-    return base.startsWith(`${timePart}_`) && base.endsWith(`_${name}`);
+    const normalized = String(item).replaceAll("\\", "/");
+    const base = normalized.split("/").pop()?.replace(/\.png$/i, "") ?? "";
+    return domainMatches(normalized) && base.startsWith(`${timePart}_`) && base.endsWith(`_${name}`);
   });
 }
 
@@ -307,6 +487,7 @@ watch(
   { immediate: true },
 );
 watch(() => [wrfMeta.value, extent.value], zoomToDomain, { immediate: true });
+watch(() => [binaryGrid.value, variable.value, time.value, domain.value], renderBinaryGrid, { immediate: true });
 
 onMounted(() => {
   loadWrfDisplay();

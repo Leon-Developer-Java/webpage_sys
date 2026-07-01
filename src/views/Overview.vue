@@ -7,8 +7,11 @@
       <button :class="{ on: dockOpen && tool === 'proj' }" @click="openTool('proj')"><el-icon><Position /></el-icon><span>投影</span></button>
       <button :class="{ on: dockOpen && tool === 'base' }" @click="openTool('base')"><el-icon><MapLocation /></el-icon><span>底图</span></button>
       <button :class="{ on: showGrid }" @click="showGrid = !showGrid"><el-icon><Grid /></el-icon><span>经纬网</span></button>
-      <button :class="{ on: showVector }" @click="showVector = !showVector"><b class="dim-icon">界</b><span>边界</span></button>
-      <button v-if="showVector" :class="{ on: mapDark }" @click="mapDark = !mapDark"><el-icon><Moon /></el-icon><span>暗色</span></button>
+      <button :class="{ on: showVector }" @click="toggleVector"><b class="dim-icon">界</b><span>边界</span></button>
+      <button v-if="showVector" @click="mapDark = !mapDark">
+        <el-icon><Sunny v-if="mapDark" /><Moon v-else /></el-icon>
+        <span>{{ mapDark ? '亮' : '暗' }}</span>
+      </button>
       <button @click="cycleLayout">
         <el-icon><Monitor v-if="layout === '1'" /><Operation v-else-if="layout === '2'" /><Grid v-else /></el-icon>
         <span>{{ { '1': '单屏', '2': '双屏', '4': '四屏' }[layout] }}</span>
@@ -30,7 +33,7 @@
             <div><b>{{ f.name }}</b><span>{{ f.time }} · {{ f.size }}</span></div>
           </li>
         </ul>
-        <label class="upload"><input type="file" hidden @change="choose" />{{ file ? file.name : "选择本地文件…" }}</label>
+        <label class="upload"><input type="file" multiple hidden @change="choose" />{{ selectedFileLabel }}</label>
         <el-button type="primary" size="small" class="parse" @click="parse">打开并解析</el-button>
         <p class="hint">解析后生成 meta.json + PNG</p>
         <div class="vars">
@@ -42,7 +45,7 @@
       <template v-else-if="tool === 'data'">
         <p class="pick-hint">选择数据类型</p>
         <div class="picker">
-          <button v-for="s in sources" :key="s.key" :class="{ on: active === s.key }" @click="selectSource(s.key)">
+          <button v-for="s in sources" :key="s.key" :class="{ on: active === s.key }" :disabled="switching && s.key !== active" @click="selectSource(s.key)">
             <span>{{ s.btn }}</span><el-icon v-if="active === s.key"><Check /></el-icon>
           </button>
         </div>
@@ -75,7 +78,7 @@
     <div class="center">
       <div class="maps" :style="mapsGrid">
         <div :class="['cell', { 'cell-4': layout === '4' }]" v-for="(p, i) in panes" :key="layout + '-' + i">
-          <MapBase
+          <ProjMap
             :grid="showGrid"
             :dark="mapDark"
             :vector="showVector"
@@ -90,9 +93,10 @@
               :parsed="layerParsed(p.key)"
               :time-index="layerTimeIndex"
               v-bind="layerProps(p.key)"
-              v-on="layerListeners(p.key)"
+              @display-loaded="payload => onLayerDisplayLoaded(p.key, payload)"
+              @variable-change="payload => onLayerVariableChange(p.key, payload)"
             />
-          </MapBase>
+          </ProjMap>
         </div>
       </div>
 
@@ -118,7 +122,6 @@
           v-else
           :times="axisTimes"
           :active="animPos"
-          tick-mode="sampled"
           @update:active="v => setTimeIndex(v)"
           :dark="dark"
         />
@@ -143,9 +146,9 @@
 
 <script setup>
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { ArrowLeft, ArrowRight, Check, CircleCheck, Close, Connection, DArrowLeft, DArrowRight, DataAnalysis, Document, FolderOpened, Grid, MapLocation, Monitor, Moon, Operation, Position, RefreshRight, VideoPlay, VideoPause } from "@element-plus/icons-vue";
+import { ArrowLeft, ArrowRight, Check, CircleCheck, Close, Connection, DArrowLeft, DArrowRight, DataAnalysis, Document, FolderOpened, Grid, MapLocation, Monitor, Moon, Operation, Position, RefreshRight, Sunny, VideoPlay, VideoPause } from "@element-plus/icons-vue";
 import { getHimawariAutoStatus, parseFile } from "../api";
-import MapBase from "../components/MapBase.vue";
+import ProjMap from "../components/ProjMap.vue";
 import MetaPanel from "../components/MetaPanel.vue";
 import TimeAxis from "../components/TimeAxis.vue";
 import VariableSelect from "../components/VariableSelect.vue";
@@ -204,7 +207,7 @@ const layout = ref("1");
 const propsOpen = ref(true);
 const active = ref("radar");
 const selected = ref(0);
-const file = ref(null);
+const file = ref([]);
 const path = ref("D:/weather_data/radar/");
 const projection = ref("等经纬");
 const basemap = ref("矢量底图");
@@ -214,6 +217,9 @@ const tIndex = ref(5);
 const parsed = ref(null);
 const parsedLayerKey = ref(null);
 const parseProcessing = ref(null);
+const layerDisplays = ref({});
+const himawariTimeline = ref([]);
+const himawariStatus = ref(null);
 const playing = ref(false);
 const speed = ref(1);
 const animPos = ref(tIndex.value);
@@ -222,12 +228,19 @@ const syncView = ref(null);
 const showVector = ref(false);
 const mapDark = ref(dark.value);
 const emitterIdx = ref(-1);
-const himawariStatus = ref(null);
-const himawariTimeline = ref([]);
+const switching = ref(false);
 const latestView = {};
 let animTimer = null;
-let himawariStatusTimer = null;
 let lastTs = null;
+let switchingTimer = null;
+let himawariStatusTimer = null;
+
+const selectedFileLabel = computed(() => {
+  const files = Array.isArray(file.value) ? file.value : [];
+  if (!files.length) return "选择本地文件…";
+  if (files.length === 1) return files[0].name;
+  return `已选择 ${files.length} 个文件`;
+});
 
 function onViewChange(i, view) {
   latestView[i] = view;
@@ -243,46 +256,442 @@ watch(linked, v => {
   }
 });
 
+function onLayerDisplayLoaded(key, payload) {
+  if (!payload) return;
+  if (key === active.value && switching.value) {
+    switching.value = false;
+    clearTimeout(switchingTimer);
+  }
+  if (key === "himawari") {
+    updateHimawariTimeline(payload);
+  }
+  layerDisplays.value = { ...layerDisplays.value, [key]: payload };
+}
+
+function onLayerVariableChange(key, payload) {
+  if (!payload) return;
+  layerDisplays.value = {
+    ...layerDisplays.value,
+    [key]: {
+      ...(layerDisplays.value[key] || {}),
+      meta: {
+        ...(layerDisplays.value[key]?.meta || {}),
+        weather_info: payload,
+        ...payload,
+      },
+      weather_info: payload,
+      times: payload.times || layerDisplays.value[key]?.times,
+      forecast_hours: payload.forecast_hours || layerDisplays.value[key]?.forecast_hours,
+      forecast_labels: payload.forecast_labels || layerDisplays.value[key]?.forecast_labels,
+      valid_hours: payload.valid_hours || payload.validHours || payload.valid_time_hours || layerDisplays.value[key]?.valid_hours,
+      valid_time_hours: payload.valid_time_hours || payload.validTimeHours || payload.valid_hours || layerDisplays.value[key]?.valid_time_hours,
+      axis_times: payload.axis_times || layerDisplays.value[key]?.axis_times,
+      png_urls: payload.png_urls || layerDisplays.value[key]?.png_urls,
+    },
+  };
+}
+
+function firstArray(...items) {
+  return items.find((item) => Array.isArray(item) && item.length) || [];
+}
+
+function collectTimes(source) {
+  const meta = source?.meta || source?.meta_json || source || {};
+  const frames = source?.frames || meta.frames || [];
+  const layer = preferredVariableLayer(source);
+  const candidates = [
+    source?.times,
+    meta.times,
+    source?.weather_info?.times,
+    meta.weather_info?.times,
+    layer?.times,
+    layer?.valid_times,
+    Array.isArray(frames) ? frames.map((frame) => frame?.time || frame?.time_label || frame?.valid_time).filter(Boolean) : [],
+  ];
+  return candidates.find((items) => Array.isArray(items) && items.length) || [];
+}
+
+function formatAxisTime(value) {
+  const text = String(value || "");
+  if (/^\d{10}$/.test(text)) return `${text.slice(4, 6)}-${text.slice(6, 8)} ${text.slice(8, 10)}时`;
+  const match = text.match(/T(\d{2}):?(\d{2})?/) || text.match(/\s(\d{2}):?(\d{2})?/);
+  if (match) return `${match[1]}:${match[2] || "00"}`;
+  return text.slice(0, 16) || text;
+}
+
+const activeLayerTimes = computed(() => {
+  const values = collectTimes(parsed.value && parsedLayerKey.value === active.value ? parsed.value : null)
+    .concat(collectTimes(layerDisplays.value[active.value]))
+    .filter(Boolean);
+  return [...new Set(values.map(String))];
+});
+
 const axisTimes = computed(() => {
   if (active.value === "himawari" && himawariTimeline.value.length) {
     return himawariTimeline.value.map((item) => item.label);
   }
+
+  // GFS/ECMWF 保持业务播放轴：00时、02时、04时...22时。
+  // 真实 F000/F006/F012 用于图层内部匹配和右侧信息，不直接显示到底部轴。
+  if (active.value === "grib") {
+    return defaultTimes;
+  }
+
+  // 其他图层继续沿用团队最新逻辑，避免影响 CMA / ERA5 / 雷达 / 卫星。
+  if (activeLayerTimes.value.length > 1) {
+    return activeLayerTimes.value.map(formatAxisTime);
+  }
+
   return defaultTimes;
 });
 
+function parseAxisHour(text, index = 0) {
+  const raw = String(text || "");
+
+  const m1 = raw.match(/(\d{1,2})时/);
+  if (m1) return Number(m1[1]);
+
+  const m2 = raw.match(/(\d{1,2}):\d{2}/);
+  if (m2) return Number(m2[1]);
+
+  return index * 2;
+}
+
+function parseForecastHour(value, fallbackIndex = 0) {
+  if (value === undefined || value === null || value === "") {
+    return fallbackIndex;
+  }
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  const text = String(value);
+
+  const m1 = text.match(/F\s*(\d{1,3})/i);
+  if (m1) return Number(m1[1]);
+
+  const m2 = text.match(/(\d{1,3})\s*h/i);
+  if (m2) return Number(m2[1]);
+
+  const m3 = text.match(/(\d{1,3})/);
+  if (m3) return Number(m3[1]);
+
+  return fallbackIndex;
+}
+
+function allVariableLayers(source) {
+  const meta = source?.meta || source?.meta_json || {};
+  const weather = source?.weather_info || meta.weather_info || {};
+  const layers =
+    source?.variable_layers ||
+    weather.variable_layers ||
+    meta.variable_layers ||
+    meta.weather_info?.variable_layers ||
+    source?.extra?.variable_layers ||
+    meta.extra?.variable_layers ||
+    {};
+
+  return layers && typeof layers === "object" ? layers : {};
+}
+
+function preferredVariableLayer(source) {
+  if (!source) return null;
+
+  const layers = allVariableLayers(source);
+  const keys = Object.keys(layers);
+  if (!keys.length) return null;
+
+  const productKey =
+    source?.product?.key ||
+    source?.product?.code ||
+    source?.level?.layerKey ||
+    source?.default_variable ||
+    source?.meta?.default_variable ||
+    source?.weather_info?.default_variable;
+
+  if (productKey && layers[productKey]) {
+    return layers[productKey];
+  }
+
+  return layers[keys[0]];
+}
+
+function collectFrameCount(source) {
+  if (!source) return 0;
+
+  const layer = preferredVariableLayer(source);
+  const frames = source?.frames || source?.meta?.frames || [];
+
+  const candidates = [
+    source?.png_urls,
+    source?.meta?.png_urls,
+    source?.weather_info?.png_urls,
+    layer?.png_urls,
+    layer?.grid_urls,
+    layer?.times,
+    layer?.valid_times,
+    layer?.forecast_hours,
+    layer?.forecast_labels,
+    source?.forecast_hours,
+    source?.forecast_labels,
+    collectTimes(source),
+    Array.isArray(frames) ? frames : [],
+  ];
+
+  const arr = firstArray(...candidates);
+  return arr.length || 0;
+}
+
+function currentLayerForecastHours() {
+  const display = layerDisplays.value[active.value];
+  const meta = display?.meta || display?.meta_json || display || {};
+  const weather = meta.weather_info || display?.weather_info || {};
+  const layer = preferredVariableLayer(display);
+  const parsedLayer = parsedLayerKey.value === active.value ? preferredVariableLayer(parsed.value) : null;
+
+  const candidates = [
+    display?.forecast_hours,
+    display?.forecastHours,
+    meta.forecast_hours,
+    meta.forecastHours,
+    weather.forecast_hours,
+    weather.forecastHours,
+    layer?.forecast_hours,
+    layer?.forecastHours,
+    parsedLayer?.forecast_hours,
+    parsedLayer?.forecastHours,
+    parsed.value?.forecast_hours,
+    parsed.value?.forecastHours,
+  ];
+
+  for (const item of candidates) {
+    if (Array.isArray(item) && item.length) {
+      return item.map((v, i) => parseForecastHour(v, i));
+    }
+  }
+
+  const labelCandidates = [
+    display?.forecast_labels,
+    display?.forecastLabels,
+    meta.forecast_labels,
+    meta.forecastLabels,
+    weather.forecast_labels,
+    weather.forecastLabels,
+    layer?.forecast_labels,
+    layer?.forecastLabels,
+    parsedLayer?.forecast_labels,
+    parsedLayer?.forecastLabels,
+    display?.axis_times,
+    meta.axis_times,
+    weather.axis_times,
+  ];
+
+  for (const item of labelCandidates) {
+    if (Array.isArray(item) && item.length) {
+      return item.map((v, i) => parseForecastHour(v, i));
+    }
+  }
+
+  return [];
+}
+
+function parseValidHour(value, fallbackIndex = null) {
+  if (value === undefined || value === null || value === "") {
+    return fallbackIndex === null ? null : fallbackIndex * 2;
+  }
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return ((Math.floor(value) % 24) + 24) % 24;
+  }
+
+  const text = String(value);
+
+  // ISO 时间：2026-06-30T12:00:00
+  const iso = text.match(/T(\d{1,2}):\d{2}/);
+  if (iso) return Number(iso[1]);
+
+  // 普通时间：06-30 12:00 / F006 · 06-30 12:00
+  const hm = text.match(/(\d{1,2}):\d{2}/);
+  if (hm) return Number(hm[1]);
+
+  // 中文刻度：12时
+  const cn = text.match(/(\d{1,2})时/);
+  if (cn) return Number(cn[1]);
+
+  return fallbackIndex === null ? null : fallbackIndex * 2;
+}
+
+function currentLayerValidHours() {
+  const display = layerDisplays.value[active.value];
+  const meta = display?.meta || display?.meta_json || display || {};
+  const weather = meta.weather_info || display?.weather_info || {};
+  const layer = preferredVariableLayer(display);
+  const parsedLayer = parsedLayerKey.value === active.value ? preferredVariableLayer(parsed.value) : null;
+
+  const hourCandidates = [
+    display?.valid_hours,
+    display?.validHours,
+    display?.valid_time_hours,
+    display?.validTimeHours,
+    meta.valid_hours,
+    meta.validHours,
+    meta.valid_time_hours,
+    meta.validTimeHours,
+    weather.valid_hours,
+    weather.validHours,
+    weather.valid_time_hours,
+    weather.validTimeHours,
+    layer?.valid_hours,
+    layer?.validHours,
+    layer?.valid_time_hours,
+    layer?.validTimeHours,
+    parsedLayer?.valid_hours,
+    parsedLayer?.validHours,
+    parsedLayer?.valid_time_hours,
+    parsedLayer?.validTimeHours,
+  ];
+
+  for (const item of hourCandidates) {
+    if (Array.isArray(item) && item.length) {
+      const parsedHours = item.map((v, i) => parseValidHour(v, i)).filter(v => Number.isFinite(v));
+      if (parsedHours.length) return parsedHours;
+    }
+  }
+
+  const timeCandidates = [
+    display?.times,
+    meta.times,
+    weather.times,
+    layer?.times,
+    layer?.valid_times,
+    layer?.validTimes,
+    parsedLayer?.times,
+    parsedLayer?.valid_times,
+    parsedLayer?.validTimes,
+    parsed.value?.times,
+    parsed.value?.meta?.times,
+    parsed.value?.weather_info?.times,
+  ];
+
+  for (const item of timeCandidates) {
+    if (Array.isArray(item) && item.length) {
+      const parsedHours = item.map((v, i) => parseValidHour(v, i)).filter(v => Number.isFinite(v));
+      if (parsedHours.length) return parsedHours;
+    }
+  }
+
+  return [];
+}
+
+function nearestHourIndex(hours, targetHour) {
+  let bestIndex = 0;
+  let bestDiff = Infinity;
+
+  hours.forEach((hour, index) => {
+    const h = Number(hour);
+    if (!Number.isFinite(h)) return;
+
+    const rawDiff = Math.abs(h - targetHour);
+    const circularDiff = Math.min(rawDiff, 24 - rawDiff);
+
+    if (circularDiff < bestDiff) {
+      bestDiff = circularDiff;
+      bestIndex = index;
+    }
+  });
+
+  return bestIndex;
+}
+
+function nearestAxisIndexForHour(targetHour) {
+  let bestIndex = 0;
+  let bestDiff = Infinity;
+
+  axisTimes.value.forEach((label, index) => {
+    const hour = parseAxisHour(label, index);
+    const rawDiff = Math.abs(hour - targetHour);
+    const circularDiff = Math.min(rawDiff, 24 - rawDiff);
+
+    if (circularDiff < bestDiff) {
+      bestDiff = circularDiff;
+      bestIndex = index;
+    }
+  });
+
+  return bestIndex;
+}
+
+function currentGfsValidAxisIndices() {
+  if (active.value !== "grib") return [];
+
+  const validHours = currentLayerValidHours();
+  if (!validHours.length) return [];
+
+  const indices = validHours
+    .map(hour => nearestAxisIndexForHour(hour))
+    .filter(index => Number.isFinite(index));
+
+  return [...new Set(indices)].sort((a, b) => a - b);
+}
+
+function snapTimeIndexForActive(v) {
+  const max = Math.max(0, axisTimes.value.length - 1);
+  const n = Number.isFinite(Number(v)) ? Math.min(max, Math.max(0, Math.round(Number(v)))) : 0;
+
+  if (active.value !== "grib") {
+    return n;
+  }
+
+  const validIndices = currentGfsValidAxisIndices();
+  if (!validIndices.length) {
+    return n;
+  }
+
+  let bestIndex = validIndices[0];
+  let bestDiff = Infinity;
+
+  validIndices.forEach(index => {
+    const diff = Math.abs(index - n);
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      bestIndex = index;
+    }
+  });
+
+  return bestIndex;
+}
+
+function nextGfsValidAxisIndex(direction = 1) {
+  const validIndices = currentGfsValidAxisIndices();
+  if (!validIndices.length) return clampTimeIndex(tIndex.value + direction);
+
+  const current = snapTimeIndexForActive(tIndex.value);
+  const pos = validIndices.findIndex(index => index === current);
+
+  if (pos < 0) {
+    return validIndices[0];
+  }
+
+  const nextPos = (pos + direction + validIndices.length) % validIndices.length;
+  return validIndices[nextPos];
+}
+
 const parsedFrameCount = computed(() => {
-  if (active.value === "himawari" && himawariTimeline.value.length) {
-    return himawariTimeline.value.length;
+  if (active.value === "grib") {
+    const validHours = currentLayerValidHours();
+    if (validHours.length) return validHours.length;
+
+    const forecastHours = currentLayerForecastHours();
+    if (forecastHours.length) return forecastHours.length;
   }
 
-  if (!parsed.value || parsedLayerKey.value !== active.value) {
-    return defaultTimes.length;
-  }
+  const displayCount = collectFrameCount(layerDisplays.value[active.value]);
+  if (displayCount) return displayCount;
 
-  const pngUrls =
-    parsed.value?.png_urls ||
-    parsed.value?.meta?.png_urls ||
-    parsed.value?.weather_info?.png_urls ||
-    parsed.value?.meta_json?.meta?.png_urls ||
-    parsed.value?.meta_json?.weather_info?.png_urls ||
-    parsed.value?.extra?.png_urls ||
-    [];
-
-  if (Array.isArray(pngUrls) && pngUrls.length) {
-    return pngUrls.length;
-  }
-
-  const parsedTimes =
-    parsed.value?.times ||
-    parsed.value?.meta?.times ||
-    parsed.value?.weather_info?.times ||
-    parsed.value?.meta_json?.meta?.times ||
-    parsed.value?.meta_json?.weather_info?.times ||
-    parsed.value?.extra?.times ||
-    [];
-
-  if (Array.isArray(parsedTimes) && parsedTimes.length) {
-    return parsedTimes.length;
+  if (parsed.value && parsedLayerKey.value === active.value) {
+    const parsedCount = collectFrameCount(parsed.value);
+    if (parsedCount) return parsedCount;
   }
 
   return defaultTimes.length;
@@ -290,21 +699,39 @@ const parsedFrameCount = computed(() => {
 
 const layerTimeIndex = computed(() => {
   if (active.value === "himawari" && himawariTimeline.value.length) {
-    return clampTimelineIndex(tIndex.value, himawariTimeline.value.length);
+    return clampTimeIndex(tIndex.value);
   }
 
-  const uiCount = defaultTimes.length;
   const frameCount = parsedFrameCount.value;
 
-  if (frameCount <= 1 || uiCount <= 1) {
+  if (frameCount <= 1) {
     return 0;
   }
 
   const uiIndex = clampTimeIndex(tIndex.value);
+  const uiHour = parseAxisHour(axisTimes.value[uiIndex], uiIndex);
 
-  // 前端时间轴保持原始 12 个刻度：00时、02时、...、22时。
-  // 这里把 12 个 UI 刻度映射到后端实际 N 张 PNG，
-  // 例如 N=48 时：00时≈step000，02时≈step004，...，22时≈step047。
+  if (active.value === "grib") {
+    const validHours = currentLayerValidHours();
+
+    // GFS 最优先按有效时间匹配：
+    // 起报 06Z 时，06时 -> F000，12时 -> F006，18时 -> F012。
+    if (validHours.length === frameCount) {
+      return nearestHourIndex(validHours, uiHour);
+    }
+
+    const forecastHours = currentLayerForecastHours();
+
+    // 兜底：如果后端没有 valid_time/times，才按 forecast lead hour 匹配。
+    if (forecastHours.length === frameCount) {
+      return nearestHourIndex(forecastHours, uiHour);
+    }
+  }
+
+  // 其他图层继续使用团队原来的比例映射逻辑。
+  const uiCount = axisTimes.value.length;
+  if (uiCount <= 1) return 0;
+
   return Math.round((uiIndex / (uiCount - 1)) * (frameCount - 1));
 });
 
@@ -314,19 +741,24 @@ function clampTimeIndex(v) {
   return Math.min(max, Math.max(0, n));
 }
 
-function clampTimelineIndex(v, length) {
-  const max = Math.max(0, length - 1);
-  const n = Number.isFinite(Number(v)) ? Math.floor(Number(v)) : 0;
-  return Math.min(max, Math.max(0, n));
-}
-
 function setTimeIndex(v) {
-  tIndex.value = clampTimeIndex(v);
-  animPos.value = tIndex.value;
+  const next = snapTimeIndexForActive(v);
+  tIndex.value = next;
+  animPos.value = next;
 }
 
 function startAnim() {
   clearInterval(animTimer);
+
+  if (active.value === "grib" && currentGfsValidAxisIndices().length) {
+    animTimer = setInterval(() => {
+      const next = nextGfsValidAxisIndex(1);
+      tIndex.value = next;
+      animPos.value = next;
+    }, Math.max(120, 900 / Math.max(0.1, speed.value)));
+    return;
+  }
+
   lastTs = Date.now();
   animTimer = setInterval(() => {
     const now = Date.now();
@@ -334,7 +766,7 @@ function startAnim() {
     lastTs = now;
     if (animPos.value >= axisTimes.value.length) animPos.value = 0;
     const floor = Math.floor(animPos.value);
-    if (floor !== tIndex.value) tIndex.value = clampTimeIndex(floor);
+    if (floor !== tIndex.value) setTimeIndex(floor);
   }, 16);
 }
 
@@ -349,7 +781,7 @@ watch(playing, v => {
 });
 
 watch(speed, () => {
-  if (playing.value) lastTs = Date.now();
+  if (playing.value) startAnim();
 });
 
 watch(tIndex, v => {
@@ -360,6 +792,19 @@ watch(axisTimes, () => {
   setTimeIndex(Math.min(tIndex.value, axisTimes.value.length - 1));
 });
 
+watch(
+  () => [
+    active.value,
+    currentLayerValidHours().join(","),
+    currentLayerForecastHours().join(","),
+  ],
+  () => {
+    setTimeIndex(tIndex.value);
+    if (playing.value) startAnim();
+  }
+);
+
+
 onMounted(() => {
   refreshHimawariStatus();
   himawariStatusTimer = window.setInterval(refreshHimawariStatus, 5000);
@@ -367,6 +812,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   clearInterval(animTimer);
+  clearTimeout(switchingTimer);
   if (himawariStatusTimer) window.clearInterval(himawariStatusTimer);
 });
 
@@ -387,32 +833,24 @@ function normalizeParsedMeta(result) {
   if (!result) return null;
 
   const panelMeta = result.meta || {};
-  const sceneMeta = result.meta_json || {};
   const info = result.weather_info || {};
-  const products = [...(result.composites || []), ...(result.variables || [])];
-  const extent = panelMeta.extent || info.extent || sceneMeta.extent || result.extent || null;
-  const grid = panelMeta.grid || info.grid || sceneMeta.grid || result.grid || null;
-  const productNames = products
-    .map((item) => item.name_cn || item.name_zh || item.long_name || item.plain_name || item.name || item.key)
-    .filter(Boolean)
-    .join("、");
 
   return {
-    file: result.file_name || panelMeta.file || info.file || sceneMeta.scene_id || "—",
-    element: panelMeta.element || info.element || productNames || "—",
-    time: formatObservationTime(panelMeta.time || info.time || sceneMeta.observation_time) || "—",
-    level: panelMeta.level || info.level || sceneMeta.projection || "—",
-    range: panelMeta.range || info.range || formatExtent(extent) || "—",
-    grid: panelMeta.grid || info.grid || formatGrid(grid) || "—",
+    file: result.file_name || panelMeta.file || info.file || "—",
+    element: panelMeta.element || info.element || "—",
+    time: panelMeta.time || info.time || "—",
+    level: panelMeta.level || info.level || "—",
+    range: panelMeta.range || info.range || "—",
+    grid: panelMeta.grid || info.grid || "—",
     missing: panelMeta.missing || info.missing || "—",
-    unit: panelMeta.unit || info.unit || products.find((item) => item.display_unit || item.unit)?.display_unit || products.find((item) => item.unit)?.unit || "—",
+    unit: panelMeta.unit || info.unit || "—",
     vars: panelMeta.vars || info.variables || "—",
     steps: panelMeta.steps || info.steps || "—",
     status: panelMeta.status || info.status || "—",
-    extent,
+    extent: panelMeta.extent || info.extent || result.extent || null,
     png_url: result.png_url || panelMeta.png_url || info.png_url || null,
     png_urls: result.png_urls || panelMeta.png_urls || info.png_urls || [],
-    times: result.times || panelMeta.times || info.times || normalizeHimawariTimeline(result).map((item) => item.label),
+    times: result.times || panelMeta.times || info.times || [],
   };
 }
 
@@ -420,7 +858,15 @@ const meta = computed(() => {
   if (parsed.value && parsedLayerKey.value === active.value) {
     return normalizeParsedMeta(parsed.value);
   }
-  return parsed.value?.weather_info || parsed.value || infos[active.value];
+
+  const display = layerDisplays.value[active.value];
+  const displayMeta = display?.meta || display?.weather_info || null;
+
+  if (displayMeta) {
+    return displayMeta;
+  }
+
+  return infos[active.value];
 });
 
 const processing = computed(() => {
@@ -447,8 +893,8 @@ function layerParsed(key) {
 const selectedHimawariSceneId = computed(() => {
   const items = himawariTimeline.value;
   if (!items.length) return "";
-  if (active.value !== "himawari") return items[items.length - 1]?.scene_id || "";
-  return items[clampTimelineIndex(tIndex.value, items.length)]?.scene_id || "";
+  const index = active.value === "himawari" ? clampTimeIndex(tIndex.value) : items.length - 1;
+  return items[index]?.scene_id || "";
 });
 
 function layerProps(key) {
@@ -456,27 +902,13 @@ function layerProps(key) {
   return { sceneId: selectedHimawariSceneId.value };
 }
 
-function layerListeners(key) {
-  if (key !== "himawari") return {};
-  return { "display-loaded": onHimawariDisplayLoaded };
-}
-
-function onHimawariDisplayLoaded(data) {
-  if (!data) return;
-  updateHimawariTimeline(data);
-  if (active.value === "himawari") {
-    parsed.value = data;
-    parsedLayerKey.value = "himawari";
-  }
-}
-
 function updateHimawariTimeline(data) {
   const items = normalizeHimawariTimeline(data);
   if (!items.length) return;
 
   const previous = himawariTimeline.value;
-  const previousIndex = clampTimelineIndex(tIndex.value, previous.length);
-  const previousSceneId = previous[previousIndex]?.scene_id;
+  const previousIndex = previous.length ? clampTimeIndex(tIndex.value) : -1;
+  const previousSceneId = previous[previousIndex]?.scene_id || "";
   const wasAtLatest = !previous.length || previousIndex >= previous.length - 1;
 
   himawariTimeline.value = items;
@@ -490,7 +922,7 @@ function updateHimawariTimeline(data) {
     ? items.length - 1
     : preservedIndex >= 0
       ? preservedIndex
-      : Math.min(previousIndex, items.length - 1);
+      : Math.min(Math.max(previousIndex, 0), items.length - 1);
 
   setTimeIndex(nextIndex);
 }
@@ -499,52 +931,64 @@ function normalizeHimawariTimeline(data) {
   const timeline = Array.isArray(data?.timeline) ? data.timeline : [];
   if (timeline.length) {
     return timeline
-      .map((item) => ({
-        scene_id: item.scene_id || "",
-        time: item.time || "",
-        label: formatObservationTime(item.time || item.label) || item.label || item.scene_id || "",
-      }))
-      .filter((item) => item.scene_id && item.label);
+      .map((item) => {
+        const sceneId = item?.scene_id || item?.id || "";
+        const timeValue = item?.observation_time || item?.time || item?.utc_time || item?.label || sceneId;
+        return {
+          scene_id: sceneId,
+          time: timeValue,
+          label: item?.label || formatObservationTime(timeValue) || sceneId,
+        };
+      })
+      .filter((item) => item.scene_id);
   }
 
-  const metaJson = data?.meta_json || {};
-  if (!metaJson.scene_id) return [];
+  const metaJson = data?.meta_json || data?.meta || {};
+  const sceneId = metaJson.scene_id || data?.scene_id || "";
+  if (!sceneId) return [];
+
+  const timeValue = metaJson.observation_time || data?.observation_time || metaJson.time || sceneId;
   return [{
-    scene_id: metaJson.scene_id,
-    time: metaJson.observation_time || "",
-    label: formatObservationTime(metaJson.observation_time) || metaJson.scene_id,
+    scene_id: sceneId,
+    time: timeValue,
+    label: formatObservationTime(timeValue) || sceneId,
   }];
 }
 
 function formatObservationTime(value) {
-  if (!value) return "";
-  const text = String(value);
-  const formatted = formatBeijingTime(text);
-  if (formatted) return formatted;
-  return text;
+  const text = String(value || "").trim();
+  if (!text) return "";
+
+  const compact = text.match(/^(\d{4})(\d{2})(\d{2})[_-]?(\d{2})(\d{2})$/);
+  if (compact) {
+    const date = new Date(Date.UTC(
+      Number(compact[1]),
+      Number(compact[2]) - 1,
+      Number(compact[3]),
+      Number(compact[4]),
+      Number(compact[5]),
+    ));
+    return formatBeijingTime(date);
+  }
+
+  const parsedDate = new Date(text);
+  if (!Number.isNaN(parsedDate.getTime())) {
+    return formatBeijingTime(parsedDate);
+  }
+
+  const hm = text.match(/(\d{2})-(\d{2})\s+(\d{2}):(\d{2})/);
+  if (hm) return `${hm[1]}-${hm[2]} ${hm[3]}:${hm[4]}`;
+
+  return text.slice(0, 16);
 }
 
-function formatBeijingTime(value) {
-  if (!value || !/[TZ]|[+-]\d{2}:?\d{2}$/.test(String(value))) return "";
-  const parsed = new Date(String(value).replace("Z", "+00:00"));
-  if (Number.isNaN(parsed.getTime())) return "";
-  const beijing = new Date(parsed.getTime() + 8 * 60 * 60 * 1000);
-  const month = String(beijing.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(beijing.getUTCDate()).padStart(2, "0");
-  const hour = String(beijing.getUTCHours()).padStart(2, "0");
-  const minute = String(beijing.getUTCMinutes()).padStart(2, "0");
-  return `${month}-${day} ${hour}:${minute}`;
-}
-
-function formatExtent(extent) {
-  if (!Array.isArray(extent) || extent.length !== 4) return "";
-  const [west, south, east, north] = extent;
-  return `${west}°E-${east}°E, ${south}°N-${north}°N`;
-}
-
-function formatGrid(grid) {
-  if (!grid || !grid.nx || !grid.ny) return "";
-  return `${grid.nx} × ${grid.ny}`;
+function formatBeijingTime(date) {
+  const bj = new Date(date.getTime() + 8 * 60 * 60 * 1000);
+  const mm = String(bj.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(bj.getUTCDate()).padStart(2, "0");
+  const hh = String(bj.getUTCHours()).padStart(2, "0");
+  const mi = String(bj.getUTCMinutes()).padStart(2, "0");
+  return `${mm}-${dd} ${hh}:${mi}`;
 }
 
 async function refreshHimawariStatus() {
@@ -553,7 +997,7 @@ async function refreshHimawariStatus() {
   } catch (err) {
     himawariStatus.value = {
       state: "error",
-      stage: "error",
+      running: false,
       current_detail: "Himawari 自动处理状态读取失败",
       last_error: err?.message || "Himawari 自动处理状态读取失败",
     };
@@ -580,6 +1024,11 @@ const mapsGrid = computed(() => {
 
 const dockTitle = computed(() => ({ file: "选择文件", data: "数据类型", proj: "投影方式", base: "底图图层" }[tool.value]));
 
+function toggleVector() {
+  showVector.value = !showVector.value;
+  if (showVector.value) mapDark.value = false;
+}
+
 function cycleLayout() {
   layout.value = layout.value === "1" ? "2" : layout.value === "2" ? "4" : "1";
   if (layout.value === "1") linked.value = false;
@@ -594,13 +1043,14 @@ function openTool(name) {
 }
 
 function selectSource(key) {
+  if (key === active.value) return;
+  switching.value = true;
+  clearTimeout(switchingTimer);
+  switchingTimer = setTimeout(() => { switching.value = false; }, 10000);
   active.value = key;
   parsed.value = null;
   parsedLayerKey.value = null;
   parseProcessing.value = null;
-  if (key === "himawari" && himawariTimeline.value.length) {
-    setTimeIndex(himawariTimeline.value.length - 1);
-  }
 }
 
 function pickFile(i) {
@@ -612,11 +1062,12 @@ function pickFile(i) {
 }
 
 function choose(e) {
-  file.value = e.target.files[0] || null;
+  file.value = Array.from(e.target.files || []);
 }
 
 async function parse() {
-  if (!file.value) return;
+  const uploadFiles = Array.isArray(file.value) ? file.value : [file.value].filter(Boolean);
+  if (!uploadFiles.length) return;
 
   parseProcessing.value = [
     { step: "上传/读取", state: "本地文件", t: new Date().toLocaleTimeString(), ok: true },
@@ -626,7 +1077,7 @@ async function parse() {
   ];
 
   try {
-    const result = await parseFile(file.value);
+    const result = await parseFile(uploadFiles);
 
     const businessType =
       result?.business_type ||
@@ -635,6 +1086,9 @@ async function parse() {
       result?.meta?.data_type;
 
     const layerKey = businessTypeToLayerKey(businessType);
+    if (layerKey === "radar") {
+      layerDisplays.value = { ...layerDisplays.value, radar: null };
+    }
 
     parsed.value = result;
     parsedLayerKey.value = layerKey;
@@ -663,9 +1117,8 @@ async function parse() {
 watch(active, () => {
   const opts = variableOptions.value;
   variable.value = opts[0] || "";
-  if (active.value === "himawari" && himawariTimeline.value.length) {
-    setTimeIndex(himawariTimeline.value.length - 1);
-  }
+  setTimeIndex(tIndex.value);
+  if (playing.value) startAnim();
 });
 </script>
 
@@ -720,7 +1173,7 @@ watch(active, () => {
 .center { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
 .maps { flex: 1; min-height: 0; display: grid; gap: 10px; }
 .cell { position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; }
-.cell .map-base { position: absolute; inset: 0; }
+.cell :deep(.projmap) { position: absolute; inset: 0; }
 
 .timebar { flex-shrink: 0; padding: 6px 14px 8px; overflow: hidden; }
 .tb-head { display: flex; align-items: center; gap: 6px; padding: 0 0 6px; }

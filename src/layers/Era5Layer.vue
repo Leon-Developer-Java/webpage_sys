@@ -1,5 +1,5 @@
 <template>
-  <WebglLayer v-if="!grid && imageSrc" :src="imageSrc" :extent="imageExtent" />
+  <WebglLayer v-if="!gridLayer && imageSrc" :src="imageSrc" :extent="imageExtent" />
   <LayerCard
     :badge="label"
     :file="resolvedFile"
@@ -11,7 +11,7 @@
       <span>要素</span>
       <select v-model="selectedVariable" :disabled="loading || !variables.length">
         <option v-for="item in variables" :key="item.name" :value="item.name">
-          {{ item.label || item.name }}
+          {{ optionLabel(item) }}
         </option>
       </select>
     </label>
@@ -19,7 +19,7 @@
 </template>
 
 <script setup>
-import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import LayerCard from "../components/LayerCard.vue";
 import WebglLayer from "../components/WebglLayer.vue";
 
@@ -28,8 +28,10 @@ const props = defineProps({
   extent: { type: Array, default: null },
   label: String,
   file: String,
+  parsed: { type: Object, default: null },
+  timeIndex: { type: Number, default: 0 },
 });
-const emit = defineEmits(["display-loaded"]);
+const emit = defineEmits(["display-loaded", "variable-change"]);
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8002";
 const surface = inject("mapSurface", null);
@@ -39,11 +41,12 @@ const layerRefreshKeys = inject("layerRefreshKeys", ref({}));
 const colors = ["#2563eb", "#0891b2", "#16a34a", "#facc15", "#dc2626"];
 const gradient = `linear-gradient(to right, ${colors.join(",")})`;
 const display = ref(null);
-const grid = ref(null);
+const gridLayer = ref(null);
 const variables = ref([]);
 const selectedVariable = ref("");
 const loading = ref(false);
 const error = ref("");
+const framePayload = ref(null);
 
 let renderCanvas = null;
 let gl = null;
@@ -51,6 +54,8 @@ let program = null;
 let buffer = null;
 let valueTexture = null;
 let syncingSelection = false;
+let loadToken = 0;
+let lastExtentKey = "";
 
 const vert = `#version 300 es
 in vec2 aPos;
@@ -86,28 +91,50 @@ void main() {
   frag = vec4(ramp(t), uOpacity);
 }`;
 
-const meta = computed(() => display.value?.meta_json ?? null);
+const meta = computed(() => display.value?.meta_json ?? display.value ?? null);
+const currentLayer = computed(() => layerForVariable(selectedVariable.value));
+const frameIndex = computed(() => {
+  const count = Math.max(
+    currentLayer.value?.grid_urls?.length || 0,
+    currentLayer.value?.times?.length || 0,
+    1
+  );
+  return Math.min(Math.max(Number(props.timeIndex) || 0, 0), count - 1);
+});
 const imageSrc = computed(() => props.src || toPublicUrl(display.value?.png));
 const imageExtent = computed(() => props.extent || meta.value?.extent || meta.value?.bbox || [73, 15, 135, 55]);
-const resolvedFile = computed(() => grid.value?.file || fileName(meta.value?.source_file) || fileName(display.value?.meta_file) || props.file || "");
+const resolvedFile = computed(() => fileName(meta.value?.source_file) || fileName(display.value?.meta_file) || props.file || "");
 const refreshKey = computed(() => layerRefreshKeys.value?.era5 || 0);
+const parsedKey = computed(() => {
+  const parsed = props.parsed;
+  return parsed?.dataset_id
+    || parsed?.meta?.dataset_id
+    || parsed?.source_file
+    || parsed?.meta?.source_file
+    || parsed?.file_name
+    || "";
+});
 
 const legendTitle = computed(() => {
   if (loading.value) return "ERA5 loading";
   if (error.value) return error.value;
-  if (grid.value) {
-    const labelText = grid.value.label || grid.value.variable || "ERA5";
-    return `${labelText}${grid.value.unit ? ` (${grid.value.unit})` : ""}`;
+  const layer = currentLayer.value;
+  if (layer) {
+    const labelText = layer.label || layer.name || "ERA5";
+    const unit = layer.unit ? ` (${layer.unit})` : "";
+    const time = layer.times?.[frameIndex.value] ? ` · ${layer.times[frameIndex.value]}` : "";
+    return `${labelText}${unit}${time}`;
   }
   const weather = meta.value?.weather_info || {};
-  return weather.element || meta.value?.extra?.default_variable || "ERA5";
+  return weather.element || meta.value?.default_variable || "ERA5";
 });
 
 const ticks = computed(() => {
-  const source = grid.value || meta.value?.weather_info || {};
-  const min = Number(source.min);
-  const max = Number(source.max);
-  if (!Number.isFinite(min) || !Number.isFinite(max)) return ["low", "", "", "", "high"];
+  const stats = currentStats();
+  const min = Number(stats.min);
+  const max = Number(stats.max);
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return ["低", "", "", "", "高"];
+  if (Math.abs(max - min) < 0.000001) return [formatTick(min), "", "", "", formatTick(max)];
   return Array.from({ length: 5 }, (_, index) => formatTick(min + ((max - min) * index) / 4));
 });
 
@@ -121,13 +148,61 @@ function toPublicUrl(path) {
   if (/^https?:\/\//i.test(path)) return path;
   const normalized = String(path).replaceAll("\\", "/");
   const idx = normalized.indexOf("/data/");
-  return idx >= 0 ? `${API_BASE}${normalized.slice(idx)}` : "";
+  return idx >= 0 ? `${API_BASE}${normalized.slice(idx)}` : normalized.startsWith("/data/") ? `${API_BASE}${normalized}` : "";
 }
 
 function formatTick(value) {
   const abs = Math.abs(value);
-  if (abs >= 1000 || (abs > 0 && abs < 0.01)) return value.toExponential(1);
+  if (abs >= 10000 || (abs > 0 && abs < 0.01)) return value.toExponential(1);
   return value.toFixed(abs >= 100 ? 0 : abs >= 10 ? 1 : 2);
+}
+
+function optionLabel(item) {
+  const labelText = item?.label || item?.long_name || item?.name || "";
+  const unit = item?.unit || item?.units || item?.display_unit || "";
+  return unit ? `${labelText} (${unit})` : labelText;
+}
+
+function normalizeDisplay(payload) {
+  const data = payload?.data || payload || {};
+  const nestedMeta = data.meta_json || data.meta || data;
+  const layers = data.variable_layers || nestedMeta.variable_layers || {};
+  const options = data.variable_options || nestedMeta.variable_options || data.variables || nestedMeta.variables || [];
+  return {
+    ...data,
+    meta_json: nestedMeta,
+    variable_layers: layers,
+    variable_options: normalizeOptions(options),
+    variables: normalizeOptions(options),
+  };
+}
+
+function normalizeOptions(options) {
+  return (options || [])
+    .map(item => {
+      if (typeof item === "string") return { name: item, label: item, unit: "" };
+      return {
+        name: item?.name,
+        label: item?.label || item?.long_name || item?.name,
+        unit: item?.unit || item?.units || item?.display_unit || "",
+      };
+    })
+    .filter(item => item.name);
+}
+
+function layerForVariable(variableName) {
+  const layers = display.value?.variable_layers || meta.value?.variable_layers || {};
+  if (variableName && layers[variableName]) return layers[variableName];
+  const lowered = String(variableName || "").toLowerCase();
+  const match = Object.entries(layers).find(([key]) => key.toLowerCase() === lowered);
+  if (match) return match[1];
+  const first = Object.values(layers)[0];
+  return first || null;
+}
+
+function currentStats() {
+  const layer = currentLayer.value;
+  return layer?.stats?.[frameIndex.value] || layer?.stats?.[0] || framePayload.value || {};
 }
 
 function compile(type, source) {
@@ -177,12 +252,11 @@ function initRenderer(width, height) {
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 }
 
-function packedValues(payload) {
-  const min = Number(payload.min ?? 0);
-  const max = Number(payload.max ?? 1);
+function packValues(values, stats, nodata) {
+  const min = Number(stats.min ?? 0);
+  const max = Number(stats.max ?? 1);
   const span = Math.max(max - min, 0.000001);
-  const nodata = Number(payload.nodata ?? -999999);
-  return Uint8Array.from(payload.values || [], value => {
+  return Uint8Array.from(values, value => {
     const numeric = Number(value);
     if (!Number.isFinite(numeric) || numeric <= nodata + 1) return 0;
     return Math.max(1, Math.min(255, Math.round(((numeric - min) / span) * 254 + 1)));
@@ -208,7 +282,7 @@ function renderGridImage(payload) {
       0,
       gl.RED,
       gl.UNSIGNED_BYTE,
-      packedValues(payload)
+      packValues(payload.values, payload, payload.nodata)
     );
     gl.uniform1i(gl.getUniformLocation(program, "uGrid"), 0);
     gl.uniform1f(gl.getUniformLocation(program, "uOpacity"), 0.78);
@@ -226,7 +300,7 @@ function renderGridImage2d(payload) {
   canvas.height = Math.max(2, payload.height);
   const ctx = canvas.getContext("2d");
   const image = ctx.createImageData(payload.width, payload.height);
-  const packed = packedValues(payload);
+  const packed = packValues(payload.values, payload, payload.nodata);
 
   for (let i = 0; i < packed.length; i += 1) {
     const offset = i * 4;
@@ -265,9 +339,11 @@ function removeImageryLayer() {
   surface?.clear();
 }
 
-function applyImageryLayer() {
-  const payload = grid.value;
-  if (!payload?.extent || !payload?.values?.length) { surface?.clear(); return; }
+function applyImageryLayer(payload) {
+  if (!payload?.extent || !payload?.values?.length) {
+    surface?.clear();
+    return;
+  }
 
   const [west, south, east, north] = payload.extent.map(Number);
   if ([west, south, east, north].some(value => !Number.isFinite(value)) || west >= east || south >= north) {
@@ -276,20 +352,99 @@ function applyImageryLayer() {
   }
 
   surface?.setData(renderGridImage(payload), [west, south, east, north], 1);
-  const dx = Math.max((east - west) * 0.35, 0.5);
-  const dy = Math.max((north - south) * 0.35, 0.5);
-  flyToExtent?.([Math.max(-180, west - dx), Math.max(-90, south - dy), Math.min(180, east + dx), Math.min(90, north + dy)]);
+  const extentKey = [west, south, east, north].join(",");
+  if (extentKey !== lastExtentKey) {
+    lastExtentKey = extentKey;
+    const dx = Math.max((east - west) * 0.35, 0.5);
+    const dy = Math.max((north - south) * 0.35, 0.5);
+    flyToExtent?.([Math.max(-180, west - dx), Math.max(-90, south - dy), Math.min(180, east + dx), Math.min(90, north + dy)]);
+  }
 }
 
-function emitDisplayLoaded() {
-  const currentMeta = grid.value?.meta || meta.value;
-  if (!currentMeta) return;
-  emit("display-loaded", {
-    meta: currentMeta,
-    variables: display.value?.variables || grid.value?.variables || meta.value?.variables || [],
-    file: grid.value?.file || fileName(meta.value?.source_file),
-    variable: grid.value?.variable || meta.value?.extra?.default_variable || "",
+async function paintImageryLayer(payload) {
+  await nextTick();
+  applyImageryLayer(payload);
+  requestAnimationFrame(() => {
+    if (framePayload.value === payload) applyImageryLayer(payload);
   });
+}
+
+function emitLayerMeta() {
+  const layer = currentLayer.value;
+  if (!layer) return;
+  const times = layer.times || meta.value?.times || [];
+  const payload = {
+    layer: "ERA5",
+    variable: selectedVariable.value,
+    element: layer.label || selectedVariable.value,
+    unit: layer.unit || "",
+    times,
+    axis_times: times,
+    png_urls: layer.png_urls || [],
+    grid_urls: layer.grid_urls || [],
+    extent: layer.extent || meta.value?.extent || meta.value?.bbox,
+    frame_count: Math.max(layer.grid_urls?.length || 0, times.length || 0),
+  };
+  emit("variable-change", payload);
+  emit("display-loaded", {
+    meta: {
+      ...(framePayload.value || {}),
+      source: "ERA5",
+      element: `${payload.element}${payload.unit ? ` (${payload.unit})` : ""}`,
+      time: times[frameIndex.value] || times[0] || "",
+      extent: payload.extent,
+    },
+    variables: variables.value,
+    file: resolvedFile.value,
+    variable: selectedVariable.value,
+  });
+}
+
+async function loadBinaryFrame() {
+  const layer = currentLayer.value;
+  if (!layer?.grid_urls?.length) {
+    gridLayer.value = null;
+    framePayload.value = null;
+    removeImageryLayer();
+    emitLayerMeta();
+    return;
+  }
+
+  const token = ++loadToken;
+  const index = frameIndex.value;
+  const url = toPublicUrl(layer.grid_urls[index] || layer.grid_urls[0]);
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`ERA5 binary grid load failed: ${response.status}`);
+  const bufferData = await response.arrayBuffer();
+  if (token !== loadToken) return;
+
+  const width = Number(layer.width);
+  const height = Number(layer.height);
+  const values = new Float32Array(bufferData);
+  if (!width || !height || values.length !== width * height) {
+    throw new Error(`ERA5 binary grid size mismatch: ${values.length} != ${width} x ${height}`);
+  }
+
+  const stats = layer.stats?.[index] || layer.stats?.[0] || {};
+  const payload = {
+    variable: selectedVariable.value,
+    label: layer.label || selectedVariable.value,
+    unit: layer.unit || "",
+    width,
+    height,
+    extent: layer.extent || meta.value?.extent || meta.value?.bbox,
+    nodata: Number(layer.nodata ?? -999999),
+    values,
+    min: Number(stats.min ?? 0),
+    max: Number(stats.max ?? 1),
+    mean: Number(stats.mean ?? 0),
+    time: layer.times?.[index] || "",
+  };
+
+  framePayload.value = payload;
+  gridLayer.value = layer;
+  await paintImageryLayer(payload);
+  emitLayerMeta();
 }
 
 function syncSelectedVariable(value) {
@@ -312,17 +467,18 @@ async function loadDisplay(variableName = selectedVariable.value) {
     if (!response.ok || payload.code !== 0) {
       throw new Error(payload.detail || payload.message || "ERA5 data load failed");
     }
-    display.value = payload.data;
-    grid.value = payload.data?.grid || null;
-    variables.value = payload.data?.variables || grid.value?.variables || [];
-    syncSelectedVariable(grid.value?.variable || variableName || variables.value[0]?.name || "");
-    emitDisplayLoaded();
-    applyImageryLayer();
+    display.value = normalizeDisplay(payload.data);
+    variables.value = display.value.variables || [];
+    const nextVariable = variableName || display.value.default_variable || meta.value?.default_variable || variables.value[0]?.name || "";
+    syncSelectedVariable(nextVariable);
+    await nextTick();
+    await loadBinaryFrame();
   } catch (err) {
-    grid.value = null;
+    gridLayer.value = null;
+    framePayload.value = null;
     variables.value = [];
     removeImageryLayer();
-    error.value = "ERA5 data not loaded";
+    error.value = "ERA5 数据未加载";
     console.error(err);
   } finally {
     loading.value = false;
@@ -330,10 +486,24 @@ async function loadDisplay(variableName = selectedVariable.value) {
 }
 
 onMounted(loadDisplay);
-watch(refreshKey, () => loadDisplay());
-watch(selectedVariable, value => {
-  if (!syncingSelection && value && value !== grid.value?.variable) loadDisplay(value);
+watch(refreshKey, () => loadDisplay(""));
+watch(parsedKey, value => {
+  if (value) loadDisplay("");
 });
-watch(() => props.src, emitDisplayLoaded);
-onBeforeUnmount(removeImageryLayer);
+watch(selectedVariable, async value => {
+  if (!syncingSelection && value) {
+    emitLayerMeta();
+    await loadBinaryFrame();
+  }
+});
+watch(() => props.timeIndex, () => loadBinaryFrame());
+watch(() => props.src, emitLayerMeta);
+onBeforeUnmount(() => {
+  removeImageryLayer();
+  if (gl) {
+    if (valueTexture) gl.deleteTexture(valueTexture);
+    gl.getExtension("WEBGL_lose_context")?.loseContext();
+    gl = null;
+  }
+});
 </script>

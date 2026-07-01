@@ -197,7 +197,11 @@ watch(() => props.alpha, pushSurface);
 
 onBeforeUnmount(() => {
   surface?.clear();
-  if (texture && gl) gl.deleteTexture(texture);
+  if (gl) {
+    if (texture) gl.deleteTexture(texture);
+    gl.getExtension("WEBGL_lose_context")?.loseContext();
+    gl = null;
+  }
 });
 </script>
 
