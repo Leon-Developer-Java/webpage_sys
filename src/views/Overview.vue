@@ -89,6 +89,8 @@
               :is="p.comp"
               :parsed="layerParsed(p.key)"
               :time-index="layerTimeIndex"
+              v-bind="layerProps(p.key)"
+              v-on="layerListeners(p.key)"
             />
           </MapBase>
         </div>
@@ -105,11 +107,24 @@
             <button v-for="s in [0.5, 1, 2, 4]" :key="s" :class="{ on: speed === s }" @click="speed = s">{{ s }}x</button>
           </div>
         </div>
-        <TimeAxis :times="axisTimes" :active="animPos" @update:active="v => setTimeIndex(v)" :dark="dark" />
+        <TimeAxis
+          :times="axisTimes"
+          :active="animPos"
+          :tick-mode="active === 'himawari' ? 'hourly' : 'sampled'"
+          @update:active="v => setTimeIndex(v)"
+          :dark="dark"
+        />
       </div>
     </div>
 
-    <MetaPanel v-if="propsOpen" :meta="meta" :steps="processing" closable @close="propsOpen = false">
+    <MetaPanel
+      v-if="propsOpen"
+      :meta="meta"
+      :steps="processing"
+      :himawari-status="active === 'himawari' ? himawariStatus : null"
+      closable
+      @close="propsOpen = false"
+    >
       <div class="version">
         <h4>MVP 当前版本</h4>
         <p v-for="v in versions" :key="v"><el-icon class="ok"><CircleCheck /></el-icon>{{ v }}</p>
@@ -119,9 +134,9 @@
 </template>
 
 <script setup>
-import { computed, inject, onBeforeUnmount, ref, watch } from "vue";
+import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ArrowLeft, ArrowRight, Check, CircleCheck, Close, Connection, DArrowLeft, DArrowRight, DataAnalysis, Document, FolderOpened, Grid, MapLocation, Monitor, Moon, Operation, Position, RefreshRight, VideoPlay, VideoPause } from "@element-plus/icons-vue";
-import { parseFile } from "../api";
+import { getHimawariAutoStatus, parseFile } from "../api";
 import MapBase from "../components/MapBase.vue";
 import MetaPanel from "../components/MetaPanel.vue";
 import TimeAxis from "../components/TimeAxis.vue";
@@ -198,8 +213,11 @@ const syncView = ref(null);
 const showVector = ref(false);
 const mapDark = ref(dark.value);
 const emitterIdx = ref(-1);
+const himawariStatus = ref(null);
+const himawariTimeline = ref([]);
 const latestView = {};
 let animTimer = null;
+let himawariStatusTimer = null;
 let lastTs = null;
 
 function onViewChange(i, view) {
@@ -216,9 +234,18 @@ watch(linked, v => {
   }
 });
 
-const axisTimes = computed(() => defaultTimes);
+const axisTimes = computed(() => {
+  if (active.value === "himawari" && himawariTimeline.value.length) {
+    return himawariTimeline.value.map((item) => item.label);
+  }
+  return defaultTimes;
+});
 
 const parsedFrameCount = computed(() => {
+  if (active.value === "himawari" && himawariTimeline.value.length) {
+    return himawariTimeline.value.length;
+  }
+
   if (!parsed.value || parsedLayerKey.value !== active.value) {
     return defaultTimes.length;
   }
@@ -253,6 +280,10 @@ const parsedFrameCount = computed(() => {
 });
 
 const layerTimeIndex = computed(() => {
+  if (active.value === "himawari" && himawariTimeline.value.length) {
+    return clampTimelineIndex(tIndex.value, himawariTimeline.value.length);
+  }
+
   const uiCount = defaultTimes.length;
   const frameCount = parsedFrameCount.value;
 
@@ -270,6 +301,12 @@ const layerTimeIndex = computed(() => {
 
 function clampTimeIndex(v) {
   const max = Math.max(0, axisTimes.value.length - 1);
+  const n = Number.isFinite(Number(v)) ? Math.floor(Number(v)) : 0;
+  return Math.min(max, Math.max(0, n));
+}
+
+function clampTimelineIndex(v, length) {
+  const max = Math.max(0, length - 1);
   const n = Number.isFinite(Number(v)) ? Math.floor(Number(v)) : 0;
   return Math.min(max, Math.max(0, n));
 }
@@ -314,7 +351,15 @@ watch(axisTimes, () => {
   setTimeIndex(Math.min(tIndex.value, axisTimes.value.length - 1));
 });
 
-onBeforeUnmount(() => clearInterval(animTimer));
+onMounted(() => {
+  refreshHimawariStatus();
+  himawariStatusTimer = window.setInterval(refreshHimawariStatus, 5000);
+});
+
+onBeforeUnmount(() => {
+  clearInterval(animTimer);
+  if (himawariStatusTimer) window.clearInterval(himawariStatusTimer);
+});
 
 function businessTypeToLayerKey(type) {
   const t = String(type || "").toUpperCase();
@@ -333,24 +378,32 @@ function normalizeParsedMeta(result) {
   if (!result) return null;
 
   const panelMeta = result.meta || {};
+  const sceneMeta = result.meta_json || {};
   const info = result.weather_info || {};
+  const products = [...(result.composites || []), ...(result.variables || [])];
+  const extent = panelMeta.extent || info.extent || sceneMeta.extent || result.extent || null;
+  const grid = panelMeta.grid || info.grid || sceneMeta.grid || result.grid || null;
+  const productNames = products
+    .map((item) => item.name_cn || item.name_zh || item.long_name || item.plain_name || item.name || item.key)
+    .filter(Boolean)
+    .join("、");
 
   return {
-    file: result.file_name || panelMeta.file || info.file || "—",
-    element: panelMeta.element || info.element || "—",
-    time: panelMeta.time || info.time || "—",
-    level: panelMeta.level || info.level || "—",
-    range: panelMeta.range || info.range || "—",
-    grid: panelMeta.grid || info.grid || "—",
+    file: result.file_name || panelMeta.file || info.file || sceneMeta.scene_id || "—",
+    element: panelMeta.element || info.element || productNames || "—",
+    time: formatObservationTime(panelMeta.time || info.time || sceneMeta.observation_time) || "—",
+    level: panelMeta.level || info.level || sceneMeta.projection || "—",
+    range: panelMeta.range || info.range || formatExtent(extent) || "—",
+    grid: panelMeta.grid || info.grid || formatGrid(grid) || "—",
     missing: panelMeta.missing || info.missing || "—",
-    unit: panelMeta.unit || info.unit || "—",
+    unit: panelMeta.unit || info.unit || products.find((item) => item.display_unit || item.unit)?.display_unit || products.find((item) => item.unit)?.unit || "—",
     vars: panelMeta.vars || info.variables || "—",
     steps: panelMeta.steps || info.steps || "—",
     status: panelMeta.status || info.status || "—",
-    extent: panelMeta.extent || info.extent || result.extent || null,
+    extent,
     png_url: result.png_url || panelMeta.png_url || info.png_url || null,
     png_urls: result.png_urls || panelMeta.png_urls || info.png_urls || [],
-    times: result.times || panelMeta.times || info.times || [],
+    times: result.times || panelMeta.times || info.times || normalizeHimawariTimeline(result).map((item) => item.label),
   };
 }
 
@@ -380,6 +433,122 @@ function layerParsed(key) {
   }
 
   return null;
+}
+
+const selectedHimawariSceneId = computed(() => {
+  const items = himawariTimeline.value;
+  if (!items.length) return "";
+  if (active.value !== "himawari") return items[items.length - 1]?.scene_id || "";
+  return items[clampTimelineIndex(tIndex.value, items.length)]?.scene_id || "";
+});
+
+function layerProps(key) {
+  if (key !== "himawari") return {};
+  return { sceneId: selectedHimawariSceneId.value };
+}
+
+function layerListeners(key) {
+  if (key !== "himawari") return {};
+  return { "display-loaded": onHimawariDisplayLoaded };
+}
+
+function onHimawariDisplayLoaded(data) {
+  if (!data) return;
+  updateHimawariTimeline(data);
+  if (active.value === "himawari") {
+    parsed.value = data;
+    parsedLayerKey.value = "himawari";
+  }
+}
+
+function updateHimawariTimeline(data) {
+  const items = normalizeHimawariTimeline(data);
+  if (!items.length) return;
+
+  const previous = himawariTimeline.value;
+  const previousIndex = clampTimelineIndex(tIndex.value, previous.length);
+  const previousSceneId = previous[previousIndex]?.scene_id;
+  const wasAtLatest = !previous.length || previousIndex >= previous.length - 1;
+
+  himawariTimeline.value = items;
+
+  if (active.value !== "himawari") return;
+
+  const preservedIndex = previousSceneId
+    ? items.findIndex((item) => item.scene_id === previousSceneId)
+    : -1;
+  const nextIndex = wasAtLatest
+    ? items.length - 1
+    : preservedIndex >= 0
+      ? preservedIndex
+      : Math.min(previousIndex, items.length - 1);
+
+  setTimeIndex(nextIndex);
+}
+
+function normalizeHimawariTimeline(data) {
+  const timeline = Array.isArray(data?.timeline) ? data.timeline : [];
+  if (timeline.length) {
+    return timeline
+      .map((item) => ({
+        scene_id: item.scene_id || "",
+        time: item.time || "",
+        label: formatObservationTime(item.time || item.label) || item.label || item.scene_id || "",
+      }))
+      .filter((item) => item.scene_id && item.label);
+  }
+
+  const metaJson = data?.meta_json || {};
+  if (!metaJson.scene_id) return [];
+  return [{
+    scene_id: metaJson.scene_id,
+    time: metaJson.observation_time || "",
+    label: formatObservationTime(metaJson.observation_time) || metaJson.scene_id,
+  }];
+}
+
+function formatObservationTime(value) {
+  if (!value) return "";
+  const text = String(value);
+  const formatted = formatBeijingTime(text);
+  if (formatted) return formatted;
+  return text;
+}
+
+function formatBeijingTime(value) {
+  if (!value || !/[TZ]|[+-]\d{2}:?\d{2}$/.test(String(value))) return "";
+  const parsed = new Date(String(value).replace("Z", "+00:00"));
+  if (Number.isNaN(parsed.getTime())) return "";
+  const beijing = new Date(parsed.getTime() + 8 * 60 * 60 * 1000);
+  const month = String(beijing.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(beijing.getUTCDate()).padStart(2, "0");
+  const hour = String(beijing.getUTCHours()).padStart(2, "0");
+  const minute = String(beijing.getUTCMinutes()).padStart(2, "0");
+  return `${month}-${day} ${hour}:${minute}`;
+}
+
+function formatExtent(extent) {
+  if (!Array.isArray(extent) || extent.length !== 4) return "";
+  const [west, south, east, north] = extent;
+  return `${west}°E-${east}°E, ${south}°N-${north}°N`;
+}
+
+function formatGrid(grid) {
+  if (!grid || !grid.nx || !grid.ny) return "";
+  return `${grid.nx} × ${grid.ny}`;
+}
+
+async function refreshHimawariStatus() {
+  try {
+    himawariStatus.value = await getHimawariAutoStatus();
+  } catch (err) {
+    himawariStatus.value = {
+      state: "error",
+      stage: "error",
+      current_detail: "Himawari 自动处理状态读取失败",
+      last_error: err?.message || "Himawari 自动处理状态读取失败",
+    };
+  }
 }
 
 const panes = computed(() => {
@@ -420,6 +589,9 @@ function selectSource(key) {
   parsed.value = null;
   parsedLayerKey.value = null;
   parseProcessing.value = null;
+  if (key === "himawari" && himawariTimeline.value.length) {
+    setTimeIndex(himawariTimeline.value.length - 1);
+  }
 }
 
 function pickFile(i) {
@@ -482,6 +654,9 @@ async function parse() {
 watch(active, () => {
   const opts = variableOptions.value;
   variable.value = opts[0] || "";
+  if (active.value === "himawari" && himawariTimeline.value.length) {
+    setTimeIndex(himawariTimeline.value.length - 1);
+  }
 });
 </script>
 

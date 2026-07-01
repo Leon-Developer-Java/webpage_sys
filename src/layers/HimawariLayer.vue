@@ -5,12 +5,8 @@
       <label class="lc-row">
         <span>变量</span>
         <select v-model="selectedProductKey">
-          <option v-for="product in products" :key="product.key" :value="product.key">{{ product.name_zh || product.key }}</option>
+          <option v-for="product in products" :key="productName(product)" :value="productName(product)">{{ productLabel(product) }}</option>
         </select>
-      </label>
-      <label class="lc-row">
-        <span>融合</span>
-        <input v-model.number="opacity" min="0.2" max="1" step="0.05" type="range" style="width: 100%; min-width: 0; accent-color: var(--accent);" />
       </label>
     </template>
   </LayerCard>
@@ -27,6 +23,7 @@ const props = defineProps({
   file: String,
   extent: { type: Array, default: null },
   refreshKey: { type: Number, default: 0 },
+  sceneId: { type: String, default: "" },
 });
 const emit = defineEmits(["display-loaded"]);
 
@@ -35,28 +32,40 @@ const flyToExtent = inject("flyToExtent", null);
 const display = ref(null);
 const error = ref("");
 const selectedProductKey = ref("");
-const opacity = ref(0.68);
+const opacity = 0.68;
 let timer = null;
 let zoomedKey = "";
 
-const imageExtent = computed(() => props.extent || display.value?.extent || display.value?.meta_json?.extent || [73, 18, 136, 54]);
+const imageExtent = computed(() => props.extent || display.value?.extent || display.value?.meta_json?.extent || display.value?.meta_json?.bbox || [73, 18, 136, 54]);
 const variables = computed(() => display.value?.variables || display.value?.meta_json?.variables || []);
 const composites = computed(() => display.value?.composites || display.value?.meta_json?.composites || []);
 const products = computed(() => [
   ...composites.value.map((item) => ({ ...item, product_type: "composite" })),
   ...variables.value.map((item) => ({ ...item, product_type: "variable" })),
 ]);
+const defaultProduct = computed(() =>
+  products.value.find((item) => productName(item) === "B13") ||
+  products.value.find((item) => productName(item) === "true_color") ||
+  products.value[0]
+);
 const selectedProduct = computed(() => {
   if (!products.value.length) return null;
-  return products.value.find((item) => item.key === selectedProductKey.value) || products.value[0];
+  return products.value.find((item) => productName(item) === selectedProductKey.value) || defaultProduct.value;
 });
-const imageSrc = computed(() => props.src || selectedProduct.value?.png_data_url || display.value?.png_data_url || "");
+const imageSrc = computed(() =>
+  props.src ||
+  toBackendUrl(selectedProduct.value?.png_url) ||
+  selectedProduct.value?.png_data_url ||
+  toBackendUrl(display.value?.png_url) ||
+  display.value?.png_data_url ||
+  ""
+);
 const cardFile = computed(() => props.file || display.value?.meta_json?.scene_id || "");
 const legendTitle = computed(() => {
   const item = selectedProduct.value;
   if (!item) return "葵花卫星";
   const unit = item.display_unit || item.unit;
-  return unit ? `${item.name_zh || item.key} (${unit})` : item.name_zh || item.key;
+  return unit ? `${productLabel(item)} (${unit})` : productLabel(item);
 });
 
 const gradient = "linear-gradient(to right, #1f2937, #9ca3af, #f3f4f6, #ef4444)";
@@ -65,17 +74,46 @@ const statusText = computed(() => {
   if (error.value) return error.value;
   if (!imageSrc.value) return "葵花数据未加载";
   const meta = display.value?.meta_json || {};
-  const parts = [meta.observation_time, selectedProduct.value?.plain_name].filter(Boolean);
+  const parts = [formatBeijingTime(meta.observation_time), productLongName(selectedProduct.value)].filter(Boolean);
   return parts.join(" · ");
 });
 
+function productName(item) {
+  return item?.name || item?.key || "";
+}
+
+function productLabel(item) {
+  return item?.name_cn || item?.name_zh || item?.long_name || item?.plain_name || productName(item);
+}
+
+function productLongName(item) {
+  return item?.long_name || item?.plain_name || item?.description || "";
+}
+
+function formatBeijingTime(value) {
+  if (!value) return "";
+  const parsed = new Date(String(value).replace("Z", "+00:00"));
+  if (Number.isNaN(parsed.getTime())) return String(value);
+  const beijing = new Date(parsed.getTime() + 8 * 60 * 60 * 1000);
+  const year = beijing.getUTCFullYear();
+  const month = String(beijing.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(beijing.getUTCDate()).padStart(2, "0");
+  const hour = String(beijing.getUTCHours()).padStart(2, "0");
+  const minute = String(beijing.getUTCMinutes()).padStart(2, "0");
+  return `${year}-${month}-${day} ${hour}:${minute}`;
+}
+
+function toBackendUrl(value) {
+  if (!value) return "";
+  if (/^(data:|blob:|https?:\/\/)/i.test(value)) return value;
+  if (value.startsWith("/")) return `${API_BASE}${value}`;
+  return "";
+}
+
 function syncSelection() {
   if (!products.value.length) return;
-  if (products.value.some((item) => item.key === selectedProductKey.value)) return;
-  selectedProductKey.value =
-    products.value.find((item) => item.key === "true_color")?.key ||
-    products.value.find((item) => item.key === "B13")?.key ||
-    products.value[0].key;
+  if (products.value.some((item) => productName(item) === selectedProductKey.value)) return;
+  selectedProductKey.value = productName(defaultProduct.value);
 }
 
 function flyToData() {
@@ -94,7 +132,8 @@ function flyToData() {
 
 async function loadHimawariDisplay() {
   try {
-    const response = await fetch(`${API_BASE}/api/display/HIMAWARI`);
+    const query = props.sceneId ? `?scene_id=${encodeURIComponent(props.sceneId)}` : "";
+    const response = await fetch(`${API_BASE}/api/display/HIMAWARI${query}`);
     const payload = await response.json();
     if (!response.ok || payload.code !== 0) {
       throw new Error(payload.detail || payload.message || "葵花数据读取失败");
@@ -114,7 +153,7 @@ onMounted(() => {
   timer = window.setInterval(loadHimawariDisplay, 30000);
 });
 
-watch(() => props.refreshKey, () => {
+watch(() => [props.refreshKey, props.sceneId], () => {
   loadHimawariDisplay();
 });
 

@@ -86,6 +86,15 @@ export async function parseFile(fileOrFiles) {
   return payload.data;
 }
 
+export async function getHimawariAutoStatus() {
+  const response = await fetch(`${API_BASE}/api/himawari/auto-status`);
+  const payload = await response.json();
+  if (!response.ok || payload.code !== 0) {
+    throw new Error(payload.detail || payload.message || "Himawari 自动处理状态读取失败");
+  }
+  return payload.data;
+}
+
 export async function parseFiles(files) {
   return parseFile(Array.from(files || []));
 }

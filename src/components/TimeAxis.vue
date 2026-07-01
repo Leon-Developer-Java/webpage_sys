@@ -5,17 +5,19 @@
       <div class="thumb" :style="{ left: fillPct }"></div>
     </div>
     <div class="labels">
-      <span v-for="(t, i) in times" :key="t" @click.stop="emit('update:active', i)">{{ t }}</span>
+      <span v-for="tick in visibleTicks" :key="`${tick.index}-${tick.label}`" @click.stop="emit('update:active', tick.index)">{{ tick.label }}</span>
     </div>
   </div>
 </template>
 
 <script setup>
 import { computed, ref } from "vue";
+import { buildVisibleTicks } from "../utils/timeAxisTicks";
 
 const props = defineProps({
   times: { type: Array, default: () => [] },
   active: { type: Number, default: 0 },
+  tickMode: { type: String, default: "sampled" },
   dark: Boolean
 });
 const emit = defineEmits(["update:active"]);
@@ -23,6 +25,7 @@ const trackEl = ref(null);
 
 const pct = computed(() => Math.min(props.active / Math.max(props.times.length - 1, 1), 1));
 const fillPct = computed(() => `${pct.value * 100}%`);
+const visibleTicks = computed(() => buildVisibleTicks(props.times, { mode: props.tickMode, maxTicks: 12 }));
 
 function seek(e) {
   const rect = trackEl.value.getBoundingClientRect();
