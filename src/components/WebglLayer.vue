@@ -96,9 +96,12 @@ function setCanvasSize(width, height) {
 
 function pushSurface() {
   if (!surface) return;
-  if (!hasTex) { surface.setData(null); return; }
+  if (!hasTex) { surface.clear?.(); return; }
   gl.finish();
-  surface.setData(canvas.value.toDataURL("image/png"), props.extent, props.alpha);
+  surface.setData(canvas.value.toDataURL("image/png"), props.extent, props.alpha, {
+    source: "WebglLayer",
+    mode: "grid-rendered",
+  });
 }
 
 function clearSurface() {
@@ -164,7 +167,12 @@ function updateTexture() {
   const currentVersion = ++textureVersion;
   clearSurface();
   if (props.values && props.width && props.height) loadGridTexture(currentVersion);
-  else if (props.src) loadImageTexture(currentVersion);
+  else if (props.src) {
+    surface?.setData?.(props.src, props.extent, props.alpha, {
+      source: "WebglLayer",
+      mode: "image",
+    });
+  }
   else { ++textureVersion; draw(); }
 }
 

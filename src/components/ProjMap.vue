@@ -339,7 +339,9 @@ function emitView() {
 defineExpose({ flyTo, zoomBy, home, clearData: () => { dataRef.value = null; } });
 
 provide("mapSurface", {
-  setData: (src, extent, alpha = 1) => { dataRef.value = src && extent ? { src, extent, alpha } : null; },
+  setData: (src, extent, alpha = 1, options = {}) => {
+    dataRef.value = src && extent ? { src, extent, alpha, ...options } : null;
+  },
   clear: () => { dataRef.value = null; },
 });
 provide("flyToExtent", flyTo);
@@ -372,6 +374,7 @@ function loadDataTexture(url, token) {
   };
   img.onerror = () => {
     if (token !== dataTextureToken) return;
+    console.warn("Data texture load failed:", url);
     hasData = false;
     render();
   };
