@@ -78,6 +78,7 @@
     <div class="center">
       <div class="maps" :style="mapsGrid">
         <div :class="['cell', { 'cell-4': layout === '4' }]" v-for="(p, i) in panes" :key="layout + '-' + i">
+          <span class="cell-tag">{{ p.btn }}</span>
           <ProjMap
             :grid="showGrid"
             :dark="mapDark"
@@ -855,12 +856,17 @@ function normalizeParsedMeta(result) {
 }
 
 const meta = computed(() => {
+  const display = layerDisplays.value[active.value];
+  const displayMeta = display?.meta || display?.weather_info || null;
+
+  // CMA 面板跟随卡片中选中的要素，图层上报的 meta 优先于解析快照
+  if (active.value === "cma" && displayMeta) {
+    return displayMeta;
+  }
+
   if (parsed.value && parsedLayerKey.value === active.value) {
     return normalizeParsedMeta(parsed.value);
   }
-
-  const display = layerDisplays.value[active.value];
-  const displayMeta = display?.meta || display?.weather_info || null;
 
   if (displayMeta) {
     return displayMeta;
@@ -1173,6 +1179,7 @@ watch(active, () => {
 .center { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
 .maps { flex: 1; min-height: 0; display: grid; gap: 10px; }
 .cell { position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; }
+.cell-tag { position: absolute; top: 8px; left: 8px; z-index: 6; padding: 3px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--glass); backdrop-filter: blur(10px); color: var(--text); font-size: 11px; font-weight: 600; letter-spacing: 0.3px; pointer-events: none; }
 .cell :deep(.projmap) { position: absolute; inset: 0; }
 
 .timebar { flex-shrink: 0; padding: 6px 14px 8px; overflow: hidden; }

@@ -250,15 +250,34 @@ function applyImageryLayer() {
 }
 
 function emitDisplay(display) {
-  const payload = display.grid;
-  const meta = payload?.meta || display.meta_json || null;
+  const payload = display.grid || {};
+  const baseMeta = payload.meta || display.meta_json || {};
+  const item = (display.variables || []).find(v => v.name === payload.variable);
+  const extent = Array.isArray(payload.extent) && payload.extent.length === 4 ? payload.extent : null;
+  const stats = [
+    ["min", "最小值", payload.min],
+    ["mean", "平均值", payload.mean],
+    ["max", "最大值", payload.max],
+  ].filter(([, , v]) => Number.isFinite(Number(v)))
+   .map(([key, label, v]) => [key, label, `${formatTick(Number(v))}${payload.unit ? ` ${payload.unit}` : ""}`]);
   emit("display-loaded", {
-    meta,
+    meta: {
+      file: payload.file || baseMeta.file || "",
+      element: item ? variableLabel(item) : (payload.variable || ""),
+      time: activeFrame(display)?.time || display.times?.[0] || baseMeta.time || "",
+      level: baseMeta.level || "",
+      range: extent ? `${extent[0]}°E-${extent[2]}°E, ${extent[1]}°N-${extent[3]}°N` : baseMeta.range || "",
+      grid: payload.width && payload.height ? `${payload.width} × ${payload.height}` : baseMeta.grid || "",
+      unit: payload.unit || item?.unit || "",
+      missing: payload.nodata ?? baseMeta.missing ?? "",
+      status: "解析成功",
+      extraRows: stats,
+    },
     variables: display.variables || [],
     times: display.times || [],
     frames: display.frames || [],
-    file: payload?.file || meta?.file || "",
-    variable: payload?.variable || "",
+    file: payload.file || baseMeta.file || "",
+    variable: payload.variable || "",
   });
 }
 
