@@ -37,7 +37,7 @@
 </template>
 
 <script setup>
-import { computed } from "vue";
+import {computed} from "vue";
 
 const props = defineProps({
   meta: Object,
@@ -58,12 +58,78 @@ function normalizeExtraRows(rows) {
   });
 }
 
+function pickText(...items) {
+  return items
+      .map((item) => String(item || "").trim())
+      .find(Boolean) || "";
+}
+
+function normalizeElementKey(info, meta) {
+  const text = pickText(
+      info.shortName,
+      info.short_name,
+      info.key,
+      info.variable,
+      info.element,
+      info.long_name,
+      info.mainVariableName,
+      meta.shortName,
+      meta.short_name,
+      meta.variable,
+      meta.element,
+  ).toLowerCase();
+
+  if (/(^|[^a-z0-9])(?:2t|t2m)([^a-z0-9]|$)|2\s*metre\s*temperature|2\s*meter\s*temperature|2米气温|2米温度/.test(text)) return "t2m";
+  if (/(^|[^a-z0-9])(?:2d|d2m)([^a-z0-9]|$)|2\s*metre\s*dewpoint|2\s*meter\s*dewpoint|dewpoint|露点/.test(text)) return "d2m";
+  if (/(^|[^a-z0-9])(?:tp|apcp)([^a-z0-9]|$)|total\s*precipitation|accumulated\s*precipitation|precipitation|累积降水|总降水|降水/.test(text)) return "tp";
+  if (/(^|[^a-z0-9])(?:sp)([^a-z0-9]|$)|surface\s*pressure|地面气压|地表气压/.test(text)) return "sp";
+  if (/(^|[^a-z0-9])(?:msl|prmsl)([^a-z0-9]|$)|mean\s*sea\s*level\s*pressure|sea\s*level\s*pressure|海平面气压|海平面压力/.test(text)) return "msl";
+  if (/(^|[^a-z0-9])(?:u10)([^a-z0-9]|$)|10m\s*u|10\s*metre\s*u|10米u|东西风/.test(text)) return "u10";
+  if (/(^|[^a-z0-9])(?:v10)([^a-z0-9]|$)|10m\s*v|10\s*metre\s*v|10米v|南北风/.test(text)) return "v10";
+  if (/temperature|气温|温度/.test(text)) return "temperature";
+  if (/pressure|气压|压力/.test(text)) return "pressure";
+
+  return "";
+}
+
+function getElementMeaning(info, meta = {}) {
+  const explicit = pickText(
+      info.element_description,
+      info.elementDescription,
+      info.description_cn,
+      info.description,
+      meta.element_description,
+      meta.elementDescription,
+  );
+
+  if (explicit) return explicit;
+
+  const key = normalizeElementKey(info, meta);
+
+  const mapping = {
+    t2m: "表示距地面约 2 米高度处的空气温度，常用于判断近地面冷暖状况、热浪或低温风险；当前单位通常为 ℃。",
+    d2m: "表示距地面约 2 米高度处空气达到饱和时的温度，可反映近地面水汽含量和湿度条件；露点越高，空气越湿，有利于降水发展。",
+    tp: "表示从起报时刻到当前预报时效累计的降水量，用于判断降雨落区、强度和过程累计雨量；当前单位通常为 mm。",
+    sp: "表示地面实际气压，会受到天气系统和地形高度共同影响；低压区常与上升运动、云雨发展有关，高压区通常对应较稳定天气。",
+    msl: "表示订正到平均海平面的气压，适合分析大尺度高低压系统、锋面和气旋结构，较少受地形高度直接影响。",
+    u10: "表示 10 米高度处东西方向风速分量，正值通常代表由西向东的风，负值代表由东向西的风。",
+    v10: "表示 10 米高度处南北方向风速分量，正值通常代表由南向北的风，负值代表由北向南的风。",
+    temperature: "表示空气温度场，用于分析冷暖分布、温度梯度和天气系统热力结构。",
+    pressure: "表示气压场，用于识别高压、低压、槽脊等天气系统结构。",
+  };
+
+  return mapping[key] || "表示当前图层所展示的气象变量，用于描述该时次、该层级上的大气或地表状态。";
+}
+
 const rows = computed(() => {
   const meta = props.meta || {};
   const info = meta.weather_info || meta;
+  const elementMeaning = getElementMeaning(info, meta);
+
   const baseRows = [
     ["file", "文件", info.file || meta.file?.name || meta.file_name || meta.source_file],
     ["element", "要素", info.element],
+    ["elementExplain", "含义", elementMeaning],
     ["time", "时间", info.time],
     ["level", "层级", info.level],
     ["range", "范围", info.range],
@@ -75,8 +141,8 @@ const rows = computed(() => {
   const extraRows = normalizeExtraRows(meta.extraRows || info.extraRows);
 
   return [...baseRows, ...extraRows]
-    .filter(([, , value]) => value !== undefined && value !== null && value !== "")
-    .map(([key, label, value]) => ({ key, label, value: formatPanelValue(key, value) }));
+      .filter(([, , value]) => value !== undefined && value !== null && value !== "")
+      .map(([key, label, value]) => ({key, label, value: formatPanelValue(key, value)}));
 });
 
 const statusLabel = computed(() => {
@@ -103,8 +169,8 @@ const statusRows = computed(() => {
     ["download_scene", "正在下载", formatActiveItems(activeDownloads.value)],
     ["parse_scene", "正在解析", formatActiveItems(activeParses.value)],
   ]
-    .filter(([, , value]) => value !== undefined && value !== null && value !== "")
-    .map(([key, label, value]) => ({ key, label, value }));
+      .filter(([, , value]) => value !== undefined && value !== null && value !== "")
+      .map(([key, label, value]) => ({key, label, value}));
 });
 
 const activeDownloads = computed(() => {
@@ -128,12 +194,12 @@ const activeParses = computed(() => {
 function normalizeActiveItems(items) {
   if (!Array.isArray(items)) return [];
   return items
-    .map((item) => ({
-      scene_id: item.scene_id || item.current_scene,
-      queue_done: item.queue_done,
-      queue_total: item.queue_total,
-    }))
-    .filter((item) => item.scene_id);
+      .map((item) => ({
+        scene_id: item.scene_id || item.current_scene,
+        queue_done: item.queue_done,
+        queue_total: item.queue_total,
+      }))
+      .filter((item) => item.scene_id);
 }
 
 function formatActiveItems(items) {
@@ -162,11 +228,11 @@ function formatScene(value) {
   if (!match) return text;
   const [, date, time] = match;
   const utcDate = new Date(Date.UTC(
-    Number(date.slice(0, 4)),
-    Number(date.slice(4, 6)) - 1,
-    Number(date.slice(6, 8)),
-    Number(time.slice(0, 2)),
-    Number(time.slice(2, 4)),
+      Number(date.slice(0, 4)),
+      Number(date.slice(4, 6)) - 1,
+      Number(date.slice(6, 8)),
+      Number(time.slice(0, 2)),
+      Number(time.slice(2, 4)),
   ));
   return formatBeijingDate(utcDate);
 }
@@ -289,61 +355,72 @@ dd {
 }
 
 .auto-box {
-  display: grid;
-  gap: 9px;
   margin-top: 16px;
-  padding-top: 14px;
-  border-top: 1px solid var(--border);
+  padding: 12px;
+  border-radius: 12px;
+  background: var(--field);
+  border: 1px solid var(--border);
 }
 
 .auto-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
+  margin-bottom: 8px;
 }
 
 .auto-head h4 {
   margin: 0;
-  font-size: 13px;
+  font-size: 12px;
+  color: var(--text);
 }
 
 .auto-state {
-  flex-shrink: 0;
   padding: 2px 7px;
   border-radius: 999px;
-  background: var(--field);
-  color: var(--muted);
   font-size: 10px;
+  color: var(--muted);
+  background: rgba(148, 163, 184, 0.12);
 }
 
-.auto-state.ok { color: #42e695; }
-.auto-state.running { color: var(--accent); }
-.auto-state.warn { color: #f5a524; }
-.auto-state.error { color: #ff6b6b; }
+.auto-state.ok {
+  color: #86efac;
+  background: rgba(34, 197, 94, 0.12);
+}
+
+.auto-state.running {
+  color: #93c5fd;
+  background: rgba(59, 130, 246, 0.12);
+}
+
+.auto-state.warn {
+  color: #fde68a;
+  background: rgba(234, 179, 8, 0.12);
+}
+
+.auto-state.error {
+  color: #fca5a5;
+  background: rgba(239, 68, 68, 0.12);
+}
 
 .auto-list {
   display: grid;
-  grid-template-columns: 58px 1fr;
-  gap: 6px 8px;
+  grid-template-columns: 74px 1fr;
+  gap: 7px 8px;
   margin: 0;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .auto-error {
-  margin: 0;
-  color: #ff9b9b;
+  margin: 10px 0 0;
+  color: #fca5a5;
   font-size: 11px;
-  line-height: 1.4;
-  word-break: break-word;
+  line-height: 1.45;
 }
 
 .empty {
-  display: grid;
-  place-items: center;
-  min-height: 160px;
   color: var(--muted);
   font-size: 12px;
-  text-align: center;
 }
 </style>

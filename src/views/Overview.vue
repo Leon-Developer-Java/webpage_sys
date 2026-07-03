@@ -7,11 +7,8 @@
       <button :class="{ on: dockOpen && tool === 'proj' }" @click="openTool('proj')"><el-icon><Position /></el-icon><span>投影</span></button>
       <button :class="{ on: dockOpen && tool === 'base' }" @click="openTool('base')"><el-icon><MapLocation /></el-icon><span>底图</span></button>
       <button :class="{ on: showGrid }" @click="showGrid = !showGrid"><el-icon><Grid /></el-icon><span>经纬网</span></button>
-      <button :class="{ on: showVector }" @click="toggleVector"><b class="dim-icon">界</b><span>边界</span></button>
-      <button v-if="showVector" @click="mapDark = !mapDark">
-        <el-icon><Sunny v-if="mapDark" /><Moon v-else /></el-icon>
-        <span>{{ mapDark ? '亮' : '暗' }}</span>
-      </button>
+      <button :class="{ on: showVector }" @click="showVector = !showVector"><b class="dim-icon">界</b><span>边界</span></button>
+      <button v-if="showVector" :class="{ on: mapDark }" @click="mapDark = !mapDark"><el-icon><Moon /></el-icon><span>暗色</span></button>
       <button @click="cycleLayout">
         <el-icon><Monitor v-if="layout === '1'" /><Operation v-else-if="layout === '2'" /><Grid v-else /></el-icon>
         <span>{{ { '1': '单屏', '2': '双屏', '4': '四屏' }[layout] }}</span>
@@ -45,7 +42,7 @@
       <template v-else-if="tool === 'data'">
         <p class="pick-hint">选择数据类型</p>
         <div class="picker">
-          <button v-for="s in sources" :key="s.key" :class="{ on: active === s.key }" :disabled="switching && s.key !== active" @click="selectSource(s.key)">
+          <button v-for="s in sources" :key="s.key" :class="{ on: active === s.key }" @click="selectSource(s.key)">
             <span>{{ s.btn }}</span><el-icon v-if="active === s.key"><Check /></el-icon>
           </button>
         </div>
@@ -78,8 +75,7 @@
     <div class="center">
       <div class="maps" :style="mapsGrid">
         <div :class="['cell', { 'cell-4': layout === '4' }]" v-for="(p, i) in panes" :key="layout + '-' + i">
-          <span class="cell-tag">{{ p.btn }}</span>
-          <ProjMap
+          <MapBase
             :grid="showGrid"
             :dark="mapDark"
             :vector="showVector"
@@ -97,7 +93,7 @@
               @display-loaded="payload => onLayerDisplayLoaded(p.key, payload)"
               @variable-change="payload => onLayerVariableChange(p.key, payload)"
             />
-          </ProjMap>
+          </MapBase>
         </div>
       </div>
 
@@ -112,31 +108,11 @@
             <button v-for="s in [0.5, 1, 2, 4]" :key="s" :class="{ on: speed === s }" @click="speed = s">{{ s }}x</button>
           </div>
         </div>
-        <HimawariTimeAxis
-          v-if="active === 'himawari'"
-          :times="axisTimes"
-          :active="animPos"
-          @update:active="v => setTimeIndex(v)"
-          :dark="dark"
-        />
-        <TimeAxis
-          v-else
-          :times="axisTimes"
-          :active="animPos"
-          @update:active="v => setTimeIndex(v)"
-          :dark="dark"
-        />
+        <TimeAxis :times="axisTimes" :active="animPos" @update:active="v => setTimeIndex(v)" :dark="dark" />
       </div>
     </div>
 
-    <MetaPanel
-      v-if="propsOpen"
-      :meta="meta"
-      :steps="processing"
-      :himawari-status="active === 'himawari' ? himawariStatus : null"
-      closable
-      @close="propsOpen = false"
-    >
+    <MetaPanel v-if="propsOpen" :meta="meta" :steps="processing" closable @close="propsOpen = false">
       <div class="version">
         <h4>MVP 当前版本</h4>
         <p v-for="v in versions" :key="v"><el-icon class="ok"><CircleCheck /></el-icon>{{ v }}</p>
@@ -146,10 +122,10 @@
 </template>
 
 <script setup>
-import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { ArrowLeft, ArrowRight, Check, CircleCheck, Close, Connection, DArrowLeft, DArrowRight, DataAnalysis, Document, FolderOpened, Grid, MapLocation, Monitor, Moon, Operation, Position, RefreshRight, Sunny, VideoPlay, VideoPause } from "@element-plus/icons-vue";
-import { getHimawariAutoStatus, parseFile } from "../api";
-import ProjMap from "../components/ProjMap.vue";
+import { computed, inject, onBeforeUnmount, ref, watch } from "vue";
+import { ArrowLeft, ArrowRight, Check, CircleCheck, Close, Connection, DArrowLeft, DArrowRight, DataAnalysis, Document, FolderOpened, Grid, MapLocation, Monitor, Moon, Operation, Position, RefreshRight, VideoPlay, VideoPause } from "@element-plus/icons-vue";
+import { parseFile } from "../api";
+import MapBase from "../components/MapBase.vue";
 import MetaPanel from "../components/MetaPanel.vue";
 import TimeAxis from "../components/TimeAxis.vue";
 import VariableSelect from "../components/VariableSelect.vue";
@@ -158,13 +134,13 @@ import GribLayer from "../layers/GribLayer.vue";
 import CmaLayer from "../layers/CmaLayer.vue";
 import RadarLayer from "../layers/RadarLayer.vue";
 import HimawariLayer from "../layers/HimawariLayer.vue";
-import HimawariTimeAxis from "../layers/HimawariTimeAxis.vue";
 import WrfLayer from "../layers/WrfLayer.vue";
 
 const dark = inject("theme");
 
 const sources = [
-  { key: "grib", btn: "GFS·ECMWF", comp: GribLayer },
+  { key: "gfs", btn: "GFS", comp: GribLayer },
+  { key: "ecmwf", btn: "ECMWF", comp: GribLayer },
   { key: "cma", btn: "CMA", comp: CmaLayer },
   { key: "radar", btn: "雷达", comp: RadarLayer },
   { key: "himawari", btn: "葵花卫星", comp: HimawariLayer },
@@ -176,7 +152,8 @@ const infos = {
   radar: { file: "radar_xh_20250616_1000.cinrad", element: "组合反射率 DBZH、径向速度、谱宽", time: "2025-06-16 10:00", level: "0.5° 仰角", range: "73°E-135°E, 15°N-55°N", grid: "721 × 361", missing: "-9999", unit: "dBZ / m·s⁻¹", vars: "3", steps: "24" },
   himawari: { file: "himawari_20250616_1000.hsd", element: "红外亮温 B13、真彩色合成", time: "2025-06-16 10:00", level: "全圆盘 / 区域", range: "80°E-160°E, 0°N-60°N", grid: "5500 × 5500", missing: "-9999", unit: "°C", vars: "16", steps: "24" },
   era5: { file: "era5_t2m_20250616.nc", element: "2m 温度、位势、风场", time: "2025-06-16 09:00", level: "2m / 1000-200hPa", range: "73°E-135°E, 15°N-55°N", grid: "248 × 161", missing: "NaN", unit: "°C", vars: "5", steps: "24" },
-  grib: { file: "gfs.t00z.pgrb2.0p25.f006", element: "500hPa 位势高度、温度", time: "2025-06-16 08:00", level: "500hPa / 850hPa", range: "73°E-135°E, 15°N-55°N", grid: "249 × 161", missing: "9999", unit: "gpm", vars: "8", steps: "40" },
+  gfs: { file: "gfs_realtime.grib2", element: "2米气温、2米露点、累积降水、地面气压", time: "实时预报", level: "地面", range: "全球", grid: "0.25°", missing: "NaN", unit: "°C / mm / hPa", vars: "4", steps: "多时效" },
+  ecmwf: { file: "ecmwf_realtime.grib2", element: "2米气温、2米露点、累积降水、地面气压", time: "实时预报", level: "地面", range: "全球", grid: "0.25°", missing: "NaN", unit: "°C / mm / hPa", vars: "4", steps: "3小时间隔" },
   cma: { file: "cma_meso_20250616.grib2", element: "2m 温度、降水", time: "2025-06-16 08:00", level: "地面 / 多层", range: "70°E-140°E, 10°N-60°N", grid: "1025 × 801", missing: "9999", unit: "°C / mm", vars: "6", steps: "24" },
   wrf: { file: "wrf_radar_20250616.nc", element: "雷达反射率 (NC)", time: "2025-06-16 10:00", level: "多仰角", range: "73°E-135°E, 15°N-55°N", grid: "460 × 460", missing: "-9999", unit: "dBZ", vars: "2", steps: "12" }
 };
@@ -184,7 +161,8 @@ const infos = {
 const files = [
   { name: "radar_xh_20250616_1000.cinrad", time: "2025-06-16 10:00", size: "2.14 MB", key: "radar" },
   { name: "era5_t2m_20250616.nc", time: "2025-06-16 09:00", size: "1.28 GB", key: "era5" },
-  { name: "gfs.t00z.pgrb2.0p25.f006", time: "2025-06-16 08:00", size: "524 MB", key: "grib" },
+  { name: "gfs_realtime_latest.grib2", time: "实时", size: "按时效", key: "gfs" },
+  { name: "ecmwf_realtime_latest.grib2", time: "实时", size: "按时效", key: "ecmwf" },
   { name: "himawari_20250616_1000.hsd", time: "2025-06-16 10:00", size: "380 MB", key: "himawari" }
 ];
 
@@ -199,7 +177,7 @@ const versions = ["文件存储：原始数据 + meta.json + PNG", "前端渲染
 const projections = ["等经纬", "墨卡托", "正弦", "罗宾逊", "兰博托", "卫星正视", "北极", "南极"];
 const basemaps = ["矢量底图", "影像底图", "地形晕渲", "全球境界"];
 const levels = ["地面", "850hPa", "500hPa", "200hPa"];
-const defaultTimes = ["00时", "02时", "04时", "06时", "08时", "10时", "12时", "14时", "16时", "18时", "20时", "22时"];
+const defaultTimes = Array.from({ length: 24 }, (_, i) => `${String(i).padStart(2, "0")}时`);
 
 const tool = ref("file");
 const dockOpen = ref(false);
@@ -219,8 +197,6 @@ const parsed = ref(null);
 const parsedLayerKey = ref(null);
 const parseProcessing = ref(null);
 const layerDisplays = ref({});
-const himawariTimeline = ref([]);
-const himawariStatus = ref(null);
 const playing = ref(false);
 const speed = ref(1);
 const animPos = ref(tIndex.value);
@@ -229,12 +205,9 @@ const syncView = ref(null);
 const showVector = ref(false);
 const mapDark = ref(dark.value);
 const emitterIdx = ref(-1);
-const switching = ref(false);
 const latestView = {};
 let animTimer = null;
 let lastTs = null;
-let switchingTimer = null;
-let himawariStatusTimer = null;
 
 const selectedFileLabel = computed(() => {
   const files = Array.isArray(file.value) ? file.value : [];
@@ -259,13 +232,6 @@ watch(linked, v => {
 
 function onLayerDisplayLoaded(key, payload) {
   if (!payload) return;
-  if (key === active.value && switching.value) {
-    switching.value = false;
-    clearTimeout(switchingTimer);
-  }
-  if (key === "himawari") {
-    updateHimawariTimeline(payload);
-  }
   layerDisplays.value = { ...layerDisplays.value, [key]: payload };
 }
 
@@ -320,6 +286,18 @@ function formatAxisTime(value) {
   return text.slice(0, 16) || text;
 }
 
+function isNwpKey(key) {
+  return key === "gfs" || key === "ecmwf";
+}
+
+function nwpDataType(key) {
+  return key === "ecmwf" ? "ECMWF" : "GFS";
+}
+
+function nwpLabel(key) {
+  return key === "ecmwf" ? "ECMWF" : "GFS";
+}
+
 const activeLayerTimes = computed(() => {
   const values = collectTimes(parsed.value && parsedLayerKey.value === active.value ? parsed.value : null)
     .concat(collectTimes(layerDisplays.value[active.value]))
@@ -328,13 +306,9 @@ const activeLayerTimes = computed(() => {
 });
 
 const axisTimes = computed(() => {
-  if (active.value === "himawari" && himawariTimeline.value.length) {
-    return himawariTimeline.value.map((item) => item.label);
-  }
-
   // GFS/ECMWF 保持业务播放轴：00时、02时、04时...22时。
   // 真实 F000/F006/F012 用于图层内部匹配和右侧信息，不直接显示到底部轴。
-  if (active.value === "grib") {
+  if (isNwpKey(active.value)) {
     return defaultTimes;
   }
 
@@ -624,7 +598,7 @@ function nearestAxisIndexForHour(targetHour) {
 }
 
 function currentGfsValidAxisIndices() {
-  if (active.value !== "grib") return [];
+  if (!isNwpKey(active.value)) return [];
 
   const validHours = currentLayerValidHours();
   if (!validHours.length) return [];
@@ -640,7 +614,7 @@ function snapTimeIndexForActive(v) {
   const max = Math.max(0, axisTimes.value.length - 1);
   const n = Number.isFinite(Number(v)) ? Math.min(max, Math.max(0, Math.round(Number(v)))) : 0;
 
-  if (active.value !== "grib") {
+  if (!isNwpKey(active.value)) {
     return n;
   }
 
@@ -679,7 +653,7 @@ function nextGfsValidAxisIndex(direction = 1) {
 }
 
 const parsedFrameCount = computed(() => {
-  if (active.value === "grib") {
+  if (isNwpKey(active.value)) {
     const validHours = currentLayerValidHours();
     if (validHours.length) return validHours.length;
 
@@ -699,10 +673,6 @@ const parsedFrameCount = computed(() => {
 });
 
 const layerTimeIndex = computed(() => {
-  if (active.value === "himawari" && himawariTimeline.value.length) {
-    return clampTimeIndex(tIndex.value);
-  }
-
   const frameCount = parsedFrameCount.value;
 
   if (frameCount <= 1) {
@@ -712,7 +682,7 @@ const layerTimeIndex = computed(() => {
   const uiIndex = clampTimeIndex(tIndex.value);
   const uiHour = parseAxisHour(axisTimes.value[uiIndex], uiIndex);
 
-  if (active.value === "grib") {
+  if (isNwpKey(active.value)) {
     const validHours = currentLayerValidHours();
 
     // GFS 最优先按有效时间匹配：
@@ -751,7 +721,7 @@ function setTimeIndex(v) {
 function startAnim() {
   clearInterval(animTimer);
 
-  if (active.value === "grib" && currentGfsValidAxisIndices().length) {
+  if (isNwpKey(active.value) && currentGfsValidAxisIndices().length) {
     animTimer = setInterval(() => {
       const next = nextGfsValidAxisIndex(1);
       tIndex.value = next;
@@ -806,21 +776,24 @@ watch(
 );
 
 
-onMounted(() => {
-  refreshHimawariStatus();
-  himawariStatusTimer = window.setInterval(refreshHimawariStatus, 5000);
-});
+onBeforeUnmount(() => clearInterval(animTimer));
 
-onBeforeUnmount(() => {
-  clearInterval(animTimer);
-  clearTimeout(switchingTimer);
-  if (himawariStatusTimer) window.clearInterval(himawariStatusTimer);
-});
+function layerProps(key) {
+  if (isNwpKey(key)) {
+    return {
+      dataType: nwpDataType(key),
+      label: nwpLabel(key),
+    };
+  }
+
+  return {};
+}
 
 function businessTypeToLayerKey(type) {
   const t = String(type || "").toUpperCase();
 
-  if (t === "GFS" || t === "ECMWF" || t === "GFS/ECMWF") return "grib";
+  if (t === "GFS" || t === "GFS/ECMWF") return "gfs";
+  if (t === "ECMWF") return "ecmwf";
   if (t === "ERA5") return "era5";
   if (t === "CMA") return "cma";
   if (t === "RADAR") return "radar";
@@ -860,17 +833,12 @@ function normalizeParsedMeta(result) {
 }
 
 const meta = computed(() => {
-  const display = layerDisplays.value[active.value];
-  const displayMeta = display?.meta || display?.weather_info || null;
-
-  // CMA 面板跟随卡片中选中的要素，图层上报的 meta 优先于解析快照
-  if (active.value === "cma" && displayMeta) {
-    return displayMeta;
-  }
-
   if (parsed.value && parsedLayerKey.value === active.value) {
     return normalizeParsedMeta(parsed.value);
   }
+
+  const display = layerDisplays.value[active.value];
+  const displayMeta = display?.meta || display?.weather_info || null;
 
   if (displayMeta) {
     return displayMeta;
@@ -909,120 +877,6 @@ function layerParsed(key) {
   return null;
 }
 
-const selectedHimawariSceneId = computed(() => {
-  const items = himawariTimeline.value;
-  if (!items.length) return "";
-  const index = active.value === "himawari" ? clampTimeIndex(tIndex.value) : items.length - 1;
-  return items[index]?.scene_id || "";
-});
-
-function layerProps(key) {
-  if (key !== "himawari") return {};
-  return { sceneId: selectedHimawariSceneId.value };
-}
-
-function updateHimawariTimeline(data) {
-  const items = normalizeHimawariTimeline(data);
-  if (!items.length) return;
-
-  const previous = himawariTimeline.value;
-  const previousIndex = previous.length ? clampTimeIndex(tIndex.value) : -1;
-  const previousSceneId = previous[previousIndex]?.scene_id || "";
-  const wasAtLatest = !previous.length || previousIndex >= previous.length - 1;
-
-  himawariTimeline.value = items;
-
-  if (active.value !== "himawari") return;
-
-  const preservedIndex = previousSceneId
-    ? items.findIndex((item) => item.scene_id === previousSceneId)
-    : -1;
-  const nextIndex = wasAtLatest
-    ? items.length - 1
-    : preservedIndex >= 0
-      ? preservedIndex
-      : Math.min(Math.max(previousIndex, 0), items.length - 1);
-
-  setTimeIndex(nextIndex);
-}
-
-function normalizeHimawariTimeline(data) {
-  const timeline = Array.isArray(data?.timeline) ? data.timeline : [];
-  if (timeline.length) {
-    return timeline
-      .map((item) => {
-        const sceneId = item?.scene_id || item?.id || "";
-        const timeValue = item?.observation_time || item?.time || item?.utc_time || item?.label || sceneId;
-        return {
-          scene_id: sceneId,
-          time: timeValue,
-          label: item?.label || formatObservationTime(timeValue) || sceneId,
-        };
-      })
-      .filter((item) => item.scene_id);
-  }
-
-  const metaJson = data?.meta_json || data?.meta || {};
-  const sceneId = metaJson.scene_id || data?.scene_id || "";
-  if (!sceneId) return [];
-
-  const timeValue = metaJson.observation_time || data?.observation_time || metaJson.time || sceneId;
-  return [{
-    scene_id: sceneId,
-    time: timeValue,
-    label: formatObservationTime(timeValue) || sceneId,
-  }];
-}
-
-function formatObservationTime(value) {
-  const text = String(value || "").trim();
-  if (!text) return "";
-
-  const compact = text.match(/^(\d{4})(\d{2})(\d{2})[_-]?(\d{2})(\d{2})$/);
-  if (compact) {
-    const date = new Date(Date.UTC(
-      Number(compact[1]),
-      Number(compact[2]) - 1,
-      Number(compact[3]),
-      Number(compact[4]),
-      Number(compact[5]),
-    ));
-    return formatBeijingTime(date);
-  }
-
-  const parsedDate = new Date(text);
-  if (!Number.isNaN(parsedDate.getTime())) {
-    return formatBeijingTime(parsedDate);
-  }
-
-  const hm = text.match(/(\d{2})-(\d{2})\s+(\d{2}):(\d{2})/);
-  if (hm) return `${hm[1]}-${hm[2]} ${hm[3]}:${hm[4]}`;
-
-  return text.slice(0, 16);
-}
-
-function formatBeijingTime(date) {
-  const bj = new Date(date.getTime() + 8 * 60 * 60 * 1000);
-  const mm = String(bj.getUTCMonth() + 1).padStart(2, "0");
-  const dd = String(bj.getUTCDate()).padStart(2, "0");
-  const hh = String(bj.getUTCHours()).padStart(2, "0");
-  const mi = String(bj.getUTCMinutes()).padStart(2, "0");
-  return `${mm}-${dd} ${hh}:${mi}`;
-}
-
-async function refreshHimawariStatus() {
-  try {
-    himawariStatus.value = await getHimawariAutoStatus();
-  } catch (err) {
-    himawariStatus.value = {
-      state: "error",
-      running: false,
-      current_detail: "Himawari 自动处理状态读取失败",
-      last_error: err?.message || "Himawari 自动处理状态读取失败",
-    };
-  }
-}
-
 const panes = computed(() => {
   if (layout.value === "1") return sources.filter(s => s.key === active.value);
 
@@ -1043,11 +897,6 @@ const mapsGrid = computed(() => {
 
 const dockTitle = computed(() => ({ file: "选择文件", data: "数据类型", proj: "投影方式", base: "底图图层" }[tool.value]));
 
-function toggleVector() {
-  showVector.value = !showVector.value;
-  if (showVector.value) mapDark.value = false;
-}
-
 function cycleLayout() {
   layout.value = layout.value === "1" ? "2" : layout.value === "2" ? "4" : "1";
   if (layout.value === "1") linked.value = false;
@@ -1062,10 +911,6 @@ function openTool(name) {
 }
 
 function selectSource(key) {
-  if (key === active.value) return;
-  switching.value = true;
-  clearTimeout(switchingTimer);
-  switchingTimer = setTimeout(() => { switching.value = false; }, 10000);
   active.value = key;
   parsed.value = null;
   parsedLayerKey.value = null;
@@ -1192,8 +1037,7 @@ watch(active, () => {
 .center { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
 .maps { flex: 1; min-height: 0; display: grid; gap: 10px; }
 .cell { position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; }
-.cell-tag { position: absolute; top: 8px; left: 8px; z-index: 6; padding: 3px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--glass); backdrop-filter: blur(10px); color: var(--text); font-size: 11px; font-weight: 600; letter-spacing: 0.3px; pointer-events: none; }
-.cell :deep(.projmap) { position: absolute; inset: 0; }
+.cell .map-base { position: absolute; inset: 0; }
 
 .timebar { flex-shrink: 0; padding: 6px 14px 8px; overflow: hidden; }
 .tb-head { display: flex; align-items: center; gap: 6px; padding: 0 0 6px; }
