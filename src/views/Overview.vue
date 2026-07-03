@@ -848,9 +848,13 @@ function normalizeParsedMeta(result) {
     vars: panelMeta.vars || info.variables || "—",
     steps: panelMeta.steps || info.steps || "—",
     status: panelMeta.status || info.status || "—",
+    variable_key: panelMeta.variable_key || info.variable_key || "",
+    element_desc_zh: panelMeta.element_desc_zh || info.element_desc_zh || "",
+    element_desc_en: panelMeta.element_desc_en || info.element_desc_en || "",
     extent: panelMeta.extent || info.extent || result.extent || null,
     png_url: result.png_url || panelMeta.png_url || info.png_url || null,
     png_urls: result.png_urls || panelMeta.png_urls || info.png_urls || [],
+    webp_url: result.webp || result.webp_url || panelMeta.webp_url || info.webp_url || null,
     times: result.times || panelMeta.times || info.times || [],
   };
 }
@@ -884,6 +888,15 @@ const processing = computed(() => {
 });
 
 const variableOptions = computed(() => {
+  const displayVars = layerDisplays.value[active.value]?.variables;
+  if (Array.isArray(displayVars) && displayVars.length) {
+    return displayVars.map(item => {
+      if (typeof item === "string") return item;
+      const name = item?.name || item?.value || item?.key || "";
+      const label = item?.label || item?.element || "";
+      return label && label !== name ? `${name} - ${label}` : name;
+    }).filter(Boolean);
+  }
   const text = meta.value?.element || infos[active.value]?.element || "";
   return String(text).split("、").filter(Boolean);
 });

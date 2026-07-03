@@ -155,10 +155,6 @@ const firstErrorText = computed(() => {
   return `${sample.scene_id || "最近错误"}：${sample.error || "未知错误"}`;
 });
 
-function formatTime(value) {
-  return formatBeijingTime(value) || value;
-}
-
 function formatScene(value) {
   if (!value) return "";
   const text = String(value);
@@ -209,7 +205,6 @@ function formatBeijingDate(date) {
   overflow: hidden;
 }
 
-/* ── 固定标题栏 ── */
 .mp-header {
   flex-shrink: 0;
   display: flex;
@@ -247,18 +242,14 @@ function formatBeijingDate(date) {
   color: var(--text);
 }
 
-/* ── 滚动内容区 ── */
 .mp-body {
   flex: 1;
   overflow-y: auto;
   padding: 14px;
-
-  /* Firefox */
   scrollbar-width: thin;
   scrollbar-color: var(--border) transparent;
 }
 
-/* Chrome / Edge / Safari */
 .mp-body::-webkit-scrollbar {
   width: 4px;
 }
@@ -276,7 +267,6 @@ function formatBeijingDate(date) {
   background: rgba(255, 255, 255, 0.22);
 }
 
-/* ── 数据列表 ── */
 .meta-list {
   display: grid;
   grid-template-columns: 74px 1fr;
@@ -293,8 +283,9 @@ dt {
 dd {
   margin: 0;
   color: var(--text);
-  word-break: break-word;
   line-height: 1.4;
+  white-space: pre-line;
+  word-break: break-word;
 }
 
 .auto-box {
@@ -347,7 +338,6 @@ dd {
   word-break: break-word;
 }
 
-/* ── 空态 ── */
 .empty {
   display: grid;
   place-items: center;
