@@ -1,25 +1,25 @@
-export function buildHimawariTimelineTicks(times = [], maxTicks = 12) {
+export function buildHimawariTimelineTicks(times = [], maxTicks = 12, activeIndex = -1) {
   const items = Array.isArray(times) ? times : [];
-  const hourlyTicks = items
-    .map((label, index) => ({ label, index }))
-    .filter((tick) => /\b\d{2}:00\b$/.test(String(tick.label || "").trim()));
-
-  return sampleTicks(hourlyTicks.length ? hourlyTicks : items.map((label, index) => ({ label, index })), maxTicks);
+  return includeActiveTick(items.map((label, index) => buildTick(label, index)), items, activeIndex);
 }
 
-function sampleTicks(ticks, maxTicks) {
-  if (!ticks.length) return [];
-  if (ticks.length <= maxTicks) return ticks;
+function includeActiveTick(ticks, items, activeIndex) {
+  const index = Number(activeIndex);
+  if (!Number.isInteger(index) || index < 0 || index >= items.length) return ticks;
+  if (ticks.some((tick) => tick.index === index)) return ticks;
+  return [...ticks, buildTick(items[index], index)].sort((a, b) => a.index - b.index);
+}
 
-  const step = Math.ceil((ticks.length - 1) / (maxTicks - 1));
-  const sampled = [];
-  for (let position = 0; position < ticks.length; position += step) {
-    sampled.push(ticks[position]);
-  }
+function buildTick(label, index) {
+  return {
+    label,
+    displayLabel: compactTickLabel(label),
+    index,
+  };
+}
 
-  const lastTick = ticks[ticks.length - 1];
-  if (sampled[sampled.length - 1]?.index !== lastTick.index) {
-    sampled.push(lastTick);
-  }
-  return sampled;
+function compactTickLabel(label) {
+  const text = String(label || "").trim();
+  const match = text.match(/(\d{2}):(\d{2})$/);
+  return match ? `${match[1]}:${match[2]}` : text;
 }

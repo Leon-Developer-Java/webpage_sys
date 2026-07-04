@@ -10,7 +10,7 @@
       <div v-if="$slots.default" class="lc-controls">
         <slot />
       </div>
-      <div class="lc-legend">
+      <div v-if="showLegend" class="lc-legend">
         <small v-if="legendTitle">{{ legendTitle }}</small>
         <div class="lc-bar" :style="{ background: gradient }"></div>
         <ul v-if="ticks && ticks.length">
@@ -44,6 +44,7 @@ defineProps({
   legendTitle: { type: String, default: "" },
   gradient:    { type: String, default: "" },
   ticks:       { type: Array,  default: () => [] },
+  showLegend:  { type: Boolean, default: true },
 });
 
 const collapsed = ref(true);

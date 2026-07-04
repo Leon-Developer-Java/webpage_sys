@@ -1,6 +1,13 @@
 <template>
   <WebglLayer :src="imageSrc" :extent="imageExtent" :alpha="opacity" />
-  <LayerCard :badge="props.label || '葵花卫星'" :file="cardFile" :legend-title="legendTitle" :gradient="gradient" :ticks="ticks">
+  <LayerCard
+    :badge="props.label || '葵花卫星'"
+    :file="cardFile"
+    :legend-title="legendTitle"
+    :gradient="gradient"
+    :ticks="ticks"
+    :show-legend="showLegend"
+  >
     <template v-if="products.length">
       <label class="lc-row">
         <span>变量</span>
@@ -16,6 +23,7 @@
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import LayerCard from "../components/LayerCard.vue";
 import WebglLayer from "../components/WebglLayer.vue";
+import { buildHimawariVariableInfo, isHimawariRgbProduct, resolveHimawariImageUrl } from "./himawariVariableInfo";
 
 const props = defineProps({
   src: String,
@@ -25,7 +33,7 @@ const props = defineProps({
   refreshKey: { type: Number, default: 0 },
   sceneId: { type: String, default: "" },
 });
-const emit = defineEmits(["display-loaded"]);
+const emit = defineEmits(["display-loaded", "variable-change"]);
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8002";
 const flyToExtent = inject("flyToExtent", null);
@@ -39,10 +47,14 @@ let zoomedKey = "";
 const imageExtent = computed(() => props.extent || display.value?.extent || display.value?.meta_json?.extent || display.value?.meta_json?.bbox || [73, 18, 136, 54]);
 const variables = computed(() => display.value?.variables || display.value?.meta_json?.variables || []);
 const composites = computed(() => display.value?.composites || display.value?.meta_json?.composites || []);
-const products = computed(() => [
-  ...composites.value.map((item) => ({ ...item, product_type: "composite" })),
-  ...variables.value.map((item) => ({ ...item, product_type: "variable" })),
-]);
+const products = computed(() => {
+  const apiProducts = display.value?.products || display.value?.meta_json?.products;
+  if (Array.isArray(apiProducts) && apiProducts.length) return apiProducts;
+  return [
+    ...composites.value.map((item) => ({ ...item, product_type: "composite" })),
+    ...variables.value.map((item) => ({ ...item, product_type: "variable" })),
+  ];
+});
 const defaultProduct = computed(() =>
   products.value.find((item) => productName(item) === "B13") ||
   products.value.find((item) => productName(item) === "true_color") ||
@@ -52,24 +64,27 @@ const selectedProduct = computed(() => {
   if (!products.value.length) return null;
   return products.value.find((item) => productName(item) === selectedProductKey.value) || defaultProduct.value;
 });
+const isRgbProduct = computed(() => isHimawariRgbProduct(selectedProduct.value));
 const imageSrc = computed(() =>
-  props.src ||
-  toBackendUrl(selectedProduct.value?.png_url) ||
-  selectedProduct.value?.png_data_url ||
-  toBackendUrl(display.value?.png_url) ||
-  display.value?.png_data_url ||
-  ""
+  resolveHimawariImageUrl({
+    product: selectedProduct.value,
+    display: display.value,
+    fallback: props.src,
+    apiBase: API_BASE,
+  })
 );
 const cardFile = computed(() => props.file || display.value?.meta_json?.scene_id || "");
 const legendTitle = computed(() => {
+  if (isRgbProduct.value) return "";
   const item = selectedProduct.value;
   if (!item) return "葵花卫星";
   const unit = item.display_unit || item.unit;
   return unit ? `${productLabel(item)} (${unit})` : productLabel(item);
 });
 
-const gradient = "linear-gradient(to right, #1f2937, #9ca3af, #f3f4f6, #ef4444)";
-const ticks = ["-80", "-40", "0", "40"];
+const showLegend = computed(() => !isRgbProduct.value);
+const gradient = computed(() => showLegend.value ? "linear-gradient(to right, #1f2937, #9ca3af, #f3f4f6, #ef4444)" : "");
+const ticks = computed(() => showLegend.value ? productTicks(selectedProduct.value) : []);
 const statusText = computed(() => {
   if (error.value) return error.value;
   if (!imageSrc.value) return "葵花数据未加载";
@@ -90,6 +105,16 @@ function productLongName(item) {
   return item?.long_name || item?.plain_name || item?.description || "";
 }
 
+function productTicks(item) {
+  if (Array.isArray(item?.legend_ticks) && item.legend_ticks.length) {
+    return item.legend_ticks.map(String);
+  }
+  const unit = item?.display_unit || item?.unit || "";
+  if (unit === "%") return ["0", "40", "80", "120"];
+  if (unit === "K") return ["200", "240", "280", "320"];
+  return ["-80", "-40", "0", "40"];
+}
+
 function formatBeijingTime(value) {
   if (!value) return "";
   const parsed = new Date(String(value).replace("Z", "+00:00"));
@@ -103,17 +128,18 @@ function formatBeijingTime(value) {
   return `${year}-${month}-${day} ${hour}:${minute}`;
 }
 
-function toBackendUrl(value) {
-  if (!value) return "";
-  if (/^(data:|blob:|https?:\/\/)/i.test(value)) return value;
-  if (value.startsWith("/")) return `${API_BASE}${value}`;
-  return "";
-}
-
 function syncSelection() {
   if (!products.value.length) return;
   if (products.value.some((item) => productName(item) === selectedProductKey.value)) return;
   selectedProductKey.value = productName(defaultProduct.value);
+}
+
+function emitSelectedVariableInfo() {
+  if (!display.value || !selectedProduct.value) return;
+  emit("variable-change", buildHimawariVariableInfo({
+    product: selectedProduct.value,
+    display: display.value,
+  }));
 }
 
 function flyToData() {
@@ -141,6 +167,7 @@ async function loadHimawariDisplay() {
     display.value = payload.data;
     emit("display-loaded", payload.data);
     syncSelection();
+    emitSelectedVariableInfo();
     error.value = "";
   } catch (err) {
     error.value = "葵花数据未加载";
@@ -158,6 +185,8 @@ watch(() => [props.refreshKey, props.sceneId], () => {
 });
 
 watch(() => [display.value, imageExtent.value], flyToData, { immediate: true });
+
+watch(() => selectedProductKey.value, emitSelectedVariableInfo);
 
 onBeforeUnmount(() => {
   if (timer) window.clearInterval(timer);

@@ -5,7 +5,12 @@
       <div class="thumb" :style="{ left: fillPct }"></div>
     </div>
     <div class="labels">
-      <span v-for="tick in visibleTicks" :key="`${tick.index}-${tick.label}`" @click.stop="emit('update:active', tick.index)">{{ tick.label }}</span>
+      <span
+        v-for="tick in visibleTicks"
+        :key="`${tick.index}-${tick.label}`"
+        :title="tick.label"
+        @click.stop="emit('update:active', tick.index)"
+      >{{ tick.displayLabel || tick.label }}</span>
     </div>
   </div>
 </template>
@@ -24,7 +29,7 @@ const trackEl = ref(null);
 
 const pct = computed(() => Math.min(props.active / Math.max(props.times.length - 1, 1), 1));
 const fillPct = computed(() => `${pct.value * 100}%`);
-const visibleTicks = computed(() => buildHimawariTimelineTicks(props.times, 12));
+const visibleTicks = computed(() => buildHimawariTimelineTicks(props.times, 12, Math.round(props.active)));
 
 function seek(e) {
   const rect = trackEl.value.getBoundingClientRect();
@@ -76,7 +81,7 @@ function seek(e) {
   pointer-events: none;
 }
 
-.labels { display: flex; justify-content: space-between; }
-.labels span { font-size: 11px; color: var(--muted); cursor: pointer; transition: 0.12s; }
+.labels { display: flex; justify-content: space-between; gap: 2px; }
+.labels span { min-width: 0; flex: 1; font-size: 10px; color: var(--muted); cursor: pointer; text-align: center; transition: 0.12s; }
 .labels span:hover { color: var(--text); }
 </style>

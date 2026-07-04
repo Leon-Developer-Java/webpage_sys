@@ -133,7 +133,6 @@
       v-if="propsOpen"
       :meta="meta"
       :steps="processing"
-      :himawari-status="active === 'himawari' ? himawariStatus : null"
       closable
       @close="propsOpen = false"
     >
@@ -146,9 +145,9 @@
 </template>
 
 <script setup>
-import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, inject, onBeforeUnmount, ref, watch } from "vue";
 import { ArrowLeft, ArrowRight, Check, CircleCheck, Close, Connection, DArrowLeft, DArrowRight, DataAnalysis, Document, FolderOpened, Grid, MapLocation, Monitor, Moon, Operation, Position, RefreshRight, Sunny, VideoPlay, VideoPause } from "@element-plus/icons-vue";
-import { getHimawariAutoStatus, parseFile } from "../api";
+import { parseFile } from "../api";
 import ProjMap from "../components/ProjMap.vue";
 import MetaPanel from "../components/MetaPanel.vue";
 import TimeAxis from "../components/TimeAxis.vue";
@@ -174,7 +173,7 @@ const sources = [
 
 const infos = {
   radar: { file: "radar_xh_20250616_1000.cinrad", element: "组合反射率 DBZH、径向速度、谱宽", time: "2025-06-16 10:00", level: "0.5° 仰角", range: "73°E-135°E, 15°N-55°N", grid: "721 × 361", missing: "-9999", unit: "dBZ / m·s⁻¹", vars: "3", steps: "24" },
-  himawari: { file: "himawari_20250616_1000.hsd", element: "红外亮温 B13、真彩色合成", time: "2025-06-16 10:00", level: "全圆盘 / 区域", range: "80°E-160°E, 0°N-60°N", grid: "5500 × 5500", missing: "-9999", unit: "°C", vars: "16", steps: "24" },
+  himawari: { file: "himawari_20250616_1000.hsd", element: "B01-B16 全通道、真彩色合成", time: "2025-06-16 10:00", level: "全圆盘 / 区域", range: "80°E-160°E, 0°N-60°N", grid: "5500 × 5500", missing: "-9999", unit: "°C / %", vars: "16", steps: "25" },
   era5: { file: "era5_t2m_20250616.nc", element: "2m 温度、位势、风场", time: "2025-06-16 09:00", level: "2m / 1000-200hPa", range: "73°E-135°E, 15°N-55°N", grid: "248 × 161", missing: "NaN", unit: "°C", vars: "5", steps: "24" },
   grib: { file: "gfs.t00z.pgrb2.0p25.f006", element: "500hPa 位势高度、温度", time: "2025-06-16 08:00", level: "500hPa / 850hPa", range: "73°E-135°E, 15°N-55°N", grid: "249 × 161", missing: "9999", unit: "gpm", vars: "8", steps: "40" },
   cma: { file: "cma_meso_20250616.grib2", element: "2m 温度、降水", time: "2025-06-16 08:00", level: "地面 / 多层", range: "70°E-140°E, 10°N-60°N", grid: "1025 × 801", missing: "9999", unit: "°C / mm", vars: "6", steps: "24" },
@@ -220,7 +219,6 @@ const parsedLayerKey = ref(null);
 const parseProcessing = ref(null);
 const layerDisplays = ref({});
 const himawariTimeline = ref([]);
-const himawariStatus = ref(null);
 const playing = ref(false);
 const speed = ref(1);
 const animPos = ref(tIndex.value);
@@ -234,7 +232,6 @@ const latestView = {};
 let animTimer = null;
 let lastTs = null;
 let switchingTimer = null;
-let himawariStatusTimer = null;
 
 const selectedFileLabel = computed(() => {
   const files = Array.isArray(file.value) ? file.value : [];
@@ -806,15 +803,9 @@ watch(
 );
 
 
-onMounted(() => {
-  refreshHimawariStatus();
-  himawariStatusTimer = window.setInterval(refreshHimawariStatus, 5000);
-});
-
 onBeforeUnmount(() => {
   clearInterval(animTimer);
   clearTimeout(switchingTimer);
-  if (himawariStatusTimer) window.clearInterval(himawariStatusTimer);
 });
 
 function businessTypeToLayerKey(type) {
@@ -956,7 +947,7 @@ function normalizeHimawariTimeline(data) {
         return {
           scene_id: sceneId,
           time: timeValue,
-          label: item?.label || formatObservationTime(timeValue) || sceneId,
+          label: formatObservationTime(timeValue) || item?.label || sceneId,
         };
       })
       .filter((item) => item.scene_id);
@@ -1008,19 +999,6 @@ function formatBeijingTime(date) {
   const hh = String(bj.getUTCHours()).padStart(2, "0");
   const mi = String(bj.getUTCMinutes()).padStart(2, "0");
   return `${mm}-${dd} ${hh}:${mi}`;
-}
-
-async function refreshHimawariStatus() {
-  try {
-    himawariStatus.value = await getHimawariAutoStatus();
-  } catch (err) {
-    himawariStatus.value = {
-      state: "error",
-      running: false,
-      current_detail: "Himawari 自动处理状态读取失败",
-      last_error: err?.message || "Himawari 自动处理状态读取失败",
-    };
-  }
 }
 
 const panes = computed(() => {
