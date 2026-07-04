@@ -155,7 +155,7 @@ import VariableSelect from "../components/VariableSelect.vue";
 import Era5Layer from "../layers/Era5Layer.vue";
 import GribLayer from "../layers/GribLayer.vue";
 import CmaLayer from "../layers/CmaLayer.vue";
-import RadarLayer from "../layers/RadarLayer.vue";
+import RadarLayer from "../layers/RadarWebpLayer.vue";
 import HimawariLayer from "../layers/HimawariLayer.vue";
 import HimawariTimeAxis from "../layers/HimawariTimeAxis.vue";
 import WrfLayer from "../layers/WrfLayer.vue";
