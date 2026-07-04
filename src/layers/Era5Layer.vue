@@ -3,7 +3,7 @@
   <LayerCard
     :badge="label"
     :file="resolvedFile"
-    :legend-title="legendTitle"
+    :legend-title="cardLegendTitle"
     :gradient="gradient"
     :ticks="ticks"
   >
@@ -15,6 +15,7 @@
         </option>
       </select>
     </label>
+    <p v-if="frameSummary" class="lc-note">{{ frameSummary }}</p>
   </LayerCard>
 </template>
 
@@ -93,17 +94,26 @@ void main() {
 
 const meta = computed(() => display.value?.meta_json ?? display.value ?? null);
 const currentLayer = computed(() => layerForVariable(selectedVariable.value));
+const currentVariable = computed(() => variables.value.find(item => item.name === selectedVariable.value) || null);
 const frameIndex = computed(() => {
   const count = Math.max(
+    layerImageUrls(currentLayer.value).length || 0,
     currentLayer.value?.grid_urls?.length || 0,
     currentLayer.value?.times?.length || 0,
     1
   );
   return Math.min(Math.max(Number(props.timeIndex) || 0, 0), count - 1);
 });
-const imageSrc = computed(() => props.src || toPublicUrl(display.value?.png));
+const imageSrc = computed(() => props.src || toPublicUrl(display.value?.webp || display.value?.image_url || display.value?.png));
 const imageExtent = computed(() => props.extent || meta.value?.extent || meta.value?.bbox || [73, 15, 135, 55]);
 const resolvedFile = computed(() => fileName(meta.value?.source_file) || fileName(display.value?.meta_file) || props.file || "");
+const currentTime = computed(() => currentLayer.value?.times?.[frameIndex.value] || meta.value?.times?.[frameIndex.value] || "");
+const frameSummary = computed(() => {
+  const parts = [
+    currentLayer.value?.width && currentLayer.value?.height ? `${currentLayer.value.width} x ${currentLayer.value.height}` : "",
+  ].filter(Boolean);
+  return parts.join(" | ");
+});
 const refreshKey = computed(() => layerRefreshKeys.value?.era5 || 0);
 const parsedKey = computed(() => {
   const parsed = props.parsed;
@@ -113,6 +123,16 @@ const parsedKey = computed(() => {
     || parsed?.meta?.source_file
     || parsed?.file_name
     || "";
+});
+
+const cardLegendTitle = computed(() => {
+  if (loading.value) return "ERA5 loading";
+  if (error.value) return error.value;
+  const layer = currentLayer.value;
+  if (!layer) return "ERA5";
+  const labelText = variableZhName(selectedVariable.value, layer, currentVariable.value);
+  const unit = formatUnit(layer.unit || currentVariable.value?.unit || "");
+  return `${labelText}${unit ? ` (${unit})` : ""}`;
 });
 
 const legendTitle = computed(() => {
@@ -157,10 +177,106 @@ function formatTick(value) {
   return value.toFixed(abs >= 100 ? 0 : abs >= 10 ? 1 : 2);
 }
 
+function formatUnit(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const normalized = text.toLowerCase();
+  if (["1", "1.0", "none", "null", "n/a"].includes(normalized)) return "";
+  if (normalized === "c") return "C";
+  if (normalized === "k") return "K";
+  if (normalized === "pa") return "Pa";
+  if (normalized === "m") return "m";
+  if (normalized === "m s**-1" || normalized === "m s-1" || normalized === "m/s") return "m/s";
+  if (normalized === "m of water equivalent") return "m";
+  if (normalized === "j m**-2" || normalized === "j m-2" || normalized === "j/m2") return "J/m2";
+  if (normalized === "w m**-2" || normalized === "w m-2" || normalized === "w/m2") return "W/m2";
+  return text;
+}
+
+const ERA5_VARIABLE_NAMES = {
+  t2m: "2米气温",
+  tp: "总降水量",
+  sp: "地面气压",
+  u10: "10米U风",
+  v10: "10米V风",
+  ssrd: "地表太阳短波辐射",
+  d2m: "2米露点温度",
+  msl: "海平面气压",
+  u: "纬向风",
+  v: "经向风",
+  z: "位势",
+  q: "比湿",
+  r: "相对湿度",
+  t: "温度",
+};
+
+const ERA5_VARIABLE_DESCRIPTIONS = {
+  t2m: "距地面约2米高度的空气温度，用于表示近地面冷热状况。",
+  tp: "一段时间内累积的总降水量，常用于降雨或降雪过程分析。",
+  sp: "地表气压，表示地表附近大气对单位面积产生的压力。",
+  u10: "10米高度的东西向风分量，正值表示向东，负值表示向西。",
+  v10: "10米高度的南北向风分量，正值表示向北，负值表示向南。",
+  ssrd: "到达地表的太阳短波辐射能量，可反映地表获得的太阳辐射强度。",
+  d2m: "距地面约2米高度的露点温度，用于反映近地面空气湿度状况。",
+  msl: "折算到海平面的气压，常用于分析天气系统和气压场。",
+  u: "东西向风分量，正值表示向东，负值表示向西。",
+  v: "南北向风分量，正值表示向北，负值表示向南。",
+  z: "位势高度相关变量，常用于分析高空环流形势。",
+  q: "比湿，表示单位质量湿空气中所含水汽质量。",
+  r: "相对湿度，表示空气接近饱和的程度。",
+  t: "空气温度，用于表示对应层次的大气冷热状况。",
+};
+
+function rawElementName(layer, variableItem = null) {
+  return variableItem?.label || variableItem?.long_name || layer?.label || layer?.name || selectedVariable.value || "ERA5";
+}
+
+function variableZhName(variableName, layer = null, variableItem = null) {
+  const key = String(variableName || layer?.name || variableItem?.name || "").toLowerCase();
+  return variableItem?.name_cn || layer?.name_cn || ERA5_VARIABLE_NAMES[key] || rawElementName(layer, variableItem);
+}
+
+function bilingualElementName(layer, variableItem = null) {
+  const zh = variableZhName(selectedVariable.value, layer, variableItem);
+  const en = rawElementName(layer, variableItem);
+  return en && en !== zh ? `${zh} / ${en}` : zh;
+}
+
+function variableDescription(variableName, layer = null, variableItem = null) {
+  const key = String(variableName || layer?.name || variableItem?.name || "").toLowerCase();
+  return variableItem?.description || layer?.description || ERA5_VARIABLE_DESCRIPTIONS[key] || "ERA5数据中的可渲染气象要素。";
+}
+
+function formatTimeLabel(value) {
+  const text = String(value || "").trim();
+  if (!text || text === "static") return "";
+  const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):?(\d{2})?/);
+  if (iso) return `${iso[2]}-${iso[3]} ${iso[4]}:${iso[5] || "00"}`;
+  const spaced = text.match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):?(\d{2})?/);
+  if (spaced) return `${spaced[2]}-${spaced[3]} ${spaced[4]}:${spaced[5] || "00"}`;
+  return text.length > 16 ? text.slice(0, 16) : text;
+}
+
+function formatRange(extent) {
+  if (!Array.isArray(extent) || extent.length !== 4) return "";
+  const [west, south, east, north] = extent.map(Number);
+  if ([west, south, east, north].some(value => !Number.isFinite(value))) return "";
+  return `${west.toFixed(2)}E-${east.toFixed(2)}E, ${south.toFixed(2)}N-${north.toFixed(2)}N`;
+}
+
+function formatStat(value, unit = "") {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "";
+  const abs = Math.abs(numeric);
+  const text = abs >= 10000 || (abs > 0 && abs < 0.01)
+    ? numeric.toExponential(2)
+    : numeric.toFixed(abs >= 100 ? 2 : abs >= 10 ? 3 : 4);
+  return unit ? `${text} ${unit}` : text;
+}
+
 function optionLabel(item) {
-  const labelText = item?.label || item?.long_name || item?.name || "";
-  const unit = item?.unit || item?.units || item?.display_unit || "";
-  return unit ? `${labelText} (${unit})` : labelText;
+  const labelText = variableZhName(item?.name, null, item);
+  return item?.name && item.name !== labelText ? `${labelText} (${item.name})` : labelText;
 }
 
 function normalizeDisplay(payload) {
@@ -200,9 +316,52 @@ function layerForVariable(variableName) {
   return first || null;
 }
 
+function layerImageUrls(layer) {
+  return layer?.webp_urls || layer?.image_urls || layer?.png_urls || [];
+}
+
 function currentStats() {
   const layer = currentLayer.value;
   return layer?.stats?.[frameIndex.value] || layer?.stats?.[0] || framePayload.value || {};
+}
+
+function buildPanelInfo(layer, imageUrls = []) {
+  const weather = meta.value?.weather_info || {};
+  const stats = currentStats();
+  const unit = formatUnit(layer?.unit || currentVariable.value?.unit || weather.unit || "");
+  const extent = layer?.extent || meta.value?.extent || meta.value?.bbox;
+  const width = Number(layer?.width || 0);
+  const height = Number(layer?.height || 0);
+  const variableNames = variables.value.map(item => variableZhName(item.name, null, item)).filter(Boolean);
+
+  return {
+    ...weather,
+    file: resolvedFile.value,
+    source: "ERA5",
+    product: weather.product || "ERA5 再分析资料",
+    element: bilingualElementName(layer, currentVariable.value),
+    variable: selectedVariable.value,
+    time: formatTimeLabel(currentTime.value) || currentTime.value || weather.time || "",
+    level: weather.level || layer?.level || "地表",
+    range: formatRange(extent) || weather.range || "",
+    resolution: weather.resolution || "",
+    grid: width && height ? `${width} x ${height}` : weather.grid || "",
+    unit: unit || "-",
+    missing: "",
+    status: "",
+    element_desc: variableDescription(selectedVariable.value, layer, currentVariable.value),
+    variables: variableNames.join(", "),
+    variable_count: variables.value.length,
+    steps: imageUrls.length || layer?.times?.length || weather.steps || "",
+    step_count: imageUrls.length || layer?.times?.length || weather.step_count || "",
+    min: formatStat(stats.min, unit),
+    mean: formatStat(stats.mean, unit),
+    max: formatStat(stats.max, unit),
+    extent,
+    image_url: imageUrls[frameIndex.value] || imageUrls[0] || "",
+    webp_url: layer?.webp_urls?.[frameIndex.value] || layer?.webp_urls?.[0] || "",
+    times: layer?.times || meta.value?.times || [],
+  };
 }
 
 function compile(type, source) {
@@ -361,6 +520,28 @@ function applyImageryLayer(payload) {
   }
 }
 
+function applyImageLayer(payload) {
+  if (!payload?.extent || !payload?.imageUrl) {
+    surface?.clear();
+    return;
+  }
+
+  const [west, south, east, north] = payload.extent.map(Number);
+  if ([west, south, east, north].some(value => !Number.isFinite(value)) || west >= east || south >= north) {
+    error.value = "Invalid ERA5 extent";
+    return;
+  }
+
+  surface?.setData(toPublicUrl(payload.imageUrl), [west, south, east, north], 1);
+  const extentKey = [west, south, east, north].join(",");
+  if (extentKey !== lastExtentKey) {
+    lastExtentKey = extentKey;
+    const dx = Math.max((east - west) * 0.35, 0.5);
+    const dy = Math.max((north - south) * 0.35, 0.5);
+    flyToExtent?.([Math.max(-180, west - dx), Math.max(-90, south - dy), Math.min(180, east + dx), Math.min(90, north + dy)]);
+  }
+}
+
 async function paintImageryLayer(payload) {
   await nextTick();
   applyImageryLayer(payload);
@@ -369,35 +550,111 @@ async function paintImageryLayer(payload) {
   });
 }
 
+async function paintImageLayer(payload) {
+  await nextTick();
+  applyImageLayer(payload);
+  requestAnimationFrame(() => {
+    if (framePayload.value === payload) applyImageLayer(payload);
+  });
+}
+
 function emitLayerMeta() {
   const layer = currentLayer.value;
   if (!layer) return;
   const times = layer.times || meta.value?.times || [];
+  const imageUrls = layerImageUrls(layer);
+  const panelInfo = buildPanelInfo(layer, imageUrls);
   const payload = {
     layer: "ERA5",
     variable: selectedVariable.value,
-    element: layer.label || selectedVariable.value,
-    unit: layer.unit || "",
+    file: panelInfo.file,
+    element: panelInfo.element,
+    unit: panelInfo.unit,
+    time: panelInfo.time,
+    level: panelInfo.level,
+    range: panelInfo.range,
+    grid: panelInfo.grid,
+    missing: panelInfo.missing,
+    status: panelInfo.status,
+    min: panelInfo.min,
+    mean: panelInfo.mean,
+    max: panelInfo.max,
     times,
     axis_times: times,
+    webp_urls: layer.webp_urls || [],
+    image_urls: imageUrls,
     png_urls: layer.png_urls || [],
     grid_urls: layer.grid_urls || [],
-    extent: layer.extent || meta.value?.extent || meta.value?.bbox,
-    frame_count: Math.max(layer.grid_urls?.length || 0, times.length || 0),
+    extent: panelInfo.extent,
+    image_url: panelInfo.image_url,
+    webp_url: panelInfo.webp_url,
+    frame_count: Math.max(imageUrls.length || 0, layer.grid_urls?.length || 0, times.length || 0),
   };
   emit("variable-change", payload);
   emit("display-loaded", {
     meta: {
+      ...(meta.value || {}),
       ...(framePayload.value || {}),
       source: "ERA5",
-      element: `${payload.element}${payload.unit ? ` (${payload.unit})` : ""}`,
-      time: times[frameIndex.value] || times[0] || "",
+      file: panelInfo.file,
+      element: panelInfo.element,
+      time: panelInfo.time,
+      level: panelInfo.level,
+      range: panelInfo.range,
+      grid: panelInfo.grid,
+      unit: panelInfo.unit,
+      missing: panelInfo.missing,
+      status: panelInfo.status,
       extent: payload.extent,
+      weather_info: panelInfo,
+      extraRows: [
+        ["elementDesc", "要素说明", panelInfo.element_desc],
+        ["variable", "变量代号", selectedVariable.value],
+        ["min", "最小值", panelInfo.min],
+        ["mean", "平均值", panelInfo.mean],
+        ["max", "最大值", panelInfo.max],
+      ],
     },
+    weather_info: panelInfo,
     variables: variables.value,
+    times,
+    webp_urls: imageUrls,
     file: resolvedFile.value,
     variable: selectedVariable.value,
   });
+}
+
+async function loadFrame() {
+  const layer = currentLayer.value;
+  const imageUrls = layerImageUrls(layer);
+  if (!imageUrls.length) {
+    await loadBinaryFrame();
+    return;
+  }
+
+  const token = ++loadToken;
+  const index = frameIndex.value;
+  const stats = layer.stats?.[index] || layer.stats?.[0] || {};
+  const payload = {
+    variable: selectedVariable.value,
+    label: layer.label || selectedVariable.value,
+    unit: layer.unit || "",
+    width: Number(layer.width) || 0,
+    height: Number(layer.height) || 0,
+    extent: layer.extent || meta.value?.extent || meta.value?.bbox,
+    nodata: Number(layer.nodata ?? -999999),
+    imageUrl: imageUrls[index] || imageUrls[0],
+    min: Number(stats.min ?? 0),
+    max: Number(stats.max ?? 1),
+    mean: Number(stats.mean ?? 0),
+    time: layer.times?.[index] || "",
+  };
+  if (token !== loadToken) return;
+
+  framePayload.value = payload;
+  gridLayer.value = layer;
+  await paintImageLayer(payload);
+  emitLayerMeta();
 }
 
 async function loadBinaryFrame() {
@@ -472,7 +729,7 @@ async function loadDisplay(variableName = selectedVariable.value) {
     const nextVariable = variableName || display.value.default_variable || meta.value?.default_variable || variables.value[0]?.name || "";
     syncSelectedVariable(nextVariable);
     await nextTick();
-    await loadBinaryFrame();
+    await loadFrame();
   } catch (err) {
     gridLayer.value = null;
     framePayload.value = null;
@@ -493,10 +750,10 @@ watch(parsedKey, value => {
 watch(selectedVariable, async value => {
   if (!syncingSelection && value) {
     emitLayerMeta();
-    await loadBinaryFrame();
+    await loadFrame();
   }
 });
-watch(() => props.timeIndex, () => loadBinaryFrame());
+watch(() => props.timeIndex, () => loadFrame());
 watch(() => props.src, emitLayerMeta);
 onBeforeUnmount(() => {
   removeImageryLayer();
@@ -507,3 +764,16 @@ onBeforeUnmount(() => {
   }
 });
 </script>
+
+<style scoped>
+.lc-note {
+  margin: 0;
+  padding: 0 9px 7px;
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+</style>
