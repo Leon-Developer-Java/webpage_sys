@@ -28,8 +28,6 @@
 
 <script setup>
 import { computed, inject, onMounted, ref, watch } from "vue";
-
-const emit = defineEmits(["display-loaded"]);
 import WebglLayer from "../components/WebglLayer.vue";
 import LayerCard from "../components/LayerCard.vue";
 
@@ -43,8 +41,6 @@ const props = defineProps({
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8002";
 const display = ref(null);
-const binaryImageUrl = ref("");
-let binaryRenderToken = 0;
 
 function toPublicUrl(path) {
   if (!path) return "";
@@ -55,20 +51,9 @@ function toPublicUrl(path) {
 }
 
 function loadWrfDisplay() {
-  fetch(`${API_BASE}/api/display/WRF`)
-    .then(r => r.json())
-    .then(payload => { if (payload?.code === 0) display.value = payload.data; })
-    .catch(() => {})
-    .finally(() => {
-      emit("display-loaded", {
-        meta: {
-          file: wrfMeta.value?.source_file || "",
-          element: currentVariable.value?.name || "WRF",
-          unit: currentVariable.value?.unit || "",
-          extent: extent.value,
-        },
-      });
-    });
+  fetch(`${API_BASE}/api/display/WRF`).then((response) => response.json()).then((payload) => {
+    if (payload?.code === 0) display.value = payload.data;
+  });
 }
 
 const domains = {
@@ -227,7 +212,7 @@ const extent = computed(() => {
   return currentDomain.value.extent;
 });
 const hasMixedDomains = computed(() => {
-  const files = wrfMeta.value?.png_files;
+  const files = wrfMeta.value?.webp_files;
   if (!Array.isArray(files)) return false;
   const domains = new Set(
     files
@@ -255,8 +240,7 @@ const time = computed(() => {
   return `${selectedDate.value}_${hour}_00_00`;
 });
 const imageUrl = computed(() => {
-  if (binaryImageUrl.value) return binaryImageUrl.value;
-  const parsedUrl = parsedPngUrl(variable.value);
+  const parsedUrl = parsedWebpUrl(variable.value);
   if (parsedUrl) return parsedUrl;
   return toPublicUrl(display.value?.png);
 });
@@ -271,40 +255,26 @@ function ticksFor(name) {
   return variables.find((item) => item.value === name)?.ticks ?? ["低", "中", "偏高", "高", "极高"];
 }
 
-function parsedPngUrl(variableName) {
-  const files = wrfMeta.value?.png_files;
+function parsedWebpUrl(variableName) {
+  const files = wrfMeta.value?.webp_files;
   if (!Array.isArray(files)) return "";
   const target = String(variableName || "");
   const timePart = time.value;
   const picked = files.find((item) => {
     const name = String(item).replaceAll("\\", "/");
-    const base = name.split("/").pop()?.replace(/\.png$/i, "") ?? "";
+    const base = name.split("/").pop()?.replace(/\.(png|webp)$/i, "") ?? "";
     return domainMatches(name) && base.startsWith(`${timePart}_`) && base.endsWith(`_${target}`);
   }) || files.find((item) => {
     const name = String(item).replaceAll("\\", "/");
-    const base = name.split("/").pop()?.replace(/\.png$/i, "") ?? "";
+    const base = name.split("/").pop()?.replace(/\.(png|webp)$/i, "") ?? "";
     return domainMatches(name) && base.endsWith(`_${target}`);
   }) || files.find((item) => {
     const name = String(item).replaceAll("\\", "/");
-    const base = name.split("/").pop()?.replace(/\.png$/i, "") ?? "";
+    const base = name.split("/").pop()?.replace(/\.(png|webp)$/i, "") ?? "";
     return base.endsWith(`_${target}`);
-  }) || firstRenderablePng(files) || files[0];
+  }) || firstRenderableWebp(files) || files[0];
   return localDataUrl(picked);
 }
-
-const binaryGrid = computed(() => {
-  const files = wrfMeta.value?.bin_files;
-  if (!Array.isArray(files)) return null;
-  const target = String(variable.value || "");
-  const timePart = time.value;
-  return files.find((item) => {
-    const path = String(item?.path || "").replaceAll("\\", "/");
-    return domainMatches(path) && item?.variable === target && String(item?.time || "").replaceAll(":", "_") === timePart;
-  }) || files.find((item) => {
-    const path = String(item?.path || "").replaceAll("\\", "/");
-    return domainMatches(path) && item?.variable === target;
-  }) || null;
-});
 
 function domainMatches(path) {
   if (!hasMixedDomains.value) return true;
@@ -317,115 +287,6 @@ function localDataUrl(path) {
   const version = encodeURIComponent(wrfMeta.value?.dataset_id || wrfMeta.value?.meta_file || "");
   if (!version || url.includes("?")) return url;
   return `${url}?v=${version}`;
-}
-
-function colorStops() {
-  const name = variable.value;
-  if (name === "U10" || name === "V10") {
-    return [
-      [29, 78, 216],
-      [147, 197, 253],
-      [248, 250, 252],
-      [253, 186, 116],
-      [185, 28, 28],
-    ];
-  }
-  if (name === "PBLH") {
-    return [
-      [15, 23, 42],
-      [37, 99, 235],
-      [34, 197, 94],
-      [250, 204, 21],
-      [249, 115, 22],
-    ];
-  }
-  if (name === "RAINC" || name === "RAINNC") {
-    return [
-      [248, 250, 252],
-      [191, 219, 254],
-      [56, 189, 248],
-      [37, 99, 235],
-      [30, 58, 138],
-    ];
-  }
-  return [
-    [37, 99, 235],
-    [34, 197, 94],
-    [250, 204, 21],
-    [249, 115, 22],
-    [225, 29, 72],
-  ];
-}
-
-function sampleColor(t) {
-  const stops = colorStops();
-  const scaled = Math.max(0, Math.min(1, t)) * (stops.length - 1);
-  const index = Math.min(stops.length - 2, Math.floor(scaled));
-  const local = scaled - index;
-  const a = stops[index];
-  const b = stops[index + 1];
-  return [
-    Math.round(a[0] + (b[0] - a[0]) * local),
-    Math.round(a[1] + (b[1] - a[1]) * local),
-    Math.round(a[2] + (b[2] - a[2]) * local),
-  ];
-}
-
-async function renderBinaryGrid() {
-  const grid = binaryGrid.value;
-  const token = ++binaryRenderToken;
-  if (!grid?.path) {
-    binaryImageUrl.value = "";
-    return;
-  }
-
-  try {
-    const response = await fetch(localDataUrl(grid.path));
-    if (!response.ok) throw new Error(`WRF binary request failed: ${response.status}`);
-    const buffer = await response.arrayBuffer();
-    if (token !== binaryRenderToken) return;
-
-    const width = Number(grid.width);
-    const height = Number(grid.height);
-    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
-      throw new Error("WRF binary grid has invalid shape.");
-    }
-
-    const values = new Float32Array(buffer);
-    const canvas = document.createElement("canvas");
-    canvas.width = width;
-    canvas.height = height;
-    const ctx = canvas.getContext("2d");
-    const image = ctx.createImageData(width, height);
-    const min = Number(grid.min);
-    const max = Number(grid.max);
-    const lo = Number.isFinite(min) ? min : currentVariable.value?.min;
-    const hi = Number.isFinite(max) && max !== lo ? max : currentVariable.value?.max;
-    const span = Number.isFinite(hi - lo) && hi !== lo ? hi - lo : 1;
-
-    for (let y = 0; y < height; y += 1) {
-      const sourceY = height - 1 - y;
-      for (let x = 0; x < width; x += 1) {
-        const value = values[sourceY * width + x];
-        const offset = (y * width + x) * 4;
-        if (!Number.isFinite(value)) {
-          image.data[offset + 3] = 0;
-          continue;
-        }
-        const [r, g, b] = sampleColor((value - lo) / span);
-        image.data[offset] = r;
-        image.data[offset + 1] = g;
-        image.data[offset + 2] = b;
-        image.data[offset + 3] = 185;
-      }
-    }
-
-    ctx.putImageData(image, 0, 0);
-    binaryImageUrl.value = canvas.toDataURL("image/png");
-  } catch (err) {
-    console.warn("WRF binary render failed, fallback to PNG.", err);
-    if (token === binaryRenderToken) binaryImageUrl.value = "";
-  }
 }
 
 function isRenderableVariable(item) {
@@ -447,12 +308,12 @@ function preferredVariable(meta) {
     ?? variable.value;
 }
 
-function firstRenderablePng(files) {
+function firstRenderableWebp(files) {
   const name = preferredVariable(wrfMeta.value);
   const timePart = time.value;
   return files.find((item) => {
     const normalized = String(item).replaceAll("\\", "/");
-    const base = normalized.split("/").pop()?.replace(/\.png$/i, "") ?? "";
+    const base = normalized.split("/").pop()?.replace(/\.(png|webp)$/i, "") ?? "";
     return domainMatches(normalized) && base.startsWith(`${timePart}_`) && base.endsWith(`_${name}`);
   });
 }
@@ -487,7 +348,6 @@ watch(
   { immediate: true },
 );
 watch(() => [wrfMeta.value, extent.value], zoomToDomain, { immediate: true });
-watch(() => [binaryGrid.value, variable.value, time.value, domain.value], renderBinaryGrid, { immediate: true });
 
 onMounted(() => {
   loadWrfDisplay();
