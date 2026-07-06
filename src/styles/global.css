@@ -99,11 +99,11 @@ nav .router-link-active { color: #fff; background: var(--accent); font-weight: 6
 .app.light nav .router-link-active { color: #fff; }
 
 .top-actions { display: flex; align-items: center; gap: 15px; margin-left: auto; color: var(--muted); font-size: 13px; flex-shrink: 1; min-width: 0; overflow: hidden; }
-.top-actions .el-input { width: 230px; flex-shrink: 1; min-width: 100px; }
-.loc, .status, .user { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.status, .user { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
 .status i { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 8px var(--ok); }
 .bell { font-size: 19px; color: var(--muted); }
-.user { color: var(--text); }
+.user { color: var(--text); outline: none; }
+.el-dropdown:focus-visible, .el-dropdown .user:focus, .el-dropdown .user:focus-visible { outline: none; box-shadow: none; }
 .theme { display: grid; place-items: center; width: 34px; height: 34px; border: 1px solid var(--border); border-radius: 10px; background: var(--field); color: var(--text); cursor: pointer; transition: 0.15s; }
 .theme:hover { color: var(--accent); }
 
@@ -112,7 +112,45 @@ nav .router-link-active { color: #fff; background: var(--accent); font-weight: 6
 .app .el-input__wrapper { background: var(--field); box-shadow: 0 0 0 1px var(--border) inset; border-radius: 10px; }
 .app .el-input__inner { color: var(--text); }
 .app .el-input__inner::placeholder { color: var(--muted); }
+.app .el-input__inner:-webkit-autofill,
+.app .el-input__inner:-webkit-autofill:hover,
+.app .el-input__inner:-webkit-autofill:focus,
+.app .el-input__inner:-webkit-autofill:active {
+  -webkit-box-shadow: 0 0 0 1000px var(--field) inset !important;
+  -webkit-text-fill-color: var(--text) !important;
+  caret-color: var(--text);
+  transition: background-color 9999s ease-in-out;
+}
 .app .el-select__wrapper { background: var(--field); box-shadow: 0 0 0 1px var(--border) inset; border-radius: 10px; color: var(--text); }
+
+.app .el-dialog {
+  background: var(--glass-2);
+  backdrop-filter: blur(22px) saturate(150%);
+  -webkit-backdrop-filter: blur(22px) saturate(150%);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+}
+.app .el-dialog__title { color: var(--text); }
+.app .el-form-item__label { color: var(--muted); }
+
+/* 下拉弹层 teleport 到 body（在 .app 之外），按 html.light 切主题 */
+.el-dropdown__popper.el-popper {
+  --el-bg-color-overlay: rgba(16, 24, 38, 0.92);
+  --el-border-color-light: rgba(255, 255, 255, 0.1);
+  --el-border-color-lighter: rgba(255, 255, 255, 0.1);
+  --el-text-color-regular: #eaf1fb;
+  --el-dropdown-menuItem-hover-fill: rgba(78, 161, 255, 0.18);
+  --el-dropdown-menuItem-hover-color: #4ea1ff;
+}
+html.light .el-dropdown__popper.el-popper {
+  --el-bg-color-overlay: rgba(255, 255, 255, 0.96);
+  --el-border-color-light: rgba(15, 30, 60, 0.09);
+  --el-border-color-lighter: rgba(15, 30, 60, 0.09);
+  --el-text-color-regular: #14233a;
+  --el-dropdown-menuItem-hover-fill: rgba(31, 139, 255, 0.14);
+  --el-dropdown-menuItem-hover-color: #1f8bff;
+}
 
 .layer-legend {
   position: absolute;

@@ -50,11 +50,11 @@ function seek(e) {
   top: 50%;
   height: 4px;
   transform: translateY(-50%);
-  background: rgba(255, 255, 255, 0.12);
+  background: color-mix(in srgb, var(--muted) 32%, transparent);
   border-radius: 2px;
   pointer-events: none;
 }
-.track:hover::before { background: rgba(255, 255, 255, 0.18); }
+.track:hover::before { background: color-mix(in srgb, var(--muted) 48%, transparent); }
 
 .fill {
   position: absolute;

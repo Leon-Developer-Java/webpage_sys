@@ -335,10 +335,27 @@ function formatBeijingDate(date) {
 
 .meta-list {
   display: grid;
-  grid-template-columns: 74px 1fr;
-  gap: 7px 8px;
+  grid-template-columns: 1fr;
+  gap: 0;
   margin: 0;
   font-size: 12px;
+}
+
+.meta-list dt {
+  font-size: 11px;
+  letter-spacing: 0.3px;
+}
+
+.meta-list dd {
+  padding: 3px 0 8px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 8px;
+}
+
+.meta-list dd:last-child {
+  border-bottom: 0;
+  margin-bottom: 0;
+  padding-bottom: 0;
 }
 
 dt {

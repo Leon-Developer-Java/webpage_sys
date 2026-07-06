@@ -78,7 +78,7 @@
     <div class="center">
       <div class="maps" :style="mapsGrid">
         <div :class="['cell', { 'cell-4': layout === '4' }]" v-for="(p, i) in panes" :key="layout + '-' + i">
-          <span class="cell-tag">{{ p.btn }}</span>
+          <span class="cell-tag">{{ paneLabels[i] || p.btn }}</span>
           <ProjMap
             :grid="showGrid"
             :dark="mapDark"
@@ -89,13 +89,14 @@
             @view-change="v => onViewChange(i, v)"
           >
             <component
-              :key="`${layout}-${i}-${p.key}-${active}`"
+              :key="`${layout}-${i}-${p.key}-${p.variantIndex}`"
               :is="p.comp"
               :parsed="layerParsed(p.key)"
               :time-index="layerTimeIndex"
+              :variant-index="p.variantIndex"
               v-bind="layerProps(p.key)"
-              @display-loaded="payload => onLayerDisplayLoaded(p.key, payload)"
-              @variable-change="payload => onLayerVariableChange(p.key, payload)"
+              @display-loaded="payload => onLayerDisplayLoaded(i, p.key, payload)"
+              @variable-change="payload => onLayerVariableChange(i, p.key, payload)"
             />
           </ProjMap>
         </div>
@@ -228,6 +229,7 @@ const showVector = ref(false);
 const mapDark = ref(dark.value);
 const emitterIdx = ref(-1);
 const switching = ref(false);
+const paneLabels = ref({});
 const latestView = {};
 let animTimer = null;
 let lastTs = null;
@@ -254,39 +256,57 @@ watch(linked, v => {
   }
 });
 
-function onLayerDisplayLoaded(key, payload) {
-  if (!payload) return;
-  if (key === active.value && switching.value) {
-    switching.value = false;
-    clearTimeout(switchingTimer);
-  }
-  if (key === "himawari") {
-    updateHimawariTimeline(payload);
-  }
-  layerDisplays.value = { ...layerDisplays.value, [key]: payload };
+function extractLabel(payload) {
+  return payload?.product?.label || payload?.meta?.weather_info?.element || payload?.meta?.element || payload?.element || payload?.variable || payload?.meta?.variable || "";
 }
 
-function onLayerVariableChange(key, payload) {
+function updatePaneLabel(paneIndex, key, payload) {
+  const label = extractLabel(payload);
+  if (label) {
+    const src = sources.find(s => s.key === key);
+    paneLabels.value = { ...paneLabels.value, [paneIndex]: `${src?.btn || key} · ${label}` };
+  }
+}
+
+function onLayerDisplayLoaded(paneIndex, key, payload) {
   if (!payload) return;
-  layerDisplays.value = {
-    ...layerDisplays.value,
-    [key]: {
-      ...(layerDisplays.value[key] || {}),
-      meta: {
-        ...(layerDisplays.value[key]?.meta || {}),
+  updatePaneLabel(paneIndex, key, payload);
+  if (paneIndex === 0) {
+    if (key === active.value && switching.value) {
+      switching.value = false;
+      clearTimeout(switchingTimer);
+    }
+    if (key === "himawari") {
+      updateHimawariTimeline(payload);
+    }
+    layerDisplays.value = { ...layerDisplays.value, [key]: payload };
+  }
+}
+
+function onLayerVariableChange(paneIndex, key, payload) {
+  if (!payload) return;
+  updatePaneLabel(paneIndex, key, payload);
+  if (paneIndex === 0) {
+    layerDisplays.value = {
+      ...layerDisplays.value,
+      [key]: {
+        ...(layerDisplays.value[key] || {}),
+        meta: {
+          ...(layerDisplays.value[key]?.meta || {}),
+          weather_info: payload,
+          ...payload,
+        },
         weather_info: payload,
-        ...payload,
+        times: payload.times || layerDisplays.value[key]?.times,
+        forecast_hours: payload.forecast_hours || layerDisplays.value[key]?.forecast_hours,
+        forecast_labels: payload.forecast_labels || layerDisplays.value[key]?.forecast_labels,
+        valid_hours: payload.valid_hours || payload.validHours || payload.valid_time_hours || layerDisplays.value[key]?.valid_hours,
+        valid_time_hours: payload.valid_time_hours || payload.validTimeHours || payload.valid_hours || layerDisplays.value[key]?.valid_time_hours,
+        axis_times: payload.axis_times || layerDisplays.value[key]?.axis_times,
+        png_urls: payload.png_urls || layerDisplays.value[key]?.png_urls,
       },
-      weather_info: payload,
-      times: payload.times || layerDisplays.value[key]?.times,
-      forecast_hours: payload.forecast_hours || layerDisplays.value[key]?.forecast_hours,
-      forecast_labels: payload.forecast_labels || layerDisplays.value[key]?.forecast_labels,
-      valid_hours: payload.valid_hours || payload.validHours || payload.valid_time_hours || layerDisplays.value[key]?.valid_hours,
-      valid_time_hours: payload.valid_time_hours || payload.validTimeHours || payload.valid_hours || layerDisplays.value[key]?.valid_time_hours,
-      axis_times: payload.axis_times || layerDisplays.value[key]?.axis_times,
-      png_urls: payload.png_urls || layerDisplays.value[key]?.png_urls,
-    },
-  };
+    };
+  }
 }
 
 function firstArray(...items) {
@@ -1002,15 +1022,11 @@ function formatBeijingTime(date) {
 }
 
 const panes = computed(() => {
-  if (layout.value === "1") return sources.filter(s => s.key === active.value);
-
-  if (layout.value === "2") {
-    const idx = sources.findIndex(s => s.key === active.value);
-    return [sources[idx], sources[(idx + 1) % sources.length]];
-  }
-
-  const idx = sources.findIndex(s => s.key === active.value);
-  return Array.from({ length: 4 }, (_, i) => sources[(idx + i) % sources.length]);
+  const src = sources.find(s => s.key === active.value);
+  if (!src) return [];
+  if (layout.value === "1") return [{ ...src, variantIndex: 0 }];
+  const count = layout.value === "2" ? 2 : 4;
+  return Array.from({ length: count }, (_, i) => ({ ...src, variantIndex: i }));
 });
 
 const mapsGrid = computed(() => {
@@ -1029,6 +1045,7 @@ function toggleVector() {
 function cycleLayout() {
   layout.value = layout.value === "1" ? "2" : layout.value === "2" ? "4" : "1";
   if (layout.value === "1") linked.value = false;
+  paneLabels.value = {};
 }
 
 function openTool(name) {
@@ -1048,6 +1065,7 @@ function selectSource(key) {
   parsed.value = null;
   parsedLayerKey.value = null;
   parseProcessing.value = null;
+  paneLabels.value = {};
 }
 
 function pickFile(i) {
@@ -1170,7 +1188,7 @@ watch(active, () => {
 .center { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
 .maps { flex: 1; min-height: 0; display: grid; gap: 10px; }
 .cell { position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; }
-.cell-tag { position: absolute; top: 8px; left: 8px; z-index: 6; padding: 3px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--glass); backdrop-filter: blur(10px); color: var(--text); font-size: 11px; font-weight: 600; letter-spacing: 0.3px; pointer-events: none; }
+.cell-tag { position: absolute; top: 8px; right: 8px; z-index: 6; padding: 3px 9px; border: 1px solid rgba(255, 255, 255, 0.16); border-radius: 7px; background: rgba(16, 24, 38, 0.68); backdrop-filter: blur(10px); color: #eaf1fb; font-size: 11px; font-weight: 600; letter-spacing: 0.3px; pointer-events: none; }
 .cell :deep(.projmap) { position: absolute; inset: 0; }
 
 .timebar { flex-shrink: 0; padding: 6px 14px 8px; overflow: hidden; }

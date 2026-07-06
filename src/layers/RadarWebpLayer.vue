@@ -29,6 +29,7 @@ const props = defineProps({
   file: String,
   parsed: { type: Object, default: null },
   timeIndex: { type: Number, default: 0 },
+  variantIndex: { type: Number, default: 0 },
 });
 const emit = defineEmits(["display-loaded", "variable-change"]);
 
@@ -84,6 +85,7 @@ function clampedTimeIndex() {
   return Math.min(Math.max(Number(props.timeIndex) || 0, 0), frames.value.length - 1);
 }
 
+let variantApplied = false;
 function syncSelection() {
   if (!products.value.length) {
     selectedProductKey.value = "";
@@ -91,7 +93,12 @@ function syncSelection() {
     return;
   }
   if (!products.value.some((item) => item.key === selectedProductKey.value)) {
-    selectedProductKey.value = products.value[0].key;
+    if (!variantApplied && props.variantIndex > 0 && products.value.length > 1) {
+      selectedProductKey.value = products.value[props.variantIndex % products.value.length].key;
+      variantApplied = true;
+    } else {
+      selectedProductKey.value = products.value[0].key;
+    }
   }
   const levels = currentLevels.value;
   if (levels.length && !levels.some((item) => item.key === selectedLevelKey.value)) {

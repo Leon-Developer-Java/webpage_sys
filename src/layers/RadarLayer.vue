@@ -30,6 +30,7 @@
 import { computed, inject, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import WebglLayer from "../components/WebglLayer.vue";
 import LayerCard from "../components/LayerCard.vue";
+import { authedFetch } from "../api";
 
 const props = defineProps({
   src: String,
@@ -306,7 +307,7 @@ async function loadGrid() {
   gridLoading.value = true;
   gridError.value = "";
   try {
-    const response = await fetch(url);
+    const response = await authedFetch(url);
     if (!response.ok) {
       const detail = await response.text();
       throw new Error(detail || "雷达数值矩阵读取失败");
@@ -331,7 +332,7 @@ async function loadGrid() {
 
 async function loadRadarDisplay() {
   try {
-    const response = await fetch(`${API_BASE}/api/display/RADAR`);
+    const response = await authedFetch(`${API_BASE}/api/display/RADAR`);
     const payload = await response.json();
     if (!response.ok || payload.code !== 0) {
       throw new Error(payload.detail || payload.message || "雷达图层数据读取失败");

@@ -23,6 +23,7 @@
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import LayerCard from "../components/LayerCard.vue";
 import WebglLayer from "../components/WebglLayer.vue";
+import { authedFetch } from "../api";
 
 const props = defineProps({
   src: String,
@@ -31,6 +32,7 @@ const props = defineProps({
   file: String,
   parsed: { type: Object, default: null },
   timeIndex: { type: Number, default: 0 },
+  variantIndex: { type: Number, default: 0 },
 });
 const emit = defineEmits(["display-loaded", "variable-change"]);
 
@@ -670,7 +672,7 @@ async function loadBinaryFrame() {
   const token = ++loadToken;
   const index = frameIndex.value;
   const url = toPublicUrl(layer.grid_urls[index] || layer.grid_urls[0]);
-  const response = await fetch(url);
+  const response = await authedFetch(url);
   if (!response.ok) throw new Error(`ERA5 binary grid load failed: ${response.status}`);
   const bufferData = await response.arrayBuffer();
   if (token !== loadToken) return;
@@ -719,14 +721,19 @@ async function loadDisplay(variableName = selectedVariable.value) {
     const params = new URLSearchParams();
     if (variableName) params.set("variable", variableName);
     const query = params.toString();
-    const response = await fetch(`${API_BASE}/api/display/ERA5${query ? `?${query}` : ""}`);
+    const response = await authedFetch(`${API_BASE}/api/display/ERA5${query ? `?${query}` : ""}`);
     const payload = await response.json();
     if (!response.ok || payload.code !== 0) {
       throw new Error(payload.detail || payload.message || "ERA5 data load failed");
     }
     display.value = normalizeDisplay(payload.data);
     variables.value = display.value.variables || [];
-    const nextVariable = variableName || display.value.default_variable || meta.value?.default_variable || variables.value[0]?.name || "";
+    let nextVariable = variableName || display.value.default_variable || meta.value?.default_variable || variables.value[0]?.name || "";
+    if (!variableName && props.variantIndex > 0 && variables.value.length > 1) {
+      const defIdx = variables.value.findIndex(v => v.name === nextVariable);
+      const offset = (defIdx >= 0 ? defIdx : 0) + props.variantIndex;
+      nextVariable = variables.value[offset % variables.value.length]?.name || nextVariable;
+    }
     syncSelectedVariable(nextVariable);
     await nextTick();
     await loadFrame();

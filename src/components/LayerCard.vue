@@ -55,23 +55,24 @@ const controls = inject("mapControls", null);
 /* 定位容器：负责贴左、下移、滑入滑出动画；把手可以溢出到右侧 */
 .layer-card {
   position: absolute;
-  top: 50%;
-  left: 0;
+  inset: 0;
   z-index: 5;
-  width: min(240px, calc(100% - 10px));
-  max-height: calc(100% - 16px);
-  display: flex;
-  flex-direction: column;
-  transform: translateY(-50%);
-  transition: transform 0.3s cubic-bezier(0.22, 0.61, 0.36, 1);
+  pointer-events: none;
 }
 
 .layer-card.collapsed {
-  transform: translate(-100%, -50%);
 }
 
 /* 卡片主体：玻璃质感 + 左侧直角，内容裁切 */
 .lc-body {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: min(240px, calc(100% - 10px));
+  max-height: calc(100% - 16px);
+  display: block;
+  transform: translateY(-50%);
+  transition: transform 0.3s cubic-bezier(0.22, 0.61, 0.36, 1);
   flex: 1;
   min-height: 0;
   border: 1px solid var(--border);
@@ -85,6 +86,11 @@ const controls = inject("mapControls", null);
   overflow-y: auto;
   overflow-x: hidden;
   scrollbar-width: none;
+  pointer-events: auto;
+}
+
+.layer-card.collapsed .lc-body {
+  transform: translate(-100%, -50%);
 }
 
 .lc-body::-webkit-scrollbar {
@@ -94,7 +100,7 @@ const controls = inject("mapControls", null);
 /* ── 右侧中部把手（突出、强调色） ── */
 .lc-tab {
   position: absolute;
-  left: 100%;
+  left: min(240px, calc(100% - 10px));
   /* 把手居中于卡片：卡片中心又对齐底图中线，所以把手始终在正中且固定 */
   top: 50%;
   transform: translateY(-50%);
@@ -112,7 +118,12 @@ const controls = inject("mapControls", null);
   color: var(--muted);
   cursor: pointer;
   box-shadow: var(--shadow);
-  transition: color 0.15s;
+  transition: color 0.15s, left 0.3s cubic-bezier(0.22, 0.61, 0.36, 1);
+  pointer-events: auto;
+}
+
+.layer-card.collapsed .lc-tab {
+  left: 0;
 }
 
 .lc-tab:hover { color: var(--accent); }
@@ -132,6 +143,9 @@ const controls = inject("mapControls", null);
 }
 
 .lc-badge {
+  position: absolute;
+  top: 8px;
+  right: 9px;
   flex-shrink: 0;
   padding: 1px 6px;
   border-radius: 5px;
@@ -140,6 +154,7 @@ const controls = inject("mapControls", null);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.3px;
+  pointer-events: auto;
 }
 
 .lc-file {

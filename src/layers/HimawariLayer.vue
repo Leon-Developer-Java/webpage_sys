@@ -23,6 +23,7 @@
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import LayerCard from "../components/LayerCard.vue";
 import WebglLayer from "../components/WebglLayer.vue";
+import { authedFetch } from "../api";
 import { buildHimawariVariableInfo, isHimawariRgbProduct, resolveHimawariImageUrl } from "./himawariVariableInfo";
 
 const props = defineProps({
@@ -32,6 +33,7 @@ const props = defineProps({
   extent: { type: Array, default: null },
   refreshKey: { type: Number, default: 0 },
   sceneId: { type: String, default: "" },
+  variantIndex: { type: Number, default: 0 },
 });
 const emit = defineEmits(["display-loaded", "variable-change"]);
 
@@ -128,10 +130,18 @@ function formatBeijingTime(value) {
   return `${year}-${month}-${day} ${hour}:${minute}`;
 }
 
+let variantApplied = false;
 function syncSelection() {
   if (!products.value.length) return;
   if (products.value.some((item) => productName(item) === selectedProductKey.value)) return;
-  selectedProductKey.value = productName(defaultProduct.value);
+  if (!variantApplied && props.variantIndex > 0 && products.value.length > 1) {
+    const defIdx = products.value.findIndex(p => productName(p) === productName(defaultProduct.value));
+    const offset = (defIdx >= 0 ? defIdx : 0) + props.variantIndex;
+    selectedProductKey.value = productName(products.value[offset % products.value.length]);
+    variantApplied = true;
+  } else {
+    selectedProductKey.value = productName(defaultProduct.value);
+  }
 }
 
 function emitSelectedVariableInfo() {
@@ -159,7 +169,7 @@ function flyToData() {
 async function loadHimawariDisplay() {
   try {
     const query = props.sceneId ? `?scene_id=${encodeURIComponent(props.sceneId)}` : "";
-    const response = await fetch(`${API_BASE}/api/display/HIMAWARI${query}`);
+    const response = await authedFetch(`${API_BASE}/api/display/HIMAWARI${query}`);
     const payload = await response.json();
     if (!response.ok || payload.code !== 0) {
       throw new Error(payload.detail || payload.message || "葵花数据读取失败");

@@ -1,13 +1,117 @@
+import { ElMessage } from "element-plus";
+import router from "./router";
+
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8002";
 const UPLOAD_BASE = import.meta.env.VITE_UPLOAD_BASE ?? "http://127.0.0.1:8003";
 const AGENT_BASE = import.meta.env.VITE_AGENT_BASE ?? "http://127.0.0.1:8004";
+const AUTH_BASE = import.meta.env.VITE_AUTH_BASE ?? "http://127.0.0.1:8005";
 const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB
+
+export function getToken() {
+  return localStorage.getItem("token") || "";
+}
+
+export function getUser() {
+  try {
+    return JSON.parse(localStorage.getItem("user") || "null");
+  } catch {
+    return null;
+  }
+}
+
+function saveSession(data) {
+  localStorage.setItem("token", data.token);
+  localStorage.setItem("user", JSON.stringify(data.user));
+}
+
+export function logout() {
+  localStorage.removeItem("token");
+  localStorage.removeItem("user");
+  if (router.currentRoute.value.path !== "/login") router.push("/login");
+}
+
+async function authRequest(path, body, token) {
+  const headers = { "Content-Type": "application/json" };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch(`${AUTH_BASE}${path}`, {
+    method: path.includes("password") ? "PATCH" : "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+  const payload = await res.json();
+  if (!res.ok || payload.code !== 0) {
+    throw new Error(typeof payload.detail === "string" ? payload.detail : payload.message || "请求失败");
+  }
+  return payload.data;
+}
+
+export async function login(username, password) {
+  const data = await authRequest("/api/auth/login", { username, password });
+  saveSession(data);
+  return data.user;
+}
+
+export async function register(form) {
+  await authRequest("/api/auth/register", form);
+  return login(form.username, form.password);
+}
+
+export async function changePassword(oldPassword, newPassword) {
+  return authRequest("/api/auth/me/password", { old_password: oldPassword, new_password: newPassword }, getToken());
+}
+
+function tokenPayload(token) {
+  try {
+    return JSON.parse(atob(token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
+  } catch {
+    return null;
+  }
+}
+
+let refreshPromise = null;
+
+async function ensureFreshToken() {
+  const token = getToken();
+  const payload = token && tokenPayload(token);
+  if (!payload?.iat || !payload?.exp) return;
+  const now = Date.now() / 1000;
+  if (now - payload.iat < (payload.exp - payload.iat) / 2) return;
+  refreshPromise ??= fetch(`${AUTH_BASE}/api/auth/refresh`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  })
+    .then(async res => {
+      const data = await res.json();
+      if (!res.ok || data.code !== 0) throw new Error("refresh 失败");
+      saveSession(data.data);
+    })
+    .catch(() => logout())
+    .finally(() => { refreshPromise = null; });
+  await refreshPromise;
+}
+
+export async function authedFetch(url, options = {}) {
+  await ensureFreshToken();
+  const res = await fetch(url, {
+    ...options,
+    headers: { ...(options.headers || {}), Authorization: `Bearer ${getToken()}` },
+  });
+  if (res.status === 401) logout();
+  if (res.status === 403) ElMessage.warning("权限不足，请联系管理员开通");
+  return res;
+}
+
+export function withToken(url) {
+  const value = String(url || "");
+  if (!value.includes("/data/") && !value.includes("/outputs/")) return value;
+  return `${value}${value.includes("?") ? "&" : "?"}token=${encodeURIComponent(getToken())}`;
+}
 
 // 与智能体后端的 NDJSON 流式对话：逐行解析，产出事件对象
 // 事件类型：{type:"text",value} | {type:"tool",name,status,label,progress,result}
 //          | {type:"image",url,caption} | {type:"done"} | {type:"error",message}
 export async function* chatStream(messages, context) {
-  const res = await fetch(`${AGENT_BASE}/api/agent/chat`, {
+  const res = await authedFetch(`${AGENT_BASE}/api/agent/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ messages, context }),
@@ -36,7 +140,7 @@ export async function uploadFileResumable(file, dataType, onProgress = () => {})
   const total = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
 
   // 1. 查询已传分片，断点续传跳过
-  const statusRes = await fetch(
+  const statusRes = await authedFetch(
     `${UPLOAD_BASE}/api/upload/status?file_id=${encodeURIComponent(fileId)}`
   );
   const { data } = await statusRes.json();
@@ -51,14 +155,14 @@ export async function uploadFileResumable(file, dataType, onProgress = () => {})
       fd.append("chunk_index", i);
       fd.append("total_chunks", total);
       fd.append("chunk", blob);
-      const res = await fetch(`${UPLOAD_BASE}/api/upload/chunk`, { method: "POST", body: fd });
+      const res = await authedFetch(`${UPLOAD_BASE}/api/upload/chunk`, { method: "POST", body: fd });
       if (!res.ok) throw new Error(`分片 ${i} 上传失败`);
     }
     onProgress(((i + 1) / total) * 100);
   }
 
   // 3. 合并落盘
-  const res = await fetch(`${UPLOAD_BASE}/api/upload/complete`, {
+  const res = await authedFetch(`${UPLOAD_BASE}/api/upload/complete`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ file_id: fileId, file_name: file.name, total_chunks: total, data_type: dataType }),
@@ -78,7 +182,7 @@ export async function parseFile(fileOrFiles) {
   } else {
     files.forEach(file => body.append("files", file));
   }
-  const response = await fetch(`${API_BASE}/api/files/parse`, { method: "POST", body });
+  const response = await authedFetch(`${API_BASE}/api/files/parse`, { method: "POST", body });
   const payload = await response.json();
   if (!response.ok || payload.code !== 0) {
     throw new Error(payload.detail || payload.message || "解析失败");
@@ -87,7 +191,7 @@ export async function parseFile(fileOrFiles) {
 }
 
 export async function getHimawariAutoStatus() {
-  const response = await fetch(`${API_BASE}/api/himawari/auto-status`);
+  const response = await authedFetch(`${API_BASE}/api/himawari/auto-status`);
   const payload = await response.json();
   if (!response.ok || payload.code !== 0) {
     throw new Error(payload.detail || payload.message || "Himawari 自动处理状态读取失败");

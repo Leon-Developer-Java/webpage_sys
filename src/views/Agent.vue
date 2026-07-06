@@ -56,9 +56,9 @@
             <ToolCallCard v-for="tc in (m.toolCalls ?? [])" :key="tc.name" :tc="tc" />
             <a
               v-for="(im, i) in (m.images ?? [])" :key="i"
-              :href="im.url" target="_blank" class="msg-img-link"
+              :href="withToken(im.url)" target="_blank" class="msg-img-link"
             >
-              <img :src="im.url" :alt="im.caption || '生成图像'" class="msg-img" />
+              <img :src="withToken(im.url)" :alt="im.caption || '生成图像'" class="msg-img" />
               <span v-if="im.caption" class="msg-img-cap">{{ im.caption }}</span>
             </a>
             <div v-if="m.paramPrompt" class="pc">
@@ -127,7 +127,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { ArrowRight, Plus } from "@element-plus/icons-vue";
-import { chatStream } from "../api.js";
+import { chatStream, withToken } from "../api.js";
 import { renderMarkdown } from "../markdown.js";
 import ToolCallCard from "../components/ToolCallCard.vue";
 import WorkbenchPanel from "../components/WorkbenchPanel.vue";

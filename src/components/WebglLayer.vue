@@ -4,6 +4,7 @@
 
 <script setup>
 import { inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { withToken } from "../api";
 
 const props = defineProps({
   src: String,
@@ -144,7 +145,7 @@ function loadImageTexture(currentVersion) {
     draw();
   };
   image.onerror = () => { if (currentVersion === textureVersion) { hasTex = false; draw(); } };
-  image.src = props.src;
+  image.src = withToken(props.src);
 }
 
 function loadGridTexture(currentVersion) {

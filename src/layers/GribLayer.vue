@@ -99,6 +99,7 @@
 <script setup>
 import { computed, inject, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import LayerCard from "../components/LayerCard.vue";
+import { authedFetch } from "../api";
 
 const props = defineProps({
   src: String,
@@ -106,23 +107,19 @@ const props = defineProps({
   label: { type: String, default: "" },
   dataType: { type: String, default: "GFS" },
   file: String,
-
-  // Overview.vue 传入的当前解析结果
   parsed: {
     type: Object,
     default: null,
   },
-
-  // Overview.vue 底部时间轴传入的时次索引
   timeIndex: {
     type: Number,
     default: 0,
   },
-
   alpha: {
     type: Number,
     default: 1,
   },
+  variantIndex: { type: Number, default: 0 },
 });
 
 const emit = defineEmits(["variable-change", "display-loaded"]);
@@ -735,6 +732,7 @@ function defaultBusinessAxisTimes() {
   return Array.from({ length: 24 }, (_, i) => `${String(i).padStart(2, "0")}时`);
 }
 
+let variantApplied = false;
 function syncSelection() {
   if (!variableOptions.value.length) return;
 
@@ -743,7 +741,12 @@ function syncSelection() {
   }
 
   if (!filteredVariableOptions.value.some(item => item.key === selectedVariableKey.value)) {
-    selectedVariableKey.value = filteredVariableOptions.value[0]?.key || variableOptions.value[0].key;
+    if (!variantApplied && props.variantIndex > 0 && filteredVariableOptions.value.length > 1) {
+      selectedVariableKey.value = filteredVariableOptions.value[props.variantIndex % filteredVariableOptions.value.length]?.key || filteredVariableOptions.value[0]?.key;
+      variantApplied = true;
+    } else {
+      selectedVariableKey.value = filteredVariableOptions.value[0]?.key || variableOptions.value[0].key;
+    }
   }
 
   if (!levelOptions.value.some(item => item.key === selectedLevelKey.value)) {
@@ -778,7 +781,7 @@ async function loadGfsDisplay() {
   loading.value = true;
 
   try {
-    const response = await fetch(`${API_BASE}/api/display/${sourceName.value}?t=${Date.now()}`, {
+    const response = await authedFetch(`${API_BASE}/api/display/GFS?t=${Date.now()}`, {
       method: "GET",
       cache: "no-store",
     });
@@ -815,7 +818,7 @@ async function loadGrid() {
   gridError.value = "";
 
   try {
-    const response = await fetch(url, { cache: "no-store" });
+    const response = await authedFetch(url, { cache: "no-store" });
 
     if (!response.ok) {
       const detail = await response.text();

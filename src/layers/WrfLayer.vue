@@ -30,6 +30,7 @@
 import { computed, inject, onMounted, ref, watch } from "vue";
 import WebglLayer from "../components/WebglLayer.vue";
 import LayerCard from "../components/LayerCard.vue";
+import { authedFetch } from "../api";
 
 const props = defineProps({
   timeIndex: { type: Number, default: 12 },
@@ -37,7 +38,10 @@ const props = defineProps({
   parsed: { type: Object, default: null },
   parsedMeta: { type: Object, default: null },
   label: { type: String, default: "WRF" },
+  variantIndex: { type: Number, default: 0 },
 });
+
+const emit = defineEmits(["display-loaded", "variable-change"]);
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8002";
 const display = ref(null);
@@ -46,6 +50,7 @@ function toPublicUrl(path) {
   if (!path) return "";
   if (/^https?:\/\//i.test(path) || path.startsWith("data:")) return path;
   const normalized = String(path).replaceAll("\\", "/");
+  if (normalized.startsWith("data/")) return `${API_BASE}/${normalized}`;
   const idx = normalized.indexOf("/data/");
   return idx >= 0 ? `${API_BASE}${normalized.slice(idx)}` : "";
 }
@@ -242,7 +247,7 @@ const time = computed(() => {
 const imageUrl = computed(() => {
   const parsedUrl = parsedWebpUrl(variable.value);
   if (parsedUrl) return parsedUrl;
-  return toPublicUrl(display.value?.png);
+  return toPublicUrl(display.value?.webp || display.value?.png);
 });
 const layerKey = computed(() => `${imageUrl.value}|${extent.value.join(",")}`);
 
@@ -322,6 +327,69 @@ function formatTime(value) {
   return value.replace("_", " ").replaceAll("_", ":");
 }
 
+// 和 CMA 一致：把当前选中产品的信息上报给右侧气象信息栏，实现联动。
+function buildPanelInfo() {
+  const meta = wrfMeta.value || {};
+  const weather = meta.weather_info || {};
+  const current = currentVariable.value || {};
+  const metaVar = (Array.isArray(meta.variables) ? meta.variables : [])
+    .find((item) => item.name === variable.value) || {};
+  const varInfo = (Array.isArray(meta.variable_information) ? meta.variable_information : [])
+    .find((item) => item.name === variable.value) || {};
+  const fmt = (value) => (Number.isFinite(Number(value)) ? Number(Number(value).toFixed(2)) : "");
+
+  return {
+    file: String(meta.source_file || "").split("/").pop() || "",
+    element: current.name || weather.element || "",
+    element_description: varInfo.chinese_description || current.desc || "",
+    time: formatTime(time.value),
+    level: weather.level || "",
+    range: weather.range || "",
+    resolution: weather.resolution || "",
+    grid: weather.grid || "",
+    unit: metaVar.units || current.unit || weather.unit || "",
+    missing: weather.missing || "",
+    status: weather.status || "",
+    product: weather.product || "",
+    coverage: currentDomain.value?.label || weather.coverage || "",
+    variable_count: String(variableOptions.value.length || weather.variables || ""),
+    min: fmt(metaVar.min),
+    mean: fmt(metaVar.mean),
+    max: fmt(metaVar.max),
+  };
+}
+
+function emitPanelInfo() {
+  if (!wrfMeta.value) return;
+  const info = buildPanelInfo();
+  const extraRows = [
+    ["product", "数据产品", info.product],
+    ["coverage", "区域", info.coverage],
+    ["resolution", "空间分辨率", info.resolution],
+    ["variableCount", "可选要素数", info.variable_count],
+    ["min", "最小值", info.min],
+    ["mean", "平均值", info.mean],
+    ["max", "最大值", info.max],
+  ];
+  const metaOut = {
+    ...wrfMeta.value,
+    file: info.file,
+    element: info.element,
+    time: info.time,
+    weather_info: { ...info },
+    extraRows,
+  };
+  emit("variable-change", { ...info, extraRows });
+  emit("display-loaded", {
+    meta: metaOut,
+    weather_info: { ...info },
+    variables: wrfMeta.value?.variables || [],
+    times: wrfMeta.value?.times || [],
+    file: info.file,
+    variable: variable.value,
+  });
+}
+
 let zoomedKey = "";
 function zoomToDomain() {
   // 和 CMA 一致：等数据(wrfMeta)就绪后再飞，避免空数据时复位到默认范围。
@@ -342,12 +410,22 @@ watch(
   wrfMeta,
   (meta) => {
     const firstVar = preferredVariable(meta);
-    if (firstVar) variable.value = firstVar;
+    if (firstVar) {
+      if (props.variantIndex > 0) {
+        const opts = variableOptions.value;
+        const baseIdx = opts.findIndex(v => v.value === firstVar);
+        const offset = (baseIdx >= 0 ? baseIdx : 0) + props.variantIndex;
+        variable.value = opts[offset % opts.length]?.value || firstVar;
+      } else {
+        variable.value = firstVar;
+      }
+    }
     selectedDate.value = availableDates.value[0] ?? defaultDates[0];
   },
   { immediate: true },
 );
 watch(() => [wrfMeta.value, extent.value], zoomToDomain, { immediate: true });
+watch(() => [wrfMeta.value, variable.value, domain.value, time.value], emitPanelInfo, { immediate: true });
 
 onMounted(() => {
   loadWrfDisplay();

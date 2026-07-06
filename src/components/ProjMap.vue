@@ -7,6 +7,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, provide, ref, watch } from "vue";
+import { withToken } from "../api";
 
 const props = defineProps({
   projection: { type: String, default: "等经纬" },
@@ -321,7 +322,7 @@ function flyTo(ext) {
 }
 
 function zoomBy(factor) {
-  scale = Math.min(20, Math.max(0.02, scale * factor));
+  scale = Math.min(20, Math.max(0.002, scale * factor));
   render();
   if (computedTileUrl.value) scheduleMosaic();
 }
@@ -378,7 +379,7 @@ function loadDataTexture(url, token) {
     hasData = false;
     render();
   };
-  img.src = url;
+  img.src = withToken(url);
 }
 
 function visibleBox() {
@@ -563,7 +564,7 @@ function onMove(e) {
 function onUp() { if (dragging && computedTileUrl.value) scheduleMosaic(); dragging = false; }
 function onWheel(e) {
   e.preventDefault();
-  scale = Math.min(20, Math.max(0.02, scale * Math.exp(e.deltaY * 0.001)));
+  scale = Math.min(20, Math.max(0.002, scale * Math.exp(e.deltaY * 0.001)));
   render(); emitView();
   if (computedTileUrl.value) scheduleMosaic();
 }
