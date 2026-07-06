@@ -238,8 +238,9 @@ function formatScene(value) {
 }
 
 function formatPanelValue(key, value) {
-  if (key !== "time" || !props.himawariStatus) return value;
-  return formatBeijingTime(value) || value;
+  if (key !== "time") return value;
+  const text = (props.himawariStatus && formatBeijingTime(value)) || String(value || "");
+  return text.replace(/^(\d{4}[-/]\d{1,2}[-/]\d{1,2})[\sT]+/, "$1\n");
 }
 
 function formatBeijingTime(value) {

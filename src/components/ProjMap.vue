@@ -23,7 +23,7 @@ const emit = defineEmits(["view-change"]);
 const PROJ = { "等经纬": 0, "墨卡托": 1, "正弦": 2, "罗宾逊": 3, "兰博托": 4, "卫星正视": 5, "北极": 6, "南极": 7 };
 const D2R = Math.PI / 180;
 const HALF_PI = Math.PI / 2;
-const LON0 = 105 * D2R;
+const LON0 = 180 * D2R;
 const ORTHO_LAT0 = 20 * D2R;
 
 const f1 = 25 * D2R, f2 = 47 * D2R;
@@ -157,13 +157,13 @@ void main(){
       bu = (mx - uBaseBox.x) / (uBaseBox.z - uBaseBox.x);
       bv = clamp((my - uBaseBox.y) / (uBaseBox.w - uBaseBox.y), 0.0, 1.0);
     } else {
-      bu = (lon - uBaseBox.x) / (uBaseBox.z - uBaseBox.x);
+      bu = mod(lon - uBaseBox.x + 2.0*PI, 2.0*PI) / (uBaseBox.z - uBaseBox.x);
       bv = (uBaseBox.w - lat) / (uBaseBox.w - uBaseBox.y);
     }
     if(bu >= 0.0 && bu <= 1.0 && bv >= 0.0 && bv <= 1.0) col = texture(uBase, vec2(bu, bv)).rgb;
   }
   if(uHasData == 1){
-    float u = (lon - uDataBox.x) / (uDataBox.z - uDataBox.x);
+    float u = mod(lon - uDataBox.x + 2.0*PI, 2.0*PI) / (uDataBox.z - uDataBox.x);
     float v = (uDataBox.w - lat) / (uDataBox.w - uDataBox.y);
     if(u >= 0.0 && u <= 1.0 && v >= 0.0 && v <= 1.0){
       vec4 d = texture(uData, vec2(u, v));
