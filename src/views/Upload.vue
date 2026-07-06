@@ -236,30 +236,200 @@ function now() {
   return new Date().toLocaleTimeString();
 }
 
+
+function unwrapPayload(payload) {
+  if (!payload) return {};
+  return payload.data || payload.result || payload;
+}
+
+function pickFirstArray(...items) {
+  for (const item of items) {
+    if (Array.isArray(item) && item.length) return item;
+  }
+  return [];
+}
+
+function pickFirstObject(...items) {
+  for (const item of items) {
+    if (item && typeof item === "object" && !Array.isArray(item) && Object.keys(item).length) return item;
+  }
+  return {};
+}
+
+function compactText(value, fallback = "—") {
+  if (value === null || value === undefined || value === "") return fallback;
+  return String(value);
+}
+
+function formatValue(value, unit = "") {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) {
+    return "—";
+  }
+
+  const n = Number(value);
+  const txt = Math.abs(n) >= 10 ? n.toFixed(2) : n.toFixed(3);
+  return unit ? `${txt} ${unit}` : txt;
+}
+
+function extractVariableOptions(result) {
+  const r = unwrapPayload(result);
+  const info = r.weather_info || {};
+  const meta = r.meta || {};
+  const extra = r.extra || {};
+  const metaJson = r.meta_json || {};
+
+  return pickFirstArray(
+    r.variable_options,
+    info.variable_options,
+    meta.variable_options,
+    extra.variable_options,
+    metaJson.variable_options,
+    metaJson.weather_info?.variable_options,
+    metaJson.meta?.variable_options
+  );
+}
+
+function extractVariableLayers(result) {
+  const r = unwrapPayload(result);
+  const info = r.weather_info || {};
+  const meta = r.meta || {};
+  const extra = r.extra || {};
+  const metaJson = r.meta_json || {};
+
+  return pickFirstObject(
+    r.variable_layers,
+    info.variable_layers,
+    meta.variable_layers,
+    extra.variable_layers,
+    metaJson.variable_layers,
+    metaJson.weather_info?.variable_layers,
+    metaJson.meta?.variable_layers
+  );
+}
+
+function buildAllVariableText(result) {
+  const options = extractVariableOptions(result);
+
+  if (options.length) {
+    return options
+      .map(v => v.label || v.element || v.key)
+      .filter(Boolean)
+      .join("、");
+  }
+
+  const r = unwrapPayload(result);
+  const info = r.weather_info || {};
+  const meta = r.meta || {};
+
+  return meta.vars || info.variables || "—";
+}
+
 function buildMetaFromParsed(parsed, fallbackFile) {
-  const result = parsed || {};
-  const adapterResult = result.meta || {};
-  const panelMeta = adapterResult.meta || {};
-  const info = result.weather_info || adapterResult.weather_info || {};
+  const result = unwrapPayload(parsed);
+  const panelMeta = result.meta || {};
+  const info = result.weather_info || {};
+  const extra = result.extra || {};
+  const variableOptions = extractVariableOptions(result);
+  const variableLayers = extractVariableLayers(result);
+
+  const defaultVariable =
+    result.default_variable ||
+    info.default_variable ||
+    panelMeta.default_variable ||
+    extra.default_variable ||
+    variableOptions[0]?.key ||
+    Object.keys(variableLayers)[0];
+
+  const defaultLayer =
+    (defaultVariable && variableLayers?.[defaultVariable]) ||
+    Object.values(variableLayers || {})[0] ||
+    {};
+
+  const currentElement =
+    defaultLayer.element ||
+    panelMeta.element ||
+    info.element ||
+    "—";
+
+  const allVars = buildAllVariableText(result);
+  const displayElement =
+    allVars && allVars !== "—" && allVars !== currentElement
+      ? `${currentElement}；全部要素：${allVars}`
+      : currentElement;
+
+  const unit =
+    defaultLayer.unit ||
+    defaultLayer.displayUnit ||
+    panelMeta.unit ||
+    info.unit ||
+    "—";
+
+  const stepStats = Array.isArray(defaultLayer.step_stats) ? defaultLayer.step_stats : [];
+  const firstStepStat = stepStats[0] || {};
+  const maxVal = firstStepStat.max ?? defaultLayer.max ?? panelMeta.max ?? info.max;
+  const minVal = firstStepStat.min ?? defaultLayer.min ?? panelMeta.min ?? info.min;
+  const meanVal = firstStepStat.mean ?? defaultLayer.mean ?? panelMeta.mean ?? info.mean;
+
+  const gridObj = defaultLayer.grid || info.gridShape || panelMeta.gridShape || {};
+  const gridText =
+    defaultLayer.gridText ||
+    gridObj.text ||
+    panelMeta.grid ||
+    info.grid ||
+    (gridObj.ny && gridObj.nx ? `${gridObj.ny} × ${gridObj.nx}` : "—");
+
+  const missingText =
+    defaultLayer.missingText ||
+    panelMeta.missing ||
+    info.missing ||
+    "—";
 
   return {
     file: result.file_name || panelMeta.file || fallbackFile.name || "—",
-    element: panelMeta.element || info.element || "—",
-    time: panelMeta.time || info.time || "—",
-    level: panelMeta.level || info.level || "—",
-    range: panelMeta.range || info.range || "—",
-    grid: panelMeta.grid || info.grid || "—",
-    missing: panelMeta.missing || info.missing || "—",
-    unit: panelMeta.unit || info.unit || "—",
-    vars: panelMeta.vars || info.variables || "—",
-    steps: panelMeta.steps || info.steps || "—",
-    extent: panelMeta.extent || info.extent || adapterResult.extent || result.extent || "—",
+    element: displayElement,
+    time: defaultLayer.time || panelMeta.time || info.time || "—",
+    level: defaultLayer.level || panelMeta.level || info.level || "—",
+    range: defaultLayer.range || panelMeta.range || info.range || "—",
+    grid: gridText,
+    missing: missingText,
+    unit,
+    vars: allVars,
+    steps: defaultLayer.steps || panelMeta.steps || info.steps || "—",
+    status: panelMeta.status || info.status || result.status || "解析成功",
+    quality: defaultLayer.quality || panelMeta.quality || info.quality || "—",
+    max: maxVal,
+    min: minVal,
+    mean: meanVal,
+    alert: defaultLayer.alert || panelMeta.alert || info.alert || "无",
+    maxText: formatValue(maxVal, unit === "—" ? "" : unit),
+    minText: formatValue(minVal, unit === "—" ? "" : unit),
+    meanText: formatValue(meanVal, unit === "—" ? "" : unit),
+    extent: defaultLayer.extent || panelMeta.extent || info.extent || extra.extent || result.extent || "—",
     png_url:
+      defaultLayer.png_url ||
       result.png_url ||
-      adapterResult.png_url ||
+      extra.png_url ||
       panelMeta.png_url ||
       info.png_url ||
       "—",
+    png_urls:
+      defaultLayer.png_urls ||
+      result.png_urls ||
+      extra.png_urls ||
+      panelMeta.png_urls ||
+      info.png_urls ||
+      [],
+    grid_urls:
+      defaultLayer.grid_urls ||
+      panelMeta.grid_urls ||
+      info.grid_urls ||
+      [],
+    times:
+      defaultLayer.times ||
+      result.times ||
+      panelMeta.times ||
+      info.times ||
+      [],
   };
 }
 
