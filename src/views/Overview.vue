@@ -97,6 +97,7 @@
               v-bind="layerProps(p.key)"
               @display-loaded="payload => onLayerDisplayLoaded(i, p.key, payload)"
               @variable-change="payload => onLayerVariableChange(i, p.key, payload)"
+              @resolution-change="value => onLayerResolutionChange(p.key, value)"
             />
           </ProjMap>
         </div>
@@ -106,15 +107,16 @@
         <div class="tb-head">
           <button class="tc-btn" @click="setTimeIndex(0)"><el-icon><DArrowLeft /></el-icon></button>
           <button class="tc-btn" @click="setTimeIndex(Math.max(0, tIndex - 1))"><el-icon><ArrowLeft /></el-icon></button>
-          <button class="tc-play" @click="playing = !playing"><el-icon><VideoPause v-if="playing" /><VideoPlay v-else /></el-icon></button>
+          <button class="tc-play" @click="togglePlaying"><el-icon><VideoPause v-if="playing" /><VideoPlay v-else /></el-icon></button>
           <button class="tc-btn" @click="setTimeIndex(Math.min(axisTimes.length - 1, tIndex + 1))"><el-icon><ArrowRight /></el-icon></button>
           <button class="tc-btn" @click="setTimeIndex(axisTimes.length - 1)"><el-icon><DArrowRight /></el-icon></button>
           <div class="tc-speed">
             <button v-for="s in [0.5, 1, 2, 4]" :key="s" :class="{ on: speed === s }" @click="speed = s">{{ s }}x</button>
           </div>
+          <span class="tc-time">{{ activeTimeLabel }}</span>
         </div>
         <HimawariTimeAxis
-          v-if="active === 'himawari'"
+          v-if="active === 'himawari' || active === 'cma'"
           :key="timeAxisKey"
           :times="axisTimes"
           :active="animPos"
@@ -221,10 +223,12 @@ const parsed = ref(null);
 const parsedLayerKey = ref(null);
 const parseProcessing = ref(null);
 const layerDisplays = ref({});
+const layerResolutions = ref({ cma: "native" });
 const himawariTimeline = ref([]);
 const playing = ref(false);
 const speed = ref(1);
 const animPos = ref(tIndex.value);
+const cmaPlaybackWaiting = ref(false);
 const linked = ref(false);
 const syncView = ref(null);
 const showVector = ref(false);
@@ -282,6 +286,10 @@ function onLayerDisplayLoaded(paneIndex, key, payload) {
       updateHimawariTimeline(payload);
     }
     layerDisplays.value = { ...layerDisplays.value, [key]: payload };
+    if (key === "cma") {
+      animPos.value = tIndex.value;
+      cmaPlaybackWaiting.value = false;
+    }
   }
 }
 
@@ -311,6 +319,14 @@ function onLayerVariableChange(paneIndex, key, payload) {
   }
 }
 
+function onLayerResolutionChange(key, value) {
+  if (key !== "cma") return;
+  layerResolutions.value = {
+    ...layerResolutions.value,
+    cma: value || "native",
+  };
+}
+
 function firstArray(...items) {
   return items.find((item) => Array.isArray(item) && item.length) || [];
 }
@@ -333,7 +349,9 @@ function collectTimes(source) {
 
 function formatAxisTime(value) {
   const text = String(value || "");
-  if (/^\d{10}$/.test(text)) return `${text.slice(4, 6)}-${text.slice(6, 8)} ${text.slice(8, 10)}时`;
+  if (/^\d{10}$/.test(text)) return `${text.slice(4, 6)}-${text.slice(6, 8)} ${text.slice(8, 10)}:00`;
+  const parsedDate = new Date(text);
+  if (!Number.isNaN(parsedDate.getTime())) return formatBeijingTime(parsedDate);
   const match = text.match(/T(\d{2}):?(\d{2})?/) || text.match(/\s(\d{2}):?(\d{2})?/);
   if (match) return `${match[1]}:${match[2] || "00"}`;
   return text.slice(0, 16) || text;
@@ -369,6 +387,11 @@ const timeAxisKey = computed(() => {
   const first = axisTimes.value[0] || "";
   const last = axisTimes.value[axisTimes.value.length - 1] || "";
   return `${active.value}-${axisTimes.value.length}-${first}-${last}`;
+});
+
+const activeTimeLabel = computed(() => {
+  const index = Math.min(Math.max(Math.round(Number(animPos.value) || 0), 0), axisTimes.value.length - 1);
+  return axisTimes.value[index] || "";
 });
 
 function parseAxisHour(text, index = 0) {
@@ -771,6 +794,17 @@ function setTimeIndex(v) {
   const next = snapTimeIndexForActive(v);
   tIndex.value = next;
   animPos.value = next;
+  cmaPlaybackWaiting.value = false;
+}
+
+function togglePlaying() {
+  if (!playing.value && active.value === "cma" && layerResolutions.value.cma !== "native") {
+    layerResolutions.value = {
+      ...layerResolutions.value,
+      cma: "native",
+    };
+  }
+  playing.value = !playing.value;
 }
 
 function resetTimebar() {
@@ -779,10 +813,23 @@ function resetTimebar() {
   lastTs = null;
   tIndex.value = 0;
   animPos.value = 0;
+  cmaPlaybackWaiting.value = false;
 }
 
 function startAnim() {
   clearInterval(animTimer);
+
+  if (active.value === "cma") {
+    cmaPlaybackWaiting.value = false;
+    animTimer = setInterval(() => {
+      const count = parsedFrameCount.value;
+      if (count <= 1 || cmaPlaybackWaiting.value) return;
+      const next = (Number(tIndex.value) + 1) % count;
+      cmaPlaybackWaiting.value = true;
+      tIndex.value = next;
+    }, Math.max(200, 900 / Math.max(0.1, speed.value)));
+    return;
+  }
 
   if (active.value === "grib" && currentGfsValidAxisIndices().length) {
     animTimer = setInterval(() => {
@@ -810,6 +857,7 @@ watch(playing, v => {
     startAnim();
   } else {
     clearInterval(animTimer);
+    cmaPlaybackWaiting.value = false;
     animPos.value = tIndex.value;
   }
 });
@@ -841,6 +889,7 @@ watch(
 
 onBeforeUnmount(() => {
   clearInterval(animTimer);
+  cmaPlaybackWaiting.value = false;
   clearTimeout(switchingTimer);
 });
 
@@ -944,8 +993,14 @@ const selectedHimawariSceneId = computed(() => {
 });
 
 function layerProps(key) {
-  if (key !== "himawari") return {};
-  return { sceneId: selectedHimawariSceneId.value };
+  if (key === "himawari") return { sceneId: selectedHimawariSceneId.value };
+  if (key === "cma") {
+    return {
+      resolution: layerResolutions.value.cma || "native",
+      playing: playing.value,
+    };
+  }
+  return {};
 }
 
 function updateHimawariTimeline(data) {
@@ -1151,6 +1206,7 @@ async function parse() {
 watch(active, () => {
   const opts = variableOptions.value;
   variable.value = opts[0] || "";
+  cmaPlaybackWaiting.value = false;
   setTimeIndex(tIndex.value);
   if (playing.value) startAnim();
 });
@@ -1220,7 +1276,7 @@ watch(active, () => {
 .tc-speed button { padding: 3px 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--field); color: var(--muted); font: inherit; font-size: 11px; cursor: pointer; transition: 0.15s; }
 .tc-speed button:hover { color: var(--text); }
 .tc-speed button.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
-
+.tc-time { margin-left: auto; min-width: 92px; text-align: right; font-size: 12px; color: var(--muted); white-space: nowrap; }
 .version { margin-top: 18px; padding: 14px; border-radius: 12px; background: var(--field); }
 .version p { display: flex; align-items: center; gap: 7px; margin: 0 0 9px; font-size: 12px; color: var(--muted); }
 .version p:last-child { margin-bottom: 0; }
