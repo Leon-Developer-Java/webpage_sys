@@ -16,6 +16,15 @@
     </template>
     <p v-if="error" class="lc-error">{{ error }}</p>
   </LayerCard>
+  <div v-if="stationMarkers.length" class="radar-stations" aria-hidden="true">
+    <span
+      v-for="station in stationMarkers"
+      :key="station.key"
+      class="radar-station"
+      :style="{ left: `${station.x}px`, top: `${station.y}px` }"
+      :title="station.name"
+    ></span>
+  </div>
 </template>
 
 <script setup>
@@ -34,8 +43,13 @@ const props = defineProps({
 const emit = defineEmits(["display-loaded", "variable-change"]);
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8002";
+const PRELOAD_FRAME_COUNT = 5;
+const CACHE_BEHIND = 1;
+const CACHE_AHEAD = 3;
+const REFRESH_INTERVAL_MS = 30000;
 const surface = inject("mapSurface", null);
 const flyToExtent = inject("flyToExtent", null);
+const mapProjector = inject("mapProjector", null);
 const display = ref(null);
 const error = ref("");
 const selectedProductKey = ref("");
@@ -43,9 +57,18 @@ const selectedLevelKey = ref("");
 let timer = null;
 let zoomedKey = "";
 let requestId = 0;
+const frameCache = new Map();
+const pendingFrames = new Map();
+const imageCache = new Map();
+let wantedFrameIndices = new Set();
 
 const products = computed(() => display.value?.products ?? []);
 const frames = computed(() => Array.isArray(display.value?.frames) ? display.value.frames : []);
+const frameCount = computed(() => {
+  const count = Number(display.value?.frame_count);
+  if (Number.isFinite(count) && count > 0) return Math.floor(count);
+  return frames.value.length;
+});
 const currentFrame = computed(() => display.value?.frame || frames.value[clampedTimeIndex()] || frames.value[0] || null);
 const currentProduct = computed(() => products.value.find((item) => item.key === selectedProductKey.value) ?? products.value[0] ?? null);
 const currentLevels = computed(() => sampleHeightLevels(currentProduct.value?.levels ?? []));
@@ -54,6 +77,37 @@ const weatherInfo = computed(() => currentFrame.value?.weather_info || display.v
 const resolvedFile = computed(() => currentFrame.value?.file || weatherInfo.value.file || props.file || "");
 const imageUrl = computed(() => props.src || currentLevel.value?.webp_url || currentLevel.value?.webp || currentFrame.value?.webp_url || currentFrame.value?.webp || display.value?.webp_url || display.value?.webp || "");
 const imageExtent = computed(() => props.extent || currentLevel.value?.extent || currentProduct.value?.extent || currentFrame.value?.extent || display.value?.extent || display.value?.meta_json?.extent || [73, 15, 135, 55]);
+const stationSource = computed(() => {
+  const meta = display.value?.meta_json || {};
+  const radarExtra = meta.extra?.radar || {};
+  const formatSpecific = meta.format_specific || {};
+  const stations = radarExtra.stations || formatSpecific.stations || weatherInfo.value?.stations || [];
+  return Array.isArray(stations) ? stations : [];
+});
+const stationMarkers = computed(() => {
+  const projectorState = mapProjector?.state?.value;
+  if (projectorState) {
+    projectorState.rev;
+    projectorState.width;
+    projectorState.height;
+  }
+  if (!mapProjector?.project) return [];
+  return stationSource.value
+    .map((station, index) => {
+      const lon = Number(station?.longitude ?? station?.lon ?? station?.x);
+      const lat = Number(station?.latitude ?? station?.lat ?? station?.y);
+      if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null;
+      const point = mapProjector.project(lon, lat);
+      if (!point?.visible) return null;
+      return {
+        key: station?.id || station?.code || station?.name || `${lon},${lat},${index}`,
+        name: station?.name || station?.code || "Radar station",
+        x: Math.round(point.x),
+        y: Math.round(point.y),
+      };
+    })
+    .filter(Boolean);
+});
 const legendTitle = computed(() => {
   return currentProduct.value?.legend?.title || currentProduct.value?.label || weatherInfo.value.unit || "Radar";
 });
@@ -80,9 +134,12 @@ const ticks = computed(() => {
     : ["0", "10", "20", "30", "40", "50", "60", "70"];
 });
 
-function clampedTimeIndex() {
-  if (!frames.value.length) return 0;
-  return Math.min(Math.max(Number(props.timeIndex) || 0, 0), frames.value.length - 1);
+function clampedTimeIndex(index = props.timeIndex) {
+  const numeric = Number(index);
+  const next = Number.isFinite(numeric) ? Math.floor(numeric) : 0;
+  const count = frameCount.value || frames.value.length;
+  if (!count) return Math.max(0, next);
+  return Math.min(Math.max(next, 0), count - 1);
 }
 
 let variantApplied = false;
@@ -271,22 +328,176 @@ function emitDisplayLoaded() {
   emit("display-loaded", payload);
 }
 
-async function loadRadarDisplay() {
-  const currentRequest = ++requestId;
-  try {
+function frameIndexFromPayload(data, fallbackIndex) {
+  const index = Number(data?.frame?.index);
+  if (Number.isFinite(index)) return clampedTimeIndex(index);
+  return clampedTimeIndex(fallbackIndex);
+}
+
+function payloadImageUrl(data) {
+  if (!data) return "";
+  const payloadProducts = Array.isArray(data.products) ? data.products : [];
+  const product = payloadProducts.find((item) => item.key === selectedProductKey.value) ?? payloadProducts[0] ?? null;
+  const levels = sampleHeightLevels(product?.levels ?? []);
+  const level = levels.find((item) => item.key === selectedLevelKey.value) ?? levels[0] ?? null;
+  const frame = data.frame || (Array.isArray(data.frames) ? data.frames[clampedTimeIndex()] : null);
+  return props.src || level?.webp_url || level?.webp || frame?.webp_url || frame?.webp || data.webp_url || data.webp || "";
+}
+
+function cachePayload(index, data) {
+  const item = {
+    data,
+    at: Date.now(),
+  };
+  frameCache.set(index, item);
+  return item;
+}
+
+function preloadImage(url) {
+  const resolved = apiUrl(url);
+  if (!resolved || imageCache.has(resolved)) return Promise.resolve(resolved);
+
+  const image = new Image();
+  image.crossOrigin = "anonymous";
+  image.decoding = "async";
+  const promise = new Promise((resolve, reject) => {
+    image.onload = () => resolve(resolved);
+    image.onerror = () => reject(new Error(`Radar image preload failed: ${resolved}`));
+  });
+  image.src = resolved;
+  imageCache.set(resolved, { image, promise });
+  return promise.catch(() => "");
+}
+
+function releaseImage(url) {
+  const resolved = apiUrl(url);
+  const cached = imageCache.get(resolved);
+  if (!cached) return;
+  cached.image.onload = null;
+  cached.image.onerror = null;
+  cached.image.src = "";
+  imageCache.delete(resolved);
+}
+
+function clearImageCache() {
+  imageCache.forEach(({ image }) => {
+    image.onload = null;
+    image.onerror = null;
+    image.src = "";
+  });
+  imageCache.clear();
+}
+
+function preloadCachedImages() {
+  frameCache.forEach(({ data }) => {
+    preloadImage(payloadImageUrl(data));
+  });
+}
+
+async function fetchRadarFrame(index, options = {}) {
+  const targetIndex = clampedTimeIndex(index);
+  if (!options.force && frameCache.has(targetIndex)) {
+    const cached = frameCache.get(targetIndex);
+    preloadImage(payloadImageUrl(cached.data));
+    return cached.data;
+  }
+  if (!options.force && pendingFrames.has(targetIndex)) {
+    return pendingFrames.get(targetIndex);
+  }
+
+  const request = (async () => {
     const params = new URLSearchParams();
-    params.set("time_index", String(props.timeIndex || 0));
+    params.set("time_index", String(targetIndex));
     const response = await fetch(`${API_BASE}/api/display/RADAR?${params.toString()}`);
     const payload = await response.json();
     if (!response.ok || payload.code !== 0) {
-      throw new Error(payload.detail || payload.message || "雷达图层数据读取失败");
+      throw new Error(payload.detail || payload.message || "Radar display data load failed");
     }
+    const data = payload.data;
+    const actualIndex = frameIndexFromPayload(data, targetIndex);
+    const keepResult = !options.prefetch || !wantedFrameIndices.size || wantedFrameIndices.has(targetIndex) || wantedFrameIndices.has(actualIndex);
+    if (!keepResult) return data;
+    const cached = cachePayload(actualIndex, data);
+    if (actualIndex !== targetIndex) frameCache.set(targetIndex, cached);
+    preloadImage(payloadImageUrl(data));
+    return data;
+  })();
+
+  pendingFrames.set(targetIndex, request);
+  try {
+    return await request;
+  } finally {
+    pendingFrames.delete(targetIndex);
+  }
+}
+
+function frameWindow(centerIndex, initial = false) {
+  const count = frameCount.value;
+  const center = clampedTimeIndex(centerIndex);
+  const start = initial ? 0 : Math.max(0, center - CACHE_BEHIND);
+  const end = initial
+    ? (count ? Math.min(count - 1, PRELOAD_FRAME_COUNT - 1) : PRELOAD_FRAME_COUNT - 1)
+    : (count ? Math.min(count - 1, center + CACHE_AHEAD) : center + CACHE_AHEAD);
+  const indices = [];
+  for (let index = start; index <= end; index += 1) {
+    indices.push(index);
+  }
+  return indices;
+}
+
+function releaseFarFrames(keepIndices) {
+  const keep = new Set(keepIndices);
+  const keepUrls = new Set();
+  const releaseUrls = [];
+
+  frameCache.forEach((entry, index) => {
+    const url = apiUrl(payloadImageUrl(entry.data));
+    if (keep.has(index)) {
+      if (url) keepUrls.add(url);
+      return;
+    }
+    if (url) releaseUrls.push(url);
+    frameCache.delete(index);
+  });
+
+  releaseUrls.forEach((url) => {
+    if (!keepUrls.has(url)) releaseImage(url);
+  });
+}
+
+function preloadFrameWindow(centerIndex, options = {}) {
+  const indices = frameWindow(centerIndex, !!options.initial);
+  wantedFrameIndices = new Set(indices);
+  releaseFarFrames(indices);
+  indices.forEach((index) => {
+    fetchRadarFrame(index, { prefetch: true }).catch((err) => console.warn(err));
+  });
+}
+
+function clearFrameCaches() {
+  wantedFrameIndices = new Set();
+  pendingFrames.clear();
+  frameCache.clear();
+  clearImageCache();
+}
+
+function applyDisplayPayload(data) {
+  display.value = data;
+  error.value = "";
+  syncSelection();
+  applyImageryLayer();
+  preloadImage(imageUrl.value);
+  emitDisplayLoaded();
+}
+
+async function loadRadarDisplay(options = {}) {
+  const currentRequest = ++requestId;
+  const targetIndex = clampedTimeIndex();
+  try {
+    const data = await fetchRadarFrame(targetIndex, { force: !!options.force });
     if (currentRequest !== requestId) return;
-    display.value = payload.data;
-    error.value = "";
-    syncSelection();
-    applyImageryLayer();
-    emitDisplayLoaded();
+    applyDisplayPayload(data);
+    preloadFrameWindow(targetIndex, { initial: !!options.initial });
   } catch (err) {
     if (currentRequest !== requestId) return;
     error.value = "雷达数据未加载";
@@ -296,18 +507,31 @@ async function loadRadarDisplay() {
 }
 
 onMounted(() => {
-  loadRadarDisplay();
-  timer = window.setInterval(loadRadarDisplay, 30000);
+  loadRadarDisplay({ initial: true, force: true });
+  timer = window.setInterval(() => loadRadarDisplay({ force: true }), REFRESH_INTERVAL_MS);
 });
 
 onBeforeUnmount(() => {
   if (timer) window.clearInterval(timer);
+  clearFrameCaches();
   clearImageryLayer();
 });
 
 watch(products, syncSelection);
-watch(selectedProductKey, syncSelection);
-watch(() => props.parsed, () => loadRadarDisplay());
+watch(selectedProductKey, () => {
+  syncSelection();
+  clearImageCache();
+  preloadCachedImages();
+});
+watch(selectedLevelKey, () => {
+  clearImageCache();
+  preloadCachedImages();
+});
+watch(() => props.parsed, () => {
+  zoomedKey = "";
+  clearFrameCaches();
+  loadRadarDisplay({ initial: true, force: true });
+});
 watch(() => props.timeIndex, () => loadRadarDisplay());
 watch(
   () => [selectedProductKey.value, selectedLevelKey.value, imageUrl.value, JSON.stringify(imageExtent.value), display.value?.display_error],
@@ -325,5 +549,23 @@ watch(
   color: #dc2626;
   font-size: 11px;
   line-height: 1.4;
+}
+
+.radar-stations {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+}
+
+.radar-station {
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  transform: translate(-50%, -50%);
+  border: 1px solid rgba(24, 24, 27, 0.82);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 0 0 2px rgba(14, 165, 233, 0.52), 0 1px 4px rgba(15, 23, 42, 0.35);
 }
 </style>
