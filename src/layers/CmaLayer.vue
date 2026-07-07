@@ -6,7 +6,14 @@
         <option v-for="item in variables" :key="item.name" :value="item.name">{{ variableLabel(item) }}</option>
       </select>
     </label>
+    <label class="lc-row">
+      <span>分辨率</span>
+      <select v-model="selectedResolution" :disabled="loading || !resolutionOptions.length" @change="handleResolutionChange">
+        <option v-for="item in resolutionOptions" :key="item.key" :value="item.key">{{ item.label }}</option>
+      </select>
+    </label>
     <p v-if="error" class="lc-error">{{ error }}</p>
+    <p v-else-if="warningText" class="lc-warning">{{ warningText }}</p>
   </LayerCard>
 </template>
 
@@ -22,9 +29,11 @@ const props = defineProps({
   file: String,
   parsed: { type: Object, default: null },
   variantIndex: { type: Number, default: 0 },
+  resolution: { type: String, default: "native" },
+  playing: { type: Boolean, default: false },
 });
 
-const emit = defineEmits(["display-loaded", "variable-change"]);
+const emit = defineEmits(["display-loaded", "variable-change", "resolution-change"]);
 
 const surface = inject("mapSurface", null);
 const flyToExtent = inject("flyToExtent", null);
@@ -38,9 +47,25 @@ const loading = ref(false);
 const error = ref("");
 const variables = ref([]);
 const selectedVariable = ref("");
+const selectedResolution = ref(normalizeResolutionKey(props.resolution));
+const resolutionOptions = ref(defaultResolutionOptions());
+const warnings = ref([]);
 const grid = ref(null);
+const lastFrameCount = ref(0);
 
 let syncingVariable = false;
+let displayRequestId = 0;
+let binaryRequestId = 0;
+let cacheRevision = 0;
+const displayCache = new Map();
+const pendingDisplays = new Map();
+const imageCache = new Map();
+const COMMON_NC_DISPLAY_VARIABLES = ["Tair_f_inst", "Rainf_tavg", "AvgSurfT_inst", "Wind_f_inst"];
+const INITIAL_PRELOAD_AHEAD = 3;
+const PLAYING_PRELOAD_AHEAD = 6;
+const CACHE_BEHIND = 3;
+const CACHE_AHEAD = 8;
+const MAX_NATIVE_CACHE_FRAMES = 14;
 
 const resolvedFile = computed(() => grid.value?.file || props.file || "");
 const currentMetaFile = computed(() => props.parsed?.meta?.meta_file || props.parsed?.meta_file || "");
@@ -51,6 +76,7 @@ const legendTitle = computed(() => {
   const title = displayElementName(item, grid.value, unit);
   return unit ? `${title} (${unit})` : title;
 });
+const warningText = computed(() => warnings.value.slice(0, 2).join(" / "));
 
 const ticks = computed(() => {
   const item = currentVariable.value;
@@ -59,6 +85,29 @@ const ticks = computed(() => {
   if (!Number.isFinite(min) || !Number.isFinite(max)) return ["低", "", "", "高"];
   return [min, min + (max - min) / 3, min + (max - min) * 2 / 3, max].map(formatTick);
 });
+
+function normalizeResolutionKey(value) {
+  const key = String(value || "native").trim().toLowerCase();
+  if (!key || key === "origin" || key === "original") return "native";
+  return ["native", "3km", "1km"].includes(key) ? key : "native";
+}
+
+function defaultResolutionOptions() {
+  return [
+    { key: "native", label: "原始", playable: true, is_native: true },
+    { key: "3km", label: "3 km", playable: false, is_native: false },
+    { key: "1km", label: "1 km", playable: false, is_native: false },
+  ];
+}
+
+function setResolutionOptions(data) {
+  const next = data?.resolution_options || data?.meta_json?.resolution_options || data?.meta_json?.extra?.cma?.resolutions;
+  resolutionOptions.value = Array.isArray(next) && next.length ? next : defaultResolutionOptions();
+  if (!resolutionOptions.value.some(item => item.key === selectedResolution.value)) {
+    selectedResolution.value = "native";
+    emit("resolution-change", "native");
+  }
+}
 
 function variableLabel(item) {
   return displayElementName(item, null, formatUnit(item?.unit || "")) || item?.name || "";
@@ -118,6 +167,52 @@ function apiUrl(path) {
   return new URL(path, `${API_BASE}/`).toString();
 }
 
+function displayImagePath(data) {
+  return data?.grid?.webp_url || data?.grid?.image_url || data?.webp_url || data?.image_url || "";
+}
+
+function preloadImage(path) {
+  const resolved = apiUrl(path);
+  if (!resolved || imageCache.has(resolved)) return Promise.resolve(resolved);
+
+  const image = new Image();
+  image.crossOrigin = "anonymous";
+  image.decoding = "async";
+  const promise = new Promise((resolve, reject) => {
+    image.onload = () => resolve(resolved);
+    image.onerror = () => reject(new Error(`CMA image preload failed: ${resolved}`));
+  });
+  image.src = resolved;
+  imageCache.set(resolved, { image, promise });
+  return promise.catch(() => "");
+}
+
+function releaseImage(path) {
+  const resolved = apiUrl(path);
+  const cached = imageCache.get(resolved);
+  if (!cached) return;
+  cached.image.onload = null;
+  cached.image.onerror = null;
+  cached.image.src = "";
+  imageCache.delete(resolved);
+}
+
+function clearImageCache() {
+  imageCache.forEach(({ image }) => {
+    image.onload = null;
+    image.onerror = null;
+    image.src = "";
+  });
+  imageCache.clear();
+}
+
+function clearNativeFrameCaches() {
+  cacheRevision += 1;
+  pendingDisplays.clear();
+  displayCache.clear();
+  clearImageCache();
+}
+
 function clearImageryLayer() {
   surface?.clear();
 }
@@ -169,7 +264,7 @@ function buildPanelInfo(data) {
     time: weather.time || frame?.time_label || frame?.time || metaJson.time || "",
     level: "",
     range: weather.range || metaJson.range || "",
-    resolution: weather.resolution || "",
+    resolution: currentGrid.resolution || weather.resolution || "",
     grid: weather.grid || (currentGrid.width && currentGrid.height ? `${currentGrid.width} x ${currentGrid.height}` : metaJson.grid || ""),
     unit: displayUnit || "-",
     display_unit: displayUnit,
@@ -238,6 +333,10 @@ function emitDisplay(data) {
     extent: currentGrid.extent || [],
     image_url: currentGrid.webp_url || currentGrid.image_url || "",
     webp_url: currentGrid.webp_url || "",
+    resolution_key: currentGrid.resolution_key || selectedResolution.value,
+    resolution_options: resolutionOptions.value,
+    playable: currentGrid.playable,
+    warnings: warnings.value,
     times: data?.times || [],
     frames: data?.frames || [],
     variables: variables.value,
@@ -251,16 +350,30 @@ function emitDisplay(data) {
     variables: variables.value,
     times: data?.times || [],
     frames: data?.frames || [],
+    resolution_key: currentGrid.resolution_key || selectedResolution.value,
+    resolution_options: resolutionOptions.value,
+    warnings: warnings.value,
     file: panelInfo.file,
     variable: currentGrid.variable || "",
   });
 }
 
-async function fetchCmaDisplay(variableName, levelIndex = 0, timeIndex = 0) {
+function cacheKey(variableName, levelIndex, timeIndex, resolutionKey) {
+  return JSON.stringify([
+    currentMetaFile.value || "",
+    normalizeResolutionKey(resolutionKey),
+    variableName || "",
+    Number(levelIndex) || 0,
+    Number(timeIndex) || 0,
+  ]);
+}
+
+async function fetchCmaDisplay(variableName, levelIndex = 0, timeIndex = 0, resolutionKey = selectedResolution.value) {
   const params = new URLSearchParams();
   if (variableName) params.set("variable", variableName);
   params.set("level_index", String(levelIndex));
   params.set("time_index", String(timeIndex));
+  params.set("resolution", normalizeResolutionKey(resolutionKey));
   if (currentMetaFile.value) params.set("meta_file", currentMetaFile.value);
   const response = await authedFetch(`${API_BASE}/api/display/CMA?${params.toString()}`);
   const payload = await response.json();
@@ -268,6 +381,108 @@ async function fetchCmaDisplay(variableName, levelIndex = 0, timeIndex = 0) {
     throw new Error(payload.detail || "CMA 数据读取失败");
   }
   return payload.data;
+}
+
+async function fetchCachedDisplay(variableName, levelIndex, timeIndex, resolutionKey) {
+  const key = cacheKey(variableName, levelIndex, timeIndex, resolutionKey);
+  const isNative = normalizeResolutionKey(resolutionKey) === "native";
+  if (isNative && displayCache.has(key)) {
+    const cached = displayCache.get(key);
+    preloadImage(displayImagePath(cached));
+    return cached;
+  }
+  if (isNative && pendingDisplays.has(key)) {
+    return pendingDisplays.get(key);
+  }
+
+  const revision = cacheRevision;
+  const request = fetchCmaDisplay(variableName, levelIndex, timeIndex, resolutionKey)
+    .then((data) => {
+      if (isNative && revision === cacheRevision) {
+        displayCache.set(key, data);
+        preloadImage(displayImagePath(data));
+      }
+      return data;
+    })
+    .finally(() => {
+      if (isNative) pendingDisplays.delete(key);
+    });
+
+  if (isNative) {
+    pendingDisplays.set(key, request);
+  }
+  return request;
+}
+
+function frameCountOf(data) {
+  const frames = Array.isArray(data?.frames) ? data.frames.length : 0;
+  return Number(data?.frame_count) || frames || 0;
+}
+
+function trimNativeCache(centerIndex) {
+  const keepMin = Math.max(0, centerIndex - CACHE_BEHIND);
+  const keepMax = centerIndex + CACHE_AHEAD;
+  const dropKeys = [];
+  for (const key of displayCache.keys()) {
+    try {
+      const [, resolutionKey, , , index] = JSON.parse(key);
+      if (resolutionKey === "native" && (index < keepMin || index > keepMax)) {
+        dropKeys.push(key);
+      }
+    } catch {
+      dropKeys.push(key);
+    }
+  }
+
+  dropCacheKeys(dropKeys);
+
+  while (displayCache.size > MAX_NATIVE_CACHE_FRAMES) {
+    const firstKey = displayCache.keys().next().value;
+    if (!firstKey) break;
+    dropCacheKeys([firstKey]);
+  }
+}
+
+function dropCacheKeys(keys) {
+  const uniqueKeys = [...new Set(keys)].filter(key => displayCache.has(key));
+  if (!uniqueKeys.length) return;
+
+  const dropSet = new Set(uniqueKeys);
+  const keepUrls = new Set(
+    [...displayCache.entries()]
+      .filter(([key]) => !dropSet.has(key))
+      .map(([, data]) => apiUrl(displayImagePath(data)))
+      .filter(Boolean)
+  );
+
+  uniqueKeys.forEach((key) => {
+    const data = displayCache.get(key);
+    const url = apiUrl(displayImagePath(data));
+    displayCache.delete(key);
+    if (url && !keepUrls.has(url)) releaseImage(url);
+  });
+}
+
+function preloadNativeFrames(data, variableName) {
+  if (selectedResolution.value !== "native") return;
+  const count = frameCountOf(data);
+  if (count <= 1) return;
+  const center = Math.min(Math.max(Number(props.timeIndex) || 0, 0), count - 1);
+  const ahead = props.playing ? PLAYING_PRELOAD_AHEAD : INITIAL_PRELOAD_AHEAD;
+  const revision = cacheRevision;
+  trimNativeCache(center);
+  for (let offset = 1; offset <= ahead; offset += 1) {
+    const nextIndex = center + offset;
+    if (nextIndex >= count) break;
+    const key = cacheKey(variableName, props.levelIndex, nextIndex, "native");
+    if (displayCache.has(key)) continue;
+    fetchCachedDisplay(variableName, props.levelIndex, nextIndex, "native")
+      .then(() => {
+        if (revision !== cacheRevision) return;
+        trimNativeCache(center);
+      })
+      .catch(() => {});
+  }
 }
 
 function displayFromParsed(parsed, variableName) {
@@ -313,8 +528,12 @@ function displayFromParsed(parsed, variableName) {
       max: 1,
       mean: 0,
       nodata: -999999,
+      resolution_key: "native",
+      resolution: meta.weather_info?.resolution || "",
+      playable: true,
       meta,
     },
+    resolution_options: meta.resolution_options || meta.extra?.cma?.resolutions || defaultResolutionOptions(),
   };
 }
 
@@ -424,10 +643,14 @@ async function loadBinaryGrid(display, variableName) {
 }
 
 async function loadDisplay(variableName = selectedVariable.value) {
+  const requestId = ++displayRequestId;
+  const resolutionKey = normalizeResolutionKey(selectedResolution.value);
   loading.value = true;
   error.value = "";
   try {
-    const nextDisplay = await fetchCmaDisplay(variableName, props.levelIndex, props.timeIndex);
+    const nextDisplay = await fetchCachedDisplay(variableName, props.levelIndex, props.timeIndex, resolutionKey);
+    if (requestId !== displayRequestId) return;
+    setResolutionOptions(nextDisplay);
     variables.value = nextDisplay.variables || [];
     const defaultVar =
       nextDisplay.grid?.variable ||
@@ -446,31 +669,75 @@ async function loadDisplay(variableName = selectedVariable.value) {
     selectedVariable.value = nextVariable;
     syncingVariable = false;
     grid.value = nextDisplay.grid || null;
+    lastFrameCount.value = frameCountOf(nextDisplay);
+    warnings.value = nextDisplay.warnings || nextDisplay.grid?.warnings || nextDisplay.weather_info?.warnings || [];
     emitDisplay(nextDisplay);
     applyImageryLayer();
+    preloadImage(displayImagePath(nextDisplay));
+    preloadNativeFrames(nextDisplay, nextVariable);
   } catch (err) {
+    if (requestId !== displayRequestId) return;
     grid.value = null;
+    warnings.value = [];
     clearImageryLayer();
     error.value = err.message || String(err);
   } finally {
-    loading.value = false;
+    if (requestId === displayRequestId) {
+      loading.value = false;
+    }
   }
 }
 
 function handleVariableChange() {
   if (selectedVariable.value && !syncingVariable) {
+    clearNativeFrameCaches();
     loadDisplay(selectedVariable.value);
   }
 }
 
+function handleResolutionChange() {
+  selectedResolution.value = normalizeResolutionKey(selectedResolution.value);
+  emit("resolution-change", selectedResolution.value);
+  clearNativeFrameCaches();
+  loadDisplay(selectedVariable.value);
+}
+
 onMounted(() => loadDisplay());
 
-watch(() => props.levelIndex, () => loadDisplay(selectedVariable.value));
+watch(() => props.levelIndex, () => {
+  clearNativeFrameCaches();
+  loadDisplay(selectedVariable.value);
+});
 watch(() => props.timeIndex, () => loadDisplay(selectedVariable.value));
-watch(() => props.parsed, () => loadDisplay(selectedVariable.value));
-watch(refreshKey, () => loadDisplay(selectedVariable.value));
+watch(() => props.resolution, value => {
+  const next = normalizeResolutionKey(value);
+  if (next !== selectedResolution.value) {
+    selectedResolution.value = next;
+    clearNativeFrameCaches();
+    loadDisplay(selectedVariable.value);
+  }
+});
+watch(() => props.playing, value => {
+  if (value && selectedResolution.value !== "native") {
+    selectedResolution.value = "native";
+    emit("resolution-change", "native");
+    clearNativeFrameCaches();
+    loadDisplay(selectedVariable.value);
+  } else if (value && grid.value) {
+    preloadNativeFrames({ frame_count: lastFrameCount.value, frames: [] }, selectedVariable.value);
+  }
+});
+watch(() => props.parsed, () => {
+  clearNativeFrameCaches();
+  loadDisplay(selectedVariable.value);
+});
+watch(refreshKey, () => {
+  clearNativeFrameCaches();
+  loadDisplay(selectedVariable.value);
+});
 
 onBeforeUnmount(() => {
+  clearNativeFrameCaches();
   clearImageryLayer();
 });
 </script>
@@ -479,6 +746,13 @@ onBeforeUnmount(() => {
 .lc-error {
   margin: 8px 0 0;
   color: #dc2626;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.lc-warning {
+  margin: 8px 0 0;
+  color: #b45309;
   font-size: 12px;
   line-height: 1.4;
 }
