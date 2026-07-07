@@ -49,6 +49,7 @@ const box = ref(null);
 const canvas = ref(null);
 const dataRef = ref(null);
 const computedTileUrl = computed(() => props.tileUrl || TILE_URLS[props.basemap] || "");
+const overlayState = ref({ rev: 0, width: 0, height: 0, projection: props.projection });
 let gl, quadProg, lineProg, qloc = {}, lloc = {};
 let quadBuf, lineBuf, lineCount = 0, allLines = [];
 let baseTex, dataTex, hasBase = false, hasData = false, baseMerc = false;
@@ -230,6 +231,38 @@ function forward(p, lon, lat) {
   if (lat > 80 * D2R) return null; const r = Math.tan(Math.PI / 4 + lat / 2); return [r * Math.sin(lon), r * Math.cos(lon)];
 }
 
+function refreshOverlayState() {
+  const el = box.value;
+  if (!el) return;
+  overlayState.value = {
+    rev: overlayState.value.rev + 1,
+    width: el.clientWidth || 0,
+    height: el.clientHeight || 0,
+    projection: props.projection,
+  };
+}
+
+function projectLonLat(lonDeg, latDeg) {
+  const el = box.value;
+  const width = el?.clientWidth || overlayState.value.width;
+  const height = el?.clientHeight || overlayState.value.height;
+  const lonValue = Number(lonDeg);
+  const latValue = Number(latDeg);
+  if (!width || !height || !Number.isFinite(lonValue) || !Number.isFinite(latValue)) return null;
+
+  const p = PROJ[props.projection] ?? 0;
+  const q = forward(p, wrapPi(lonValue * D2R - centerLon()), latValue * D2R);
+  if (!q || !isFinite(q[0]) || !isFinite(q[1])) return null;
+
+  const nx = (q[0] - center[0]) / (scale * aspect);
+  const ny = (q[1] - center[1]) / scale;
+  return {
+    x: (nx + 1) * 0.5 * width,
+    y: (1 - ny) * 0.5 * height,
+    visible: nx >= -1 && nx <= 1 && ny >= -1 && ny <= 1,
+  };
+}
+
 function invert(p, x, y) {
   if (p === 0) return Math.abs(x) <= Math.PI && Math.abs(y) <= HALF_PI ? [x, y] : null;
   if (p === 1) return Math.abs(x) > Math.PI ? null : [x, 2 * Math.atan(Math.exp(y)) - HALF_PI];
@@ -351,6 +384,10 @@ provide("mapControls", {
   zoomOut: () => zoomBy(1.25),
   home,
   full: () => box.value?.requestFullscreen?.(),
+});
+provide("mapProjector", {
+  state: overlayState,
+  project: projectLonLat,
 });
 
 function makeTexture(source, slot, lonBox, merc) {
@@ -542,6 +579,7 @@ function render() {
     gl.uniform3f(lloc.uColor, lc[0], lc[1], lc[2]);
     gl.drawArrays(gl.LINES, 0, lineCount);
   }
+  refreshOverlayState();
 }
 
 function onDown(e) { dragging = true; lastX = e.clientX; lastY = e.clientY; }
