@@ -115,6 +115,7 @@
         </div>
         <HimawariTimeAxis
           v-if="active === 'himawari'"
+          :key="timeAxisKey"
           :times="axisTimes"
           :active="animPos"
           @update:active="v => setTimeIndex(v)"
@@ -122,6 +123,7 @@
         />
         <TimeAxis
           v-else
+          :key="timeAxisKey"
           :times="axisTimes"
           :active="animPos"
           @update:active="v => setTimeIndex(v)"
@@ -361,6 +363,12 @@ const axisTimes = computed(() => {
   }
 
   return defaultTimes;
+});
+
+const timeAxisKey = computed(() => {
+  const first = axisTimes.value[0] || "";
+  const last = axisTimes.value[axisTimes.value.length - 1] || "";
+  return `${active.value}-${axisTimes.value.length}-${first}-${last}`;
 });
 
 function parseAxisHour(text, index = 0) {
@@ -765,6 +773,14 @@ function setTimeIndex(v) {
   animPos.value = next;
 }
 
+function resetTimebar() {
+  clearInterval(animTimer);
+  playing.value = false;
+  lastTs = null;
+  tIndex.value = 0;
+  animPos.value = 0;
+}
+
 function startAnim() {
   clearInterval(animTimer);
 
@@ -1058,6 +1074,7 @@ function openTool(name) {
 
 function selectSource(key) {
   if (key === active.value) return;
+  resetTimebar();
   switching.value = true;
   clearTimeout(switchingTimer);
   switchingTimer = setTimeout(() => { switching.value = false; }, 10000);
@@ -1070,6 +1087,7 @@ function selectSource(key) {
 
 function pickFile(i) {
   selected.value = i;
+  resetTimebar();
   active.value = files[i].key;
   parsed.value = null;
   parsedLayerKey.value = null;
@@ -1107,6 +1125,7 @@ async function parse() {
 
     parsed.value = result;
     parsedLayerKey.value = layerKey;
+    resetTimebar();
     active.value = layerKey;
 
     parseProcessing.value = [
