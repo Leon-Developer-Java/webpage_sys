@@ -57,7 +57,9 @@ export async function register(form) {
 }
 
 export async function changePassword(oldPassword, newPassword) {
-  return authRequest("/api/auth/me/password", { old_password: oldPassword, new_password: newPassword }, getToken());
+  const data = await authRequest("/api/auth/me/password", { old_password: oldPassword, new_password: newPassword }, getToken());
+  if (data?.token) saveSession(data);
+  return data;
 }
 
 function tokenPayload(token) {
