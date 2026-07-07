@@ -23,16 +23,16 @@
           </el-form-item>
           <div class="login-grid">
             <el-form-item label="姓名（选填）">
-              <el-input v-model="form.real_name" />
+              <el-input v-model="form.real_name" maxlength="64" />
             </el-form-item>
-            <el-form-item label="单位（选填）">
-              <el-input v-model="form.organization" />
+            <el-form-item label="单位/部门（选填）">
+              <el-input v-model="form.organization" maxlength="128" />
             </el-form-item>
             <el-form-item label="邮箱（选填）">
-              <el-input v-model="form.email" />
+              <el-input v-model="form.email" maxlength="128" />
             </el-form-item>
-            <el-form-item label="电话（选填）">
-              <el-input v-model="form.phone" />
+            <el-form-item label="手机号（选填）">
+              <el-input v-model="form.phone" maxlength="32" />
             </el-form-item>
           </div>
         </template>
@@ -66,6 +66,10 @@ async function submit() {
   if (form.username.length < 3) return (error.value = "用户名至少 3 个字符");
   if (form.password.length < 8) return (error.value = "密码至少 8 位");
   if (tab.value === "register" && form.password !== form.confirm) return (error.value = "两次密码不一致");
+  if (tab.value === "register" && form.real_name.length > 64) return (error.value = "姓名不能超过 64 个字符");
+  if (tab.value === "register" && form.organization.length > 128) return (error.value = "单位/部门不能超过 128 个字符");
+  if (tab.value === "register" && form.email.length > 128) return (error.value = "邮箱不能超过 128 个字符");
+  if (tab.value === "register" && form.phone.length > 32) return (error.value = "手机号不能超过 32 个字符");
   busy.value = true;
   try {
     if (tab.value === "login") {
