@@ -814,6 +814,7 @@ function resetTimebar() {
   tIndex.value = 0;
   animPos.value = 0;
   cmaPlaybackWaiting.value = false;
+  himawariTimeline.value = [];
 }
 
 function startAnim() {
