@@ -254,8 +254,17 @@ let paneDownAt = null;
 let switchingTarget = { pane: 0, key: "" };
 const latestView = {};
 let animTimer = null;
-let lastTs = null;
 let switchingTimer = null;
+const PLAYBACK_BASE_INTERVAL_MS = 900;
+const PLAYBACK_MIN_INTERVAL_MS = 120;
+const CMA_PLAYBACK_MIN_INTERVAL_MS = 200;
+const RADAR_PLAYBACK_BASE_INTERVAL_MS = 1200;
+const RADAR_PLAYBACK_MIN_INTERVAL_MS = 250;
+
+function playbackIntervalMs(baseInterval = PLAYBACK_BASE_INTERVAL_MS, minInterval = PLAYBACK_MIN_INTERVAL_MS) {
+  const multiplier = Math.max(0.1, Number(speed.value) || 1);
+  return Math.max(minInterval, baseInterval / multiplier);
+}
 
 const selectedFileLabel = computed(() => {
   const files = Array.isArray(file.value) ? file.value : [];
@@ -837,7 +846,6 @@ function togglePlaying() {
 function resetTimebar() {
   clearInterval(animTimer);
   playing.value = false;
-  lastTs = null;
   tIndex.value = 0;
   animPos.value = 0;
   cmaPlaybackWaiting.value = false;
@@ -845,7 +853,7 @@ function resetTimebar() {
 }
 
 function nextTimeIndexForActive() {
-  if (active.value === "grib" && currentGfsValidAxisIndices().length) {
+  if (isGribLayerKey(active.value) && currentGfsValidAxisIndices().length) {
     return nextGfsValidAxisIndex(1);
   }
 
@@ -868,7 +876,7 @@ function startAnim() {
       const next = (Number(tIndex.value) + 1) % count;
       cmaPlaybackWaiting.value = true;
       tIndex.value = next;
-    }, Math.max(200, 900 / Math.max(0.1, speed.value)));
+    }, playbackIntervalMs(PLAYBACK_BASE_INTERVAL_MS, CMA_PLAYBACK_MIN_INTERVAL_MS));
     return;
   }
 
@@ -877,21 +885,19 @@ function startAnim() {
       const next = nextGfsValidAxisIndex(1);
       tIndex.value = next;
       animPos.value = next;
-    }, Math.max(120, 900 / Math.max(0.1, speed.value)));
+    }, playbackIntervalMs());
     return;
   }
 
-  lastTs = Date.now();
-  animTimer = setInterval(() => {
-    const now = Date.now();
-    animPos.value += (now - lastTs) * speed.value / 600;
-    lastTs = now;
-    if (animPos.value >= axisTimes.value.length) animPos.value = 0;
-    const floor = Math.floor(animPos.value);
-    if (floor !== tIndex.value) setTimeIndex(floor);
-  }, 16);
-  advanceTimeIndex();
-  animTimer = setInterval(advanceTimeIndex, Math.max(120, 900 / Math.max(0.1, speed.value)));
+  if (active.value === "radar") {
+    animTimer = setInterval(
+      advanceTimeIndex,
+      playbackIntervalMs(RADAR_PLAYBACK_BASE_INTERVAL_MS, RADAR_PLAYBACK_MIN_INTERVAL_MS),
+    );
+    return;
+  }
+
+  animTimer = setInterval(advanceTimeIndex, playbackIntervalMs());
 }
 
 watch(playing, v => {

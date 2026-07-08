@@ -1,5 +1,12 @@
 <template>
-  <LayerCard :badge="label" :file="resolvedFile" :legend-title="legendTitle" :gradient="gradient" :ticks="ticks">
+  <LayerCard
+    class="radar-layer-card"
+    :badge="label"
+    :file="resolvedFile"
+    :legend-title="legendTitle"
+    :gradient="gradient"
+    :ticks="ticks"
+  >
     <template v-if="products.length">
       <label class="lc-row">
         <span>产品</span>
@@ -30,6 +37,7 @@
 <script setup>
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import LayerCard from "../components/LayerCard.vue";
+import { withToken } from "../api";
 
 const props = defineProps({
   src: String,
@@ -61,6 +69,7 @@ const frameCache = new Map();
 const pendingFrames = new Map();
 const imageCache = new Map();
 let wantedFrameIndices = new Set();
+let appliedLayerKey = "";
 
 const products = computed(() => display.value?.products ?? []);
 const frames = computed(() => Array.isArray(display.value?.frames) ? display.value.frames : []);
@@ -190,6 +199,11 @@ function apiUrl(path) {
   return new URL(path, `${API_BASE}/`).toString();
 }
 
+function resolvedImageUrl(path) {
+  const url = apiUrl(path);
+  return url ? withToken(url) : "";
+}
+
 function firstValue(...values) {
   return values.find((value) => value !== undefined && value !== null && value !== "");
 }
@@ -232,6 +246,7 @@ function productDescription(product) {
 }
 
 function clearImageryLayer() {
+  appliedLayerKey = "";
   surface?.clear();
 }
 
@@ -243,7 +258,11 @@ function applyImageryLayer() {
     return;
   }
 
-  surface?.setData(url, extent, 1);
+  const layerKey = `${resolvedImageUrl(imageUrl.value)}|${extent.join(",")}`;
+  if (layerKey === appliedLayerKey) return;
+  appliedLayerKey = layerKey;
+  const image = preloadedImageSource(imageUrl.value);
+  surface?.setData(url, extent, 1, image ? { image } : {});
   zoomToData(extent);
 }
 
@@ -354,23 +373,36 @@ function cachePayload(index, data) {
 }
 
 function preloadImage(url) {
-  const resolved = apiUrl(url);
-  if (!resolved || imageCache.has(resolved)) return Promise.resolve(resolved);
+  const resolved = resolvedImageUrl(url);
+  if (!resolved) return Promise.resolve("");
+  const cached = imageCache.get(resolved);
+  if (cached) return cached.promise;
 
   const image = new Image();
   image.crossOrigin = "anonymous";
   image.decoding = "async";
+  const entry = { image, loaded: false, promise: null };
   const promise = new Promise((resolve, reject) => {
-    image.onload = () => resolve(resolved);
+    image.onload = () => {
+      entry.loaded = true;
+      resolve(resolved);
+    };
     image.onerror = () => reject(new Error(`Radar image preload failed: ${resolved}`));
   });
+  entry.promise = promise.catch(() => "");
+  imageCache.set(resolved, entry);
   image.src = resolved;
-  imageCache.set(resolved, { image, promise });
-  return promise.catch(() => "");
+  return entry.promise;
+}
+
+function preloadedImageSource(url) {
+  const cached = imageCache.get(resolvedImageUrl(url));
+  if (!cached?.loaded || !cached.image?.complete || !cached.image.naturalWidth) return null;
+  return cached.image;
 }
 
 function releaseImage(url) {
-  const resolved = apiUrl(url);
+  const resolved = resolvedImageUrl(url);
   const cached = imageCache.get(resolved);
   if (!cached) return;
   cached.image.onload = null;
@@ -496,6 +528,8 @@ async function loadRadarDisplay(options = {}) {
   try {
     const data = await fetchRadarFrame(targetIndex, { force: !!options.force });
     if (currentRequest !== requestId) return;
+    await preloadImage(payloadImageUrl(data));
+    if (currentRequest !== requestId) return;
     applyDisplayPayload(data);
     preloadFrameWindow(targetIndex, { initial: !!options.initial });
   } catch (err) {
@@ -543,6 +577,14 @@ watch(
 </script>
 
 <style scoped>
+:deep(.radar-layer-card.layer-card.collapsed .lc-body) {
+  transform: translateY(-50%);
+}
+
+:deep(.radar-layer-card.layer-card.collapsed .lc-tab) {
+  left: min(240px, calc(100% - 10px));
+}
+
 .lc-error {
   margin: 0;
   padding: 7px 9px;

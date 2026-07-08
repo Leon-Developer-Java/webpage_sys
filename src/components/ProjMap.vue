@@ -402,7 +402,18 @@ function makeTexture(source, slot, lonBox, merc) {
   if (slot === 0) { baseTex = tex; hasBase = true; baseBox = lonBox; baseMerc = !!merc; } else { dataTex = tex; hasData = true; }
 }
 
-function loadDataTexture(url, token) {
+function loadDataTexture(payload, token) {
+  const data = typeof payload === "string" ? { src: payload } : (payload || {});
+  const source = data.image;
+  if (source?.complete && source.naturalWidth) {
+    if (token !== dataTextureToken) return;
+    makeTexture(source, 1);
+    render();
+    return;
+  }
+
+  const url = data.src;
+  if (!url) return;
   const img = new Image();
   img.crossOrigin = "anonymous";
   img.onload = () => {
@@ -627,7 +638,7 @@ onMounted(() => {
   fitView();
   if (computedTileUrl.value) scheduleMosaic();
   if (props.vector) loadVectors();
-  if (dataRef.value?.src) loadDataTexture(dataRef.value.src, ++dataTextureToken);
+  if (dataRef.value?.src) loadDataTexture(dataRef.value, ++dataTextureToken);
   ro = new ResizeObserver(resize);
   ro.observe(box.value);
   canvas.value.addEventListener("pointerdown", onDown);
@@ -642,9 +653,14 @@ watch(computedTileUrl, v => { hasBase = false; ++mosaicToken; if (v) scheduleMos
 watch(() => props.vector, v => { if (v) { if (allLines.length) rebuildLines(); else loadVectors(); } render(); });
 watch(dataRef, () => {
   ++dataTextureToken;
-  hasData = false;
-  render();
-  if (dataRef.value?.src) loadDataTexture(dataRef.value.src, dataTextureToken);
+  const source = dataRef.value?.image;
+  const hasReadySource = source?.complete && source.naturalWidth;
+  if (!hasReadySource) {
+    hasData = false;
+    render();
+  }
+  if (dataRef.value?.src) loadDataTexture(dataRef.value, dataTextureToken);
+  else if (!hasReadySource) render();
 });
 watch(() => props.syncView, v => {
   if (!v || applyingSync) return;
