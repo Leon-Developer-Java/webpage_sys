@@ -45,8 +45,8 @@
       <template v-else-if="tool === 'data'">
         <p class="pick-hint">选择数据类型</p>
         <div class="picker">
-          <button v-for="s in sources" :key="s.key" :class="{ on: active === s.key }" :disabled="switching && s.key !== active" @click="selectSource(s.key)">
-            <span>{{ s.btn }}</span><el-icon v-if="active === s.key"><Check /></el-icon>
+          <button v-for="s in sources" :key="s.key" :class="{ on: pickerActive === s.key }" :disabled="switching && s.key !== pickerActive" @click="selectSource(s.key)">
+            <span>{{ s.btn }}</span><el-icon v-if="pickerActive === s.key"><Check /></el-icon>
           </button>
         </div>
       </template>
@@ -77,8 +77,14 @@
 
     <div class="center">
       <div class="maps" :style="mapsGrid">
-        <div :class="['cell', { 'cell-4': layout === '4' }]" v-for="(p, i) in panes" :key="layout + '-' + i">
+        <div
+          :class="['cell', { 'cell-4': layout === '4', sel: layout !== '1' && selectedPane === i }]"
+          v-for="(p, i) in panes" :key="layout + '-' + i"
+          @pointerdown="onPaneDown"
+          @click="onPaneClick(i, $event)"
+        >
           <span class="cell-tag">{{ paneLabels[i] || p.btn }}</span>
+          <span v-if="layout !== '1' && selectedPane === i" class="cell-sel-tag"><i></i>SELECTED</span>
           <ProjMap
             :grid="showGrid"
             :dark="mapDark"
@@ -242,6 +248,10 @@ const mapDark = ref(dark.value);
 const emitterIdx = ref(-1);
 const switching = ref(false);
 const paneLabels = ref({});
+const selectedPane = ref(-1);
+const paneSources = ref({});
+let paneDownAt = null;
+let switchingTarget = { pane: 0, key: "" };
 const latestView = {};
 let animTimer = null;
 let lastTs = null;
@@ -253,6 +263,17 @@ const selectedFileLabel = computed(() => {
   if (files.length === 1) return files[0].name;
   return `已选择 ${files.length} 个文件`;
 });
+
+function onPaneDown(e) {
+  paneDownAt = [e.clientX, e.clientY];
+}
+
+function onPaneClick(i, e) {
+  if (layout.value === "1") return;
+  if (e.target.closest(".lc-tab")) return;
+  if (paneDownAt && Math.hypot(e.clientX - paneDownAt[0], e.clientY - paneDownAt[1]) > 5) return;
+  selectedPane.value = selectedPane.value === i ? -1 : i;
+}
 
 function onViewChange(i, view) {
   latestView[i] = view;
@@ -283,11 +304,11 @@ function updatePaneLabel(paneIndex, key, payload) {
 function onLayerDisplayLoaded(paneIndex, key, payload) {
   if (!payload) return;
   updatePaneLabel(paneIndex, key, payload);
+  if (switching.value && paneIndex === switchingTarget.pane && key === switchingTarget.key) {
+    switching.value = false;
+    clearTimeout(switchingTimer);
+  }
   if (paneIndex === 0) {
-    if (key === active.value && switching.value) {
-      switching.value = false;
-      clearTimeout(switchingTimer);
-    }
     if (key === "himawari") {
       updateHimawariTimeline(payload);
     }
@@ -1037,11 +1058,16 @@ function updateHimawariTimeline(data) {
   const previous = himawariTimeline.value;
   const previousIndex = previous.length ? clampTimeIndex(tIndex.value) : -1;
   const previousSceneId = previous[previousIndex]?.scene_id || "";
-  const wasAtLatest = !previous.length || previousIndex >= previous.length - 1;
+  const wasAtLatest = previous.length > 0 && previousIndex >= previous.length - 1;
 
   himawariTimeline.value = items;
 
   if (active.value !== "himawari") return;
+
+  if (!previous.length) {
+    setTimeIndex(0);
+    return;
+  }
 
   const preservedIndex = previousSceneId
       ? items.findIndex((item) => item.scene_id === previousSceneId)
@@ -1119,11 +1145,28 @@ function formatBeijingTime(date) {
   return `${mm}-${dd} ${hh}:${mi}`;
 }
 
+const pickerActive = computed(() =>
+  layout.value !== "1" && selectedPane.value >= 0
+    ? (paneSources.value[selectedPane.value] || active.value)
+    : active.value
+);
+
 const panes = computed(() => {
+  const base = sources.find(s => s.key === active.value);
+  if (!base) return [];
+  if (layout.value === "1") return [{ ...base, variantIndex: 0 }];
   const src = sources.find(s => s.key === active.value);
   if (!src) return [];
   if (layout.value === "1") return [{...src, variantIndex: 0}];
   const count = layout.value === "2" ? 2 : 4;
+  return Array.from({ length: count }, (_, i) => {
+    const overrideKey = paneSources.value[i];
+    if (overrideKey && overrideKey !== active.value) {
+      const s = sources.find(x => x.key === overrideKey);
+      if (s) return { ...s, variantIndex: 0 };
+    }
+    return { ...base, variantIndex: i };
+  });
   return Array.from({length: count}, (_, i) => ({...src, variantIndex: i}));
 });
 
@@ -1149,6 +1192,8 @@ function cycleLayout() {
   layout.value = layout.value === "1" ? "2" : layout.value === "2" ? "4" : "1";
   if (layout.value === "1") linked.value = false;
   paneLabels.value = {};
+  selectedPane.value = -1;
+  paneSources.value = {};
 }
 
 function openTool(name) {
@@ -1160,18 +1205,30 @@ function openTool(name) {
 }
 
 function selectSource(key) {
+  if (layout.value !== "1" && selectedPane.value >= 0) {
+    const pane = selectedPane.value;
+    const current = paneSources.value[pane] || active.value;
+    if (current === key) return;
+    paneSources.value = { ...paneSources.value, [pane]: key };
+    paneLabels.value = { ...paneLabels.value, [pane]: "" };
+    switching.value = true;
+    clearTimeout(switchingTimer);
+    switchingTimer = setTimeout(() => { switching.value = false; }, 10000);
+    switchingTarget = { pane, key };
+    return;
+  }
   if (key === active.value) return;
   resetTimebar();
   switching.value = true;
   clearTimeout(switchingTimer);
-  switchingTimer = setTimeout(() => {
-    switching.value = false;
-  }, 10000);
+  switchingTimer = setTimeout(() => { switching.value = false; }, 10000);
+  switchingTarget = { pane: 0, key };
   active.value = key;
   parsed.value = null;
   parsedLayerKey.value = null;
   parseProcessing.value = null;
   paneLabels.value = {};
+  paneSources.value = {};
 }
 
 function pickFile(i) {
@@ -1256,101 +1313,53 @@ watch(active, () => {
   background: var(--backdrop);
 }
 
-.rail {
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 8px;
-}
+.rail { flex-shrink: 0; display: flex; flex-direction: column; gap: 4px; padding: 8px; }
+.rail button { display: grid; place-items: center; gap: 3px; width: 50px; height: 50px; border: 0; border-radius: 12px; background: transparent; color: var(--muted); font: inherit; font-size: 11px; cursor: pointer; transition: 0.15s; }
+.rail button .el-icon { font-size: 19px; }
+.dim-icon { font-size: 14px; font-weight: 800; letter-spacing: -0.5px; line-height: 1; }
+.rail button:hover { color: var(--text); background: var(--field); }
+.rail button.on { color: #fff; background: var(--accent); }
 
-.rail button {
-  display: grid;
-  place-items: center;
-  gap: 3px;
-  width: 50px;
-  height: 50px;
-  border: 0;
-  border-radius: 12px;
-  background: transparent;
-  color: var(--muted);
-  font: inherit;
-  font-size: 11px;
-  cursor: pointer;
-  transition: 0.15s;
-}
+.dock { flex-shrink: 0; width: 250px; display: flex; flex-direction: column; gap: 11px; padding: 15px; overflow-y: auto; scrollbar-width: none; }
+.dock::-webkit-scrollbar { display: none; }
+.dock-head { display: flex; align-items: center; justify-content: space-between; }
+.dock-head h3 { margin: 0; font-size: 15px; }
+.dock-head .el-icon { cursor: pointer; color: var(--muted); }
+.path { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-radius: 10px; background: var(--field); color: var(--muted); }
+.path input { flex: 1; min-width: 0; border: 0; background: transparent; color: var(--text); font: inherit; outline: none; }
+.list-head { display: flex; align-items: center; justify-content: space-between; color: var(--muted); font-size: 12px; }
+.list-head .el-icon { cursor: pointer; }
+.files { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.files li { display: flex; align-items: center; gap: 9px; padding: 9px 10px; border-radius: 10px; cursor: pointer; background: var(--field); border: 1px solid transparent; transition: 0.15s; }
+.files li.sel { border-color: var(--accent); background: var(--accent-soft); }
+.files .dot { width: 11px; height: 11px; border-radius: 50%; border: 2px solid var(--muted); flex-shrink: 0; }
+.files li.sel .dot { border-color: var(--accent); background: var(--accent); }
+.files b { display: block; font-size: 12px; font-weight: 500; word-break: break-all; }
+.files span { font-size: 11px; color: var(--muted); }
+.upload { padding: 8px; border: 1px dashed var(--border); border-radius: 10px; color: var(--muted); font-size: 12px; cursor: pointer; text-align: center; }
+.parse { width: 100%; }
+.hint { margin: 0; color: var(--muted); font-size: 11px; text-align: center; }
+.vars { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.vars :deep(.el-select) { width: 100%; }
+.pick-hint { margin: 0; color: var(--muted); font-size: 12px; }
+.picker { display: flex; flex-direction: column; gap: 6px; }
+.picker button { display: flex; align-items: center; justify-content: space-between; padding: 11px 13px; border: 1px solid var(--border); border-radius: 10px; background: var(--field); color: var(--text); font: inherit; font-size: 13px; cursor: pointer; transition: 0.15s; }
+.picker button:hover { border-color: var(--accent); }
+.picker button.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.picker button:disabled { opacity: 0.38; cursor: not-allowed; }
+.picker button:disabled:hover { border-color: var(--border); background: var(--field); color: var(--text); }
+.soon-tag { font-size: 10px; color: var(--muted); }
+.picker button .el-icon { font-size: 15px; }
 
-.rail button .el-icon {
-  font-size: 19px;
-}
-
-.dim-icon {
-  font-size: 14px;
-  font-weight: 800;
-  letter-spacing: -0.5px;
-  line-height: 1;
-}
-
-.rail button:hover {
-  color: var(--text);
-  background: var(--field);
-}
-
-.rail button.on {
-  color: #fff;
-  background: var(--accent);
-}
-
-.dock {
-  flex-shrink: 0;
-  width: 250px;
-  display: flex;
-  flex-direction: column;
-  gap: 11px;
-  padding: 15px;
-  overflow-y: auto;
-  scrollbar-width: none;
-}
-
-.dock::-webkit-scrollbar {
-  display: none;
-}
-
-.dock-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.dock-head h3 {
-  margin: 0;
-  font-size: 15px;
-}
-
-.dock-head .el-icon {
-  cursor: pointer;
-  color: var(--muted);
-}
-
-.path {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 10px;
-  border-radius: 10px;
-  background: var(--field);
-  color: var(--muted);
-}
-
-.path input {
-  flex: 1;
-  min-width: 0;
-  border: 0;
-  background: transparent;
-  color: var(--text);
-  font: inherit;
-  outline: none;
-}
+.center { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+.maps { flex: 1; min-height: 0; display: grid; gap: 10px; }
+.cell { position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; transition: border-color 0.18s, box-shadow 0.18s; }
+.cell.sel { border-color: var(--accent); box-shadow: inset 0 0 0 1.5px var(--accent), 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent), 0 0 18px color-mix(in srgb, var(--accent) 60%, transparent); }
+.app.dark .cell.sel { box-shadow: inset 0 0 0 1.5px var(--accent), 0 0 0 1px rgba(150, 205, 255, 0.6), 0 0 22px rgba(150, 205, 255, 0.8); }
+.cell-tag { position: absolute; top: 8px; right: 8px; z-index: 6; padding: 3px 9px; border: 1px solid rgba(255, 255, 255, 0.16); border-radius: 7px; background: rgba(16, 24, 38, 0.68); backdrop-filter: blur(10px); color: #eaf1fb; font-size: 11px; font-weight: 600; letter-spacing: 0.3px; pointer-events: none; }
+.cell-sel-tag { position: absolute; top: 8px; left: 8px; z-index: 6; display: flex; align-items: center; gap: 6px; padding: 3px 9px; border: 1px solid rgba(255, 255, 255, 0.16); border-radius: 7px; background: rgba(16, 24, 38, 0.68); backdrop-filter: blur(10px); color: #eaf1fb; font-size: 11px; font-weight: 600; letter-spacing: 0.5px; pointer-events: none; }
+.cell-sel-tag i { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+.cell :deep(.projmap) { position: absolute; inset: 0; }
 
 .list-head {
   display: flex;

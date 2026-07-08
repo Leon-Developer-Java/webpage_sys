@@ -37,7 +37,8 @@
 </template>
 
 <script setup>
-import {computed} from "vue";
+import {computed, nextTick, onBeforeUnmount, ref, watch} from "vue";
+import * as echarts from "echarts";
 
 const props = defineProps({
   meta: Object,
