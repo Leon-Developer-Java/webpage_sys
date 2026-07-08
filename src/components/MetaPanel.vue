@@ -135,6 +135,7 @@ const rows = computed(() => {
     ["level", "层级", info.level],
     ["range", "范围", info.range],
     ["grid", "网格", info.grid],
+    ["resolution", "分辨率", info.resolution || info.spatial_resolution || meta.resolution || meta.spatial_resolution],
     ["unit", "单位", info.unit],
     ["missing", "缺测", info.missing],
     ["status", "状态", info.status],

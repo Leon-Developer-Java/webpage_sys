@@ -51,18 +51,6 @@
         </select>
       </label>
 
-      <label v-if="resolutionOptions.length > 1" class="lc-row">
-        <span>显示分辨率</span>
-        <select v-model="selectedResolutionKey">
-          <option
-            v-for="item in resolutionOptions"
-            :key="item.key"
-            :value="item.key"
-          >
-            {{ item.label }}
-          </option>
-        </select>
-      </label>
 
       <div class="gfs-current">
         <span>当前时次</span>
@@ -613,6 +601,33 @@ const resolvedFile = computed(() => {
 
 const displayUnit = computed(() => {
   return currentLayer.value?.unit || currentVariable.value?.unit || currentLayer.value?.displayUnit || "";
+});
+
+const displayResolution = computed(() => {
+  const layer = currentLayer.value || {};
+  const displayLayer = currentDisplayLayer.value || {};
+  const variant = currentResolutionVariant.value || {};
+
+  // 右侧“气象信息”里展示的是空间网格分辨率，优先用后端解析出的经纬度分辨率。
+  const spatialResolution =
+    layer.spatial_resolution ||
+    layer.spatialResolution ||
+    layer.grid_resolution ||
+    layer.gridResolution ||
+    layer.resolution ||
+    displayLayer.spatial_resolution ||
+    displayLayer.grid_resolution ||
+    weatherInfo.value?.resolution ||
+    "";
+
+  // 如果后续选择的是 3km / 1km 差分资源，这里保留分辨率产品标签作为兜底。
+  const selectedLabel =
+    resolutionOptions.value.find(item => item.key === selectedResolutionKey.value)?.label ||
+    variant.label ||
+    variant.resolution ||
+    "";
+
+  return spatialResolution || selectedLabel || "—";
 });
 
 const renderVarType = computed(() => {
@@ -1280,6 +1295,8 @@ function emitCurrentVariable() {
     level: currentLayer.value.level || "",
     range: currentLayer.value.range || "",
     grid: currentLayer.value.grid?.text || currentLayer.value.gridText || "",
+    resolution: displayResolution.value,
+    spatial_resolution: displayResolution.value,
     missing: currentLayer.value.missingText || "",
     unit: displayUnit.value,
     vars: variableOptions.value.map(item => item.label || item.key).join("、"),

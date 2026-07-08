@@ -965,6 +965,7 @@ function normalizeParsedMeta(result) {
     level: panelMeta.level || info.level || "—",
     range: panelMeta.range || info.range || "—",
     grid: panelMeta.grid || info.grid || "—",
+    resolution: panelMeta.resolution || info.resolution || panelMeta.spatial_resolution || info.spatial_resolution || "—",
     missing: panelMeta.missing || info.missing || "—",
     unit: panelMeta.unit || info.unit || "—",
     vars: panelMeta.vars || info.variables || "—",
