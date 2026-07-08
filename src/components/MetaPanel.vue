@@ -18,6 +18,11 @@
           </template>
         </dl>
 
+        <section v-if="statRows.length" class="stat-chart">
+          <small>统计值</small>
+          <div ref="chartEl" class="stat-chart-body"></div>
+        </section>
+
         <section v-if="himawariStatus" class="auto-box">
           <div class="auto-head">
             <h4>自动处理</h4>
@@ -122,7 +127,7 @@ function getElementMeaning(info, meta = {}) {
   return mapping[key] || "表示当前图层所展示的气象变量，用于描述该时次、该层级上的大气或地表状态。";
 }
 
-const rows = computed(() => {
+const allRows = computed(() => {
   const meta = props.meta || {};
   const info = meta.weather_info || meta;
   const elementMeaning = getElementMeaning(info, meta);
@@ -145,6 +150,72 @@ const rows = computed(() => {
   return [...baseRows, ...extraRows]
       .filter(([, , value]) => value !== undefined && value !== null && value !== "")
       .map(([key, label, value]) => ({key, label, value: formatPanelValue(key, value)}));
+});
+
+const STAT_KEYS = ["min", "mean", "max"];
+
+const rows = computed(() => allRows.value.filter(row => !STAT_KEYS.includes(row.key)));
+
+const statRows = computed(() => {
+  const byKey = {};
+  for (const row of allRows.value) if (STAT_KEYS.includes(row.key)) byKey[row.key] = row;
+  return STAT_KEYS.filter(key => byKey[key] && Number.isFinite(parseFloat(String(byKey[key].value)))).map(key => byKey[key]);
+});
+
+const chartEl = ref(null);
+let chart = null;
+
+function renderStatChart() {
+  if (!statRows.value.length) {
+    chart?.dispose();
+    chart = null;
+    return;
+  }
+  if (!chartEl.value) return;
+  if (chart && chart.getDom() !== chartEl.value) {
+    chart.dispose();
+    chart = null;
+  }
+  if (!chart) chart = echarts.init(chartEl.value);
+  const nums = statRows.value.map(row => parseFloat(String(row.value)));
+  const span = Math.max(...nums) - Math.min(...nums);
+  const pad = (span || Math.abs(nums[0]) || 1) * 0.18;
+  const style = getComputedStyle(chartEl.value);
+  const accent = style.getPropertyValue("--accent").trim() || "#4ea1ff";
+  const textColor = style.getPropertyValue("--text").trim() || "#eaf1fb";
+  const mutedColor = style.getPropertyValue("--muted").trim() || "rgba(234,241,251,0.56)";
+  chart.setOption({
+    grid: {left: 46, right: 60, top: 6, bottom: 6},
+    xAxis: {type: "value", min: Math.min(...nums) - pad, max: Math.max(...nums) + pad * 0.4, show: false},
+    yAxis: {
+      type: "category",
+      data: statRows.value.map(row => row.label),
+      inverse: true,
+      axisLine: {show: false},
+      axisTick: {show: false},
+      axisLabel: {color: mutedColor, fontSize: 10},
+    },
+    series: [{
+      type: "bar",
+      data: nums,
+      barWidth: 10,
+      itemStyle: {color: accent, borderRadius: [0, 5, 5, 0]},
+      label: {
+        show: true,
+        position: "right",
+        color: textColor,
+        fontSize: 10,
+        formatter: p => String(statRows.value[p.dataIndex]?.value ?? p.value),
+      },
+    }],
+  }, true);
+}
+
+watch(statRows, () => nextTick(renderStatChart), {immediate: true, deep: true});
+
+onBeforeUnmount(() => {
+  chart?.dispose();
+  chart = null;
 });
 
 const statusLabel = computed(() => {
@@ -372,6 +443,43 @@ dd {
   line-height: 1.4;
   white-space: pre-line;
   word-break: break-word;
+}
+
+.stat-chart {
+  margin-top: 12px;
+  padding: 10px 8px 6px;
+  border-radius: 12px;
+  background: var(--field);
+  border: 1px solid var(--border);
+}
+
+.meta-list + .stat-chart {
+  margin-top: 16px;
+  position: relative;
+}
+
+.meta-list + .stat-chart::before {
+  content: '';
+  position: absolute;
+  top: -9px;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--border);
+}
+
+.stat-chart small {
+  display: block;
+  padding: 0 4px 4px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.3px;
+}
+
+.stat-chart-body {
+  width: 100%;
+  height: 96px;
 }
 
 .auto-box {

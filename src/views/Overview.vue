@@ -270,7 +270,7 @@ function onPaneDown(e) {
 
 function onPaneClick(i, e) {
   if (layout.value === "1") return;
-  if (e.target.closest(".lc-tab")) return;
+  if (e.target.closest(".layer-card")) return;
   if (paneDownAt && Math.hypot(e.clientX - paneDownAt[0], e.clientY - paneDownAt[1]) > 5) return;
   selectedPane.value = selectedPane.value === i ? -1 : i;
 }
@@ -1359,7 +1359,11 @@ watch(active, () => {
 .app.dark .cell.sel { box-shadow: inset 0 0 0 1.5px var(--accent), 0 0 0 1px rgba(150, 205, 255, 0.6), 0 0 22px rgba(150, 205, 255, 0.8); }
 .cell-tag { position: absolute; top: 8px; right: 8px; z-index: 6; padding: 3px 9px; border: 1px solid rgba(255, 255, 255, 0.16); border-radius: 7px; background: rgba(16, 24, 38, 0.68); backdrop-filter: blur(10px); color: #eaf1fb; font-size: 11px; font-weight: 600; letter-spacing: 0.3px; pointer-events: none; }
 .cell-sel-tag { position: absolute; top: 8px; left: 8px; z-index: 6; display: flex; align-items: center; gap: 6px; padding: 3px 9px; border: 1px solid rgba(255, 255, 255, 0.16); border-radius: 7px; background: rgba(16, 24, 38, 0.68); backdrop-filter: blur(10px); color: #eaf1fb; font-size: 11px; font-weight: 600; letter-spacing: 0.5px; pointer-events: none; }
-.cell-sel-tag i { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+.cell-sel-tag i { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 6px var(--accent); animation: sel-pulse 1.8s ease-in-out infinite; }
+@keyframes sel-pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 4px var(--accent); }
+  50% { opacity: 0.3; box-shadow: 0 0 10px var(--accent); }
+}
 .cell :deep(.projmap) { position: absolute; inset: 0; }
 
 .list-head {
