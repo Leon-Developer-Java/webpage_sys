@@ -15,6 +15,14 @@
         </option>
       </select>
     </label>
+    <label v-if="resolutionOptions.length > 1" class="lc-row">
+      <span>Resolution</span>
+      <select v-model="selectedResolution" :disabled="loading">
+        <option v-for="item in resolutionOptions" :key="item.key" :value="item.key">
+          {{ item.label }}
+        </option>
+      </select>
+    </label>
     <p v-if="frameSummary" class="lc-note">{{ frameSummary }}</p>
   </LayerCard>
 </template>
@@ -47,6 +55,7 @@ const display = ref(null);
 const gridLayer = ref(null);
 const variables = ref([]);
 const selectedVariable = ref("");
+const selectedResolution = ref("native");
 const loading = ref(false);
 const error = ref("");
 const framePayload = ref(null);
@@ -59,6 +68,9 @@ let valueTexture = null;
 let syncingSelection = false;
 let loadToken = 0;
 let lastExtentKey = "";
+const PRELOAD_RADIUS = 2;
+const MAX_PRELOADED_IMAGES = 7;
+const imageFrameCache = new Map();
 
 const vert = `#version 300 es
 in vec2 aPos;
@@ -95,8 +107,10 @@ void main() {
 }`;
 
 const meta = computed(() => display.value?.meta_json ?? display.value ?? null);
-const currentLayer = computed(() => layerForVariable(selectedVariable.value));
+const baseLayer = computed(() => layerForVariable(selectedVariable.value));
+const currentLayer = computed(() => resolutionLayerFor(baseLayer.value, selectedResolution.value));
 const currentVariable = computed(() => variables.value.find(item => item.name === selectedVariable.value) || null);
+const resolutionOptions = computed(() => buildResolutionOptions(baseLayer.value, meta.value));
 const frameIndex = computed(() => {
   const count = Math.max(
     layerImageUrls(currentLayer.value).length || 0,
@@ -107,11 +121,12 @@ const frameIndex = computed(() => {
   return Math.min(Math.max(Number(props.timeIndex) || 0, 0), count - 1);
 });
 const imageSrc = computed(() => props.src || toPublicUrl(display.value?.webp || display.value?.image_url || display.value?.png));
-const imageExtent = computed(() => props.extent || meta.value?.extent || meta.value?.bbox || [73, 15, 135, 55]);
+const imageExtent = computed(() => props.extent || meta.value?.extent || meta.value?.bbox || [-180, -90, 180, 90]);
 const resolvedFile = computed(() => fileName(meta.value?.source_file) || fileName(display.value?.meta_file) || props.file || "");
 const currentTime = computed(() => currentLayer.value?.times?.[frameIndex.value] || meta.value?.times?.[frameIndex.value] || "");
 const frameSummary = computed(() => {
   const parts = [
+    currentLayer.value?.resolution && currentLayer.value.resolution !== "native" ? currentLayer.value.resolution : "",
     currentLayer.value?.width && currentLayer.value?.height ? `${currentLayer.value.width} x ${currentLayer.value.height}` : "",
   ].filter(Boolean);
   return parts.join(" | ");
@@ -318,8 +333,111 @@ function layerForVariable(variableName) {
   return first || null;
 }
 
+function resolutionLayerFor(layer, resolutionKey = "native") {
+  if (!layer) return null;
+  const layers = layer.resolution_layers || {};
+  if (resolutionKey && layers[resolutionKey]) {
+    return {
+      ...layer,
+      ...layers[resolutionKey],
+      resolution_layers: layers,
+      available_resolutions: layer.available_resolutions,
+      resolution_status: layer.resolution_status,
+    };
+  }
+  if (layers.native) {
+    return {
+      ...layer,
+      ...layers.native,
+      resolution_layers: layers,
+      available_resolutions: layer.available_resolutions,
+      resolution_status: layer.resolution_status,
+    };
+  }
+  return layer;
+}
+
+function buildResolutionOptions(layer, metaValue) {
+  const keys = layer?.available_resolutions?.length
+    ? layer.available_resolutions
+    : Object.keys(layer?.resolution_layers || {}).length
+      ? Object.keys(layer.resolution_layers)
+      : metaValue?.available_resolutions || [];
+  const unique = [...new Set((keys.length ? keys : ["native"]).filter(Boolean))];
+  return unique.map(key => ({ key, label: key === "native" ? "Native" : key }));
+}
+
 function layerImageUrls(layer) {
   return layer?.webp_urls || layer?.image_urls || layer?.png_urls || [];
+}
+
+function frameCacheKey(url) {
+  return `${selectedVariable.value}|${selectedResolution.value}|${url}`;
+}
+
+function preloadFrameImage(url) {
+  const publicUrl = toPublicUrl(url);
+  if (!publicUrl || typeof Image === "undefined") return Promise.resolve(null);
+
+  const key = frameCacheKey(publicUrl);
+  const cached = imageFrameCache.get(key);
+  if (cached) {
+    cached.lastUsed = Date.now();
+    return cached.promise;
+  }
+
+  const image = new Image();
+  image.decoding = "async";
+  image.crossOrigin = "anonymous";
+  const entry = {
+    image,
+    lastUsed: Date.now(),
+    promise: new Promise(resolve => {
+      image.onload = () => resolve(image);
+      image.onerror = () => resolve(null);
+    }),
+  };
+  imageFrameCache.set(key, entry);
+  image.src = publicUrl;
+  return entry.promise;
+}
+
+function releaseFrameCache(keepUrls = []) {
+  const keep = new Set(keepUrls.map(url => frameCacheKey(toPublicUrl(url))));
+  for (const [key, entry] of imageFrameCache.entries()) {
+    if (keep.has(key)) continue;
+    entry.image.onload = null;
+    entry.image.onerror = null;
+    entry.image.src = "";
+    imageFrameCache.delete(key);
+  }
+}
+
+function preloadNearbyFrames(imageUrls, index) {
+  if (!imageUrls.length) return;
+  const start = Math.max(0, index - PRELOAD_RADIUS);
+  const end = Math.min(imageUrls.length - 1, index + PRELOAD_RADIUS);
+  const keepUrls = [];
+
+  for (let itemIndex = start; itemIndex <= end; itemIndex += 1) {
+    const url = imageUrls[itemIndex];
+    if (!url) continue;
+    keepUrls.push(url);
+    if (itemIndex !== index) preloadFrameImage(url);
+  }
+
+  releaseFrameCache(keepUrls);
+  if (imageFrameCache.size <= MAX_PRELOADED_IMAGES) return;
+
+  [...imageFrameCache.entries()]
+    .sort((left, right) => left[1].lastUsed - right[1].lastUsed)
+    .slice(0, imageFrameCache.size - MAX_PRELOADED_IMAGES)
+    .forEach(([key, entry]) => {
+      entry.image.onload = null;
+      entry.image.onerror = null;
+      entry.image.src = "";
+      imageFrameCache.delete(key);
+    });
 }
 
 function currentStats() {
@@ -346,7 +464,7 @@ function buildPanelInfo(layer, imageUrls = []) {
     time: formatTimeLabel(currentTime.value) || currentTime.value || weather.time || "",
     level: weather.level || layer?.level || "地表",
     range: formatRange(extent) || weather.range || "",
-    resolution: weather.resolution || "",
+    resolution: layer?.resolution && layer.resolution !== "native" ? layer.resolution : weather.resolution || "native",
     grid: width && height ? `${width} x ${height}` : weather.grid || "",
     unit: unit || "-",
     missing: "",
@@ -569,6 +687,7 @@ function emitLayerMeta() {
   const payload = {
     layer: "ERA5",
     variable: selectedVariable.value,
+    resolution: selectedResolution.value,
     file: panelInfo.file,
     element: panelInfo.element,
     unit: panelInfo.unit,
@@ -623,6 +742,7 @@ function emitLayerMeta() {
     webp_urls: imageUrls,
     file: resolvedFile.value,
     variable: selectedVariable.value,
+    resolution: selectedResolution.value,
   });
 }
 
@@ -639,6 +759,7 @@ async function loadFrame() {
   const stats = layer.stats?.[index] || layer.stats?.[0] || {};
   const payload = {
     variable: selectedVariable.value,
+    resolution: selectedResolution.value,
     label: layer.label || selectedVariable.value,
     unit: layer.unit || "",
     width: Number(layer.width) || 0,
@@ -651,12 +772,13 @@ async function loadFrame() {
     mean: Number(stats.mean ?? 0),
     time: layer.times?.[index] || "",
   };
+  await preloadFrameImage(payload.imageUrl);
   if (token !== loadToken) return;
 
   framePayload.value = payload;
   gridLayer.value = layer;
   await paintImageLayer(payload);
-  emitLayerMeta();
+  preloadNearbyFrames(imageUrls, index);
 }
 
 async function loadBinaryFrame() {
@@ -687,6 +809,7 @@ async function loadBinaryFrame() {
   const stats = layer.stats?.[index] || layer.stats?.[0] || {};
   const payload = {
     variable: selectedVariable.value,
+    resolution: selectedResolution.value,
     label: layer.label || selectedVariable.value,
     unit: layer.unit || "",
     width,
@@ -703,7 +826,6 @@ async function loadBinaryFrame() {
   framePayload.value = payload;
   gridLayer.value = layer;
   await paintImageryLayer(payload);
-  emitLayerMeta();
 }
 
 function syncSelectedVariable(value) {
@@ -717,6 +839,7 @@ function syncSelectedVariable(value) {
 async function loadDisplay(variableName = selectedVariable.value) {
   loading.value = true;
   error.value = "";
+  releaseFrameCache();
   try {
     const params = new URLSearchParams();
     if (variableName) params.set("variable", variableName);
@@ -735,8 +858,10 @@ async function loadDisplay(variableName = selectedVariable.value) {
       nextVariable = variables.value[offset % variables.value.length]?.name || nextVariable;
     }
     syncSelectedVariable(nextVariable);
+    selectedResolution.value = "native";
     await nextTick();
     await loadFrame();
+    emitLayerMeta();
   } catch (err) {
     gridLayer.value = null;
     framePayload.value = null;
@@ -756,13 +881,26 @@ watch(parsedKey, value => {
 });
 watch(selectedVariable, async value => {
   if (!syncingSelection && value) {
+    releaseFrameCache();
+    selectedResolution.value = resolutionOptions.value[0]?.key || "native";
     emitLayerMeta();
     await loadFrame();
   }
 });
+watch(resolutionOptions, options => {
+  if (!options.some(item => item.key === selectedResolution.value)) {
+    selectedResolution.value = options[0]?.key || "native";
+  }
+});
+watch(selectedResolution, async () => {
+  releaseFrameCache();
+  emitLayerMeta();
+  await loadFrame();
+});
 watch(() => props.timeIndex, () => loadFrame());
 watch(() => props.src, emitLayerMeta);
 onBeforeUnmount(() => {
+  releaseFrameCache();
   removeImageryLayer();
   if (gl) {
     if (valueTexture) gl.deleteTexture(valueTexture);

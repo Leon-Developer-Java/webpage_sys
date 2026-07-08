@@ -817,6 +817,19 @@ function resetTimebar() {
   himawariTimeline.value = [];
 }
 
+function nextTimeIndexForActive() {
+  if (active.value === "grib" && currentGfsValidAxisIndices().length) {
+    return nextGfsValidAxisIndex(1);
+  }
+
+  const count = Math.max(1, axisTimes.value.length);
+  return (clampTimeIndex(tIndex.value) + 1) % count;
+}
+
+function advanceTimeIndex() {
+  setTimeIndex(nextTimeIndexForActive());
+}
+
 function startAnim() {
   clearInterval(animTimer);
 
@@ -832,24 +845,8 @@ function startAnim() {
     return;
   }
 
-  if (active.value === "grib" && currentGfsValidAxisIndices().length) {
-    animTimer = setInterval(() => {
-      const next = nextGfsValidAxisIndex(1);
-      tIndex.value = next;
-      animPos.value = next;
-    }, Math.max(120, 900 / Math.max(0.1, speed.value)));
-    return;
-  }
-
-  lastTs = Date.now();
-  animTimer = setInterval(() => {
-    const now = Date.now();
-    animPos.value += (now - lastTs) * speed.value / 600;
-    lastTs = now;
-    if (animPos.value >= axisTimes.value.length) animPos.value = 0;
-    const floor = Math.floor(animPos.value);
-    if (floor !== tIndex.value) setTimeIndex(floor);
-  }, 16);
+  advanceTimeIndex();
+  animTimer = setInterval(advanceTimeIndex, Math.max(120, 900 / Math.max(0.1, speed.value)));
 }
 
 watch(playing, v => {
