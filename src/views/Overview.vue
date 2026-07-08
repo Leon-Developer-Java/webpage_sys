@@ -35,7 +35,7 @@
         </ul>
         <label class="upload"><input type="file" multiple hidden @change="choose" />{{ selectedFileLabel }}</label>
         <el-button type="primary" size="small" class="parse" @click="parse">打开并解析</el-button>
-        <p class="hint">解析后生成 meta.json + PNG</p>
+        <p class="hint">解析后生成 meta.json + WEBP</p>
         <div class="vars">
           <VariableSelect v-model="variable" :options="variableOptions" />
           <VariableSelect v-model="level" :options="levels" />
@@ -168,12 +168,13 @@ import WrfLayer from "../layers/WrfLayer.vue";
 const dark = inject("theme");
 
 const sources = [
-  { key: "grib", btn: "GFS·ECMWF", comp: GribLayer },
-  { key: "cma", btn: "CMA", comp: CmaLayer },
-  { key: "radar", btn: "雷达", comp: RadarLayer },
-  { key: "himawari", btn: "葵花卫星", comp: HimawariLayer },
-  { key: "wrf", btn: "WRF", comp: WrfLayer },
-  { key: "era5", btn: "ERA5", comp: Era5Layer }
+  {key: "gfs", btn: "GFS", comp: GribLayer, dataType: "GFS"},
+  {key: "ecmwf", btn: "ECMWF", comp: GribLayer, dataType: "ECMWF"},
+  {key: "cma", btn: "CMA", comp: CmaLayer},
+  {key: "radar", btn: "雷达", comp: RadarLayer},
+  {key: "himawari", btn: "葵花卫星", comp: HimawariLayer},
+  {key: "wrf", btn: "WRF", comp: WrfLayer},
+  {key: "era5", btn: "ERA5", comp: Era5Layer}
 ];
 
 const infos = {
@@ -186,24 +187,29 @@ const infos = {
 };
 
 const files = [
-  { name: "radar_xh_20250616_1000.cinrad", time: "2025-06-16 10:00", size: "2.14 MB", key: "radar" },
-  { name: "era5_t2m_20250616.nc", time: "2025-06-16 09:00", size: "1.28 GB", key: "era5" },
-  { name: "gfs.t00z.pgrb2.0p25.f006", time: "2025-06-16 08:00", size: "524 MB", key: "grib" },
-  { name: "himawari_20250616_1000.hsd", time: "2025-06-16 10:00", size: "380 MB", key: "himawari" }
+  {name: "radar_xh_20250616_1000.cinrad", time: "2025-06-16 10:00", size: "2.14 MB", key: "radar"},
+  {name: "era5_t2m_20250616.nc", time: "2025-06-16 09:00", size: "1.28 GB", key: "era5"},
+  {name: "gfs.t00z.pgrb2.0p25.f006", time: "2025-06-16 08:00", size: "524 MB", key: "gfs"},
+  {name: "ecmwf_realtime_20250616_00z_f000_f024.grib2", time: "2025-06-16 08:00", size: "480 MB", key: "ecmwf"},
+  {name: "himawari_20250616_1000.hsd", time: "2025-06-16 10:00", size: "380 MB", key: "himawari"}
 ];
 
 const defaultProcessing = [
-  { step: "下载", state: "成功", t: "06-16 09:58", ok: true },
-  { step: "解析", state: "成功", t: "06-16 09:59", ok: true },
-  { step: "渲染 PNG", state: "成功", t: "06-16 10:02", ok: true },
-  { step: "前端展示", state: "服务中", t: "200 ms", ok: false }
+  {step: "下载", state: "成功", t: "06-16 09:58", ok: true},
+  {step: "解析", state: "成功", t: "06-16 09:59", ok: true},
+  {step: "渲染 WEBP", state: "成功", t: "06-16 10:02", ok: true},
+  {step: "前端展示", state: "服务中", t: "200 ms", ok: false}
 ];
 
-const versions = ["文件存储：原始数据 + meta.json + PNG", "前端渲染：PNG 显示（后续升级 WebGL2）", "数据处理：后端完成、前端轻展示"];
+const versions = ["文件存储：原始数据 + meta.json + WEBP", "前端渲染：GFS/ECMWF 独立入口 + WEBP 优先显示", "数据处理：后端完成、前端轻展示"];
 const projections = ["等经纬", "墨卡托", "正弦", "罗宾逊", "兰博托", "卫星正视", "北极", "南极"];
 const basemaps = ["矢量底图", "影像底图", "地形晕渲", "全球境界"];
 const levels = ["地面", "850hPa", "500hPa", "200hPa"];
 const defaultTimes = ["00时", "02时", "04时", "06时", "08时", "10时", "12时", "14时", "16时", "18时", "20时", "22时"];
+
+function isGribLayerKey(key) {
+  return key === "gfs" || key === "ecmwf";
+}
 
 const tool = ref("file");
 const dockOpen = ref(false);
@@ -223,7 +229,7 @@ const parsed = ref(null);
 const parsedLayerKey = ref(null);
 const parseProcessing = ref(null);
 const layerDisplays = ref({});
-const layerResolutions = ref({ cma: "native" });
+const layerResolutions = ref({cma: "native"});
 const himawariTimeline = ref([]);
 const playing = ref(false);
 const speed = ref(1);
@@ -270,7 +276,7 @@ function updatePaneLabel(paneIndex, key, payload) {
   const label = extractLabel(payload);
   if (label) {
     const src = sources.find(s => s.key === key);
-    paneLabels.value = { ...paneLabels.value, [paneIndex]: `${src?.btn || key} · ${label}` };
+    paneLabels.value = {...paneLabels.value, [paneIndex]: `${src?.btn || key} · ${label}`};
   }
 }
 
@@ -285,7 +291,7 @@ function onLayerDisplayLoaded(paneIndex, key, payload) {
     if (key === "himawari") {
       updateHimawariTimeline(payload);
     }
-    layerDisplays.value = { ...layerDisplays.value, [key]: payload };
+    layerDisplays.value = {...layerDisplays.value, [key]: payload};
     if (key === "cma") {
       animPos.value = tIndex.value;
       cmaPlaybackWaiting.value = false;
@@ -359,8 +365,8 @@ function formatAxisTime(value) {
 
 const activeLayerTimes = computed(() => {
   const values = collectTimes(parsed.value && parsedLayerKey.value === active.value ? parsed.value : null)
-    .concat(collectTimes(layerDisplays.value[active.value]))
-    .filter(Boolean);
+      .concat(collectTimes(layerDisplays.value[active.value]))
+      .filter(Boolean);
   return [...new Set(values.map(String))];
 });
 
@@ -369,9 +375,9 @@ const axisTimes = computed(() => {
     return himawariTimeline.value.map((item) => item.label);
   }
 
-  // GFS/ECMWF 保持业务播放轴：00时、02时、04时...22时。
+  // GFS / ECMWF 保持业务播放轴：00时、02时、04时...22时。
   // 真实 F000/F006/F012 用于图层内部匹配和右侧信息，不直接显示到底部轴。
-  if (active.value === "grib") {
+  if (isGribLayerKey(active.value)) {
     return defaultTimes;
   }
 
@@ -433,13 +439,13 @@ function allVariableLayers(source) {
   const meta = source?.meta || source?.meta_json || {};
   const weather = source?.weather_info || meta.weather_info || {};
   const layers =
-    source?.variable_layers ||
-    weather.variable_layers ||
-    meta.variable_layers ||
-    meta.weather_info?.variable_layers ||
-    source?.extra?.variable_layers ||
-    meta.extra?.variable_layers ||
-    {};
+      source?.variable_layers ||
+      weather.variable_layers ||
+      meta.variable_layers ||
+      meta.weather_info?.variable_layers ||
+      source?.extra?.variable_layers ||
+      meta.extra?.variable_layers ||
+      {};
 
   return layers && typeof layers === "object" ? layers : {};
 }
@@ -452,12 +458,12 @@ function preferredVariableLayer(source) {
   if (!keys.length) return null;
 
   const productKey =
-    source?.product?.key ||
-    source?.product?.code ||
-    source?.level?.layerKey ||
-    source?.default_variable ||
-    source?.meta?.default_variable ||
-    source?.weather_info?.default_variable;
+      source?.product?.key ||
+      source?.product?.code ||
+      source?.level?.layerKey ||
+      source?.default_variable ||
+      source?.meta?.default_variable ||
+      source?.weather_info?.default_variable;
 
   if (productKey && layers[productKey]) {
     return layers[productKey];
@@ -672,14 +678,14 @@ function nearestAxisIndexForHour(targetHour) {
 }
 
 function currentGfsValidAxisIndices() {
-  if (active.value !== "grib") return [];
+  if (!isGribLayerKey(active.value)) return [];
 
   const validHours = currentLayerValidHours();
   if (!validHours.length) return [];
 
   const indices = validHours
-    .map(hour => nearestAxisIndexForHour(hour))
-    .filter(index => Number.isFinite(index));
+      .map(hour => nearestAxisIndexForHour(hour))
+      .filter(index => Number.isFinite(index));
 
   return [...new Set(indices)].sort((a, b) => a - b);
 }
@@ -688,7 +694,7 @@ function snapTimeIndexForActive(v) {
   const max = Math.max(0, axisTimes.value.length - 1);
   const n = Number.isFinite(Number(v)) ? Math.min(max, Math.max(0, Math.round(Number(v)))) : 0;
 
-  if (active.value !== "grib") {
+  if (!isGribLayerKey(active.value)) {
     return n;
   }
 
@@ -727,7 +733,7 @@ function nextGfsValidAxisIndex(direction = 1) {
 }
 
 const parsedFrameCount = computed(() => {
-  if (active.value === "grib") {
+  if (isGribLayerKey(active.value)) {
     const validHours = currentLayerValidHours();
     if (validHours.length) return validHours.length;
 
@@ -760,7 +766,7 @@ const layerTimeIndex = computed(() => {
   const uiIndex = clampTimeIndex(tIndex.value);
   const uiHour = parseAxisHour(axisTimes.value[uiIndex], uiIndex);
 
-  if (active.value === "grib") {
+  if (isGribLayerKey(active.value)) {
     const validHours = currentLayerValidHours();
 
     // GFS 最优先按有效时间匹配：
@@ -845,6 +851,24 @@ function startAnim() {
     return;
   }
 
+  if (isGribLayerKey(active.value) && currentGfsValidAxisIndices().length) {
+    animTimer = setInterval(() => {
+      const next = nextGfsValidAxisIndex(1);
+      tIndex.value = next;
+      animPos.value = next;
+    }, Math.max(120, 900 / Math.max(0.1, speed.value)));
+    return;
+  }
+
+  lastTs = Date.now();
+  animTimer = setInterval(() => {
+    const now = Date.now();
+    animPos.value += (now - lastTs) * speed.value / 600;
+    lastTs = now;
+    if (animPos.value >= axisTimes.value.length) animPos.value = 0;
+    const floor = Math.floor(animPos.value);
+    if (floor !== tIndex.value) setTimeIndex(floor);
+  }, 16);
   advanceTimeIndex();
   animTimer = setInterval(advanceTimeIndex, Math.max(120, 900 / Math.max(0.1, speed.value)));
 }
@@ -873,15 +897,15 @@ watch(axisTimes, () => {
 });
 
 watch(
-  () => [
-    active.value,
-    currentLayerValidHours().join(","),
-    currentLayerForecastHours().join(","),
-  ],
-  () => {
-    setTimeIndex(tIndex.value);
-    if (playing.value) startAnim();
-  }
+    () => [
+      active.value,
+      currentLayerValidHours().join(","),
+      currentLayerForecastHours().join(","),
+    ],
+    () => {
+      setTimeIndex(tIndex.value);
+      if (playing.value) startAnim();
+    }
 );
 
 
@@ -894,7 +918,10 @@ onBeforeUnmount(() => {
 function businessTypeToLayerKey(type) {
   const t = String(type || "").toUpperCase();
 
-  if (t === "GFS" || t === "ECMWF" || t === "GFS/ECMWF") return "grib";
+  if (t === "GFS") return "gfs";
+  if (t === "ECMWF" || t === "EC" || t === "IFS") return "ecmwf";
+  // 历史兼容：旧接口仍返回 GFS/ECMWF 时，默认放到 GFS 页面。
+  if (t === "GFS/ECMWF" || t === "GRIB") return "gfs";
   if (t === "ERA5") return "era5";
   if (t === "CMA") return "cma";
   if (t === "RADAR") return "radar";
@@ -991,7 +1018,9 @@ const selectedHimawariSceneId = computed(() => {
 });
 
 function layerProps(key) {
-  if (key === "himawari") return { sceneId: selectedHimawariSceneId.value };
+  if (key === "gfs") return {dataType: "GFS"};
+  if (key === "ecmwf") return {dataType: "ECMWF"};
+  if (key === "himawari") return {sceneId: selectedHimawariSceneId.value};
   if (key === "cma") {
     return {
       resolution: layerResolutions.value.cma || "native",
@@ -1015,13 +1044,13 @@ function updateHimawariTimeline(data) {
   if (active.value !== "himawari") return;
 
   const preservedIndex = previousSceneId
-    ? items.findIndex((item) => item.scene_id === previousSceneId)
-    : -1;
+      ? items.findIndex((item) => item.scene_id === previousSceneId)
+      : -1;
   const nextIndex = wasAtLatest
-    ? items.length - 1
-    : preservedIndex >= 0
-      ? preservedIndex
-      : Math.min(Math.max(previousIndex, 0), items.length - 1);
+      ? items.length - 1
+      : preservedIndex >= 0
+          ? preservedIndex
+          : Math.min(Math.max(previousIndex, 0), items.length - 1);
 
   setTimeIndex(nextIndex);
 }
@@ -1030,16 +1059,16 @@ function normalizeHimawariTimeline(data) {
   const timeline = Array.isArray(data?.timeline) ? data.timeline : [];
   if (timeline.length) {
     return timeline
-      .map((item) => {
-        const sceneId = item?.scene_id || item?.id || "";
-        const timeValue = item?.observation_time || item?.time || item?.utc_time || item?.label || sceneId;
-        return {
-          scene_id: sceneId,
-          time: timeValue,
-          label: formatObservationTime(timeValue) || item?.label || sceneId,
-        };
-      })
-      .filter((item) => item.scene_id);
+        .map((item) => {
+          const sceneId = item?.scene_id || item?.id || "";
+          const timeValue = item?.observation_time || item?.time || item?.utc_time || item?.label || sceneId;
+          return {
+            scene_id: sceneId,
+            time: timeValue,
+            label: formatObservationTime(timeValue) || item?.label || sceneId,
+          };
+        })
+        .filter((item) => item.scene_id);
   }
 
   const metaJson = data?.meta_json || data?.meta || {};
@@ -1061,11 +1090,11 @@ function formatObservationTime(value) {
   const compact = text.match(/^(\d{4})(\d{2})(\d{2})[_-]?(\d{2})(\d{2})$/);
   if (compact) {
     const date = new Date(Date.UTC(
-      Number(compact[1]),
-      Number(compact[2]) - 1,
-      Number(compact[3]),
-      Number(compact[4]),
-      Number(compact[5]),
+        Number(compact[1]),
+        Number(compact[2]) - 1,
+        Number(compact[3]),
+        Number(compact[4]),
+        Number(compact[5]),
     ));
     return formatBeijingTime(date);
   }
@@ -1093,18 +1122,23 @@ function formatBeijingTime(date) {
 const panes = computed(() => {
   const src = sources.find(s => s.key === active.value);
   if (!src) return [];
-  if (layout.value === "1") return [{ ...src, variantIndex: 0 }];
+  if (layout.value === "1") return [{...src, variantIndex: 0}];
   const count = layout.value === "2" ? 2 : 4;
-  return Array.from({ length: count }, (_, i) => ({ ...src, variantIndex: i }));
+  return Array.from({length: count}, (_, i) => ({...src, variantIndex: i}));
 });
 
 const mapsGrid = computed(() => {
-  if (layout.value === "1") return { gridTemplate: "1fr / 1fr" };
-  if (layout.value === "2") return { gridTemplate: "1fr / 1fr 1fr" };
-  return { gridTemplate: "repeat(2, 1fr) / repeat(2, 1fr)" };
+  if (layout.value === "1") return {gridTemplate: "1fr / 1fr"};
+  if (layout.value === "2") return {gridTemplate: "1fr / 1fr 1fr"};
+  return {gridTemplate: "repeat(2, 1fr) / repeat(2, 1fr)"};
 });
 
-const dockTitle = computed(() => ({ file: "选择文件", data: "数据类型", proj: "投影方式", base: "底图图层" }[tool.value]));
+const dockTitle = computed(() => ({
+  file: "选择文件",
+  data: "数据类型",
+  proj: "投影方式",
+  base: "底图图层"
+}[tool.value]));
 
 function toggleVector() {
   showVector.value = !showVector.value;
@@ -1130,7 +1164,9 @@ function selectSource(key) {
   resetTimebar();
   switching.value = true;
   clearTimeout(switchingTimer);
-  switchingTimer = setTimeout(() => { switching.value = false; }, 10000);
+  switchingTimer = setTimeout(() => {
+    switching.value = false;
+  }, 10000);
   active.value = key;
   parsed.value = null;
   parsedLayerKey.value = null;
@@ -1156,24 +1192,24 @@ async function parse() {
   if (!uploadFiles.length) return;
 
   parseProcessing.value = [
-    { step: "上传/读取", state: "本地文件", t: new Date().toLocaleTimeString(), ok: true },
-    { step: "解析", state: "解析中", t: "", ok: false, running: true },
-    { step: "渲染 PNG", state: "等待", t: "", ok: false },
-    { step: "前端展示", state: "等待", t: "", ok: false },
+    {step: "上传/读取", state: "本地文件", t: new Date().toLocaleTimeString(), ok: true},
+    {step: "解析", state: "解析中", t: "", ok: false, running: true},
+    {step: "渲染 WEBP", state: "等待", t: "", ok: false},
+    {step: "前端展示", state: "等待", t: "", ok: false},
   ];
 
   try {
     const result = await parseFile(uploadFiles);
 
     const businessType =
-      result?.business_type ||
-      result?.data_type ||
-      result?.meta?.business_type ||
-      result?.meta?.data_type;
+        result?.business_type ||
+        result?.data_type ||
+        result?.meta?.business_type ||
+        result?.meta?.data_type;
 
     const layerKey = businessTypeToLayerKey(businessType);
     if (layerKey === "radar") {
-      layerDisplays.value = { ...layerDisplays.value, radar: null };
+      layerDisplays.value = {...layerDisplays.value, radar: null};
     }
 
     parsed.value = result;
@@ -1182,10 +1218,10 @@ async function parse() {
     active.value = layerKey;
 
     parseProcessing.value = [
-      { step: "上传/读取", state: "成功", t: new Date().toLocaleTimeString(), ok: true },
-      { step: "解析", state: "成功", t: new Date().toLocaleTimeString(), ok: true },
-      { step: "渲染 PNG", state: "成功", t: new Date().toLocaleTimeString(), ok: true },
-      { step: "前端展示", state: "完成", t: "实时", ok: true },
+      {step: "上传/读取", state: "成功", t: new Date().toLocaleTimeString(), ok: true},
+      {step: "解析", state: "成功", t: new Date().toLocaleTimeString(), ok: true},
+      {step: "渲染 WEBP", state: "成功", t: new Date().toLocaleTimeString(), ok: true},
+      {step: "前端展示", state: "完成", t: "实时", ok: true},
     ];
 
     setTimeIndex(0);
@@ -1193,10 +1229,10 @@ async function parse() {
     console.error("解析失败：", err);
 
     parseProcessing.value = [
-      { step: "上传/读取", state: "成功", t: new Date().toLocaleTimeString(), ok: true },
-      { step: "解析", state: err?.message || "失败", t: new Date().toLocaleTimeString(), ok: false },
-      { step: "渲染 PNG", state: "未完成", t: "", ok: false },
-      { step: "前端展示", state: "未完成", t: "", ok: false },
+      {step: "上传/读取", state: "成功", t: new Date().toLocaleTimeString(), ok: true},
+      {step: "解析", state: err?.message || "失败", t: new Date().toLocaleTimeString(), ok: false},
+      {step: "渲染 WEBP", state: "未完成", t: "", ok: false},
+      {step: "前端展示", state: "未完成", t: "", ok: false},
     ];
   }
 }
@@ -1220,64 +1256,408 @@ watch(active, () => {
   background: var(--backdrop);
 }
 
-.rail { flex-shrink: 0; display: flex; flex-direction: column; gap: 4px; padding: 8px; }
-.rail button { display: grid; place-items: center; gap: 3px; width: 50px; height: 50px; border: 0; border-radius: 12px; background: transparent; color: var(--muted); font: inherit; font-size: 11px; cursor: pointer; transition: 0.15s; }
-.rail button .el-icon { font-size: 19px; }
-.dim-icon { font-size: 14px; font-weight: 800; letter-spacing: -0.5px; line-height: 1; }
-.rail button:hover { color: var(--text); background: var(--field); }
-.rail button.on { color: #fff; background: var(--accent); }
+.rail {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+}
 
-.dock { flex-shrink: 0; width: 250px; display: flex; flex-direction: column; gap: 11px; padding: 15px; overflow-y: auto; scrollbar-width: none; }
-.dock::-webkit-scrollbar { display: none; }
-.dock-head { display: flex; align-items: center; justify-content: space-between; }
-.dock-head h3 { margin: 0; font-size: 15px; }
-.dock-head .el-icon { cursor: pointer; color: var(--muted); }
-.path { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-radius: 10px; background: var(--field); color: var(--muted); }
-.path input { flex: 1; min-width: 0; border: 0; background: transparent; color: var(--text); font: inherit; outline: none; }
-.list-head { display: flex; align-items: center; justify-content: space-between; color: var(--muted); font-size: 12px; }
-.list-head .el-icon { cursor: pointer; }
-.files { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
-.files li { display: flex; align-items: center; gap: 9px; padding: 9px 10px; border-radius: 10px; cursor: pointer; background: var(--field); border: 1px solid transparent; transition: 0.15s; }
-.files li.sel { border-color: var(--accent); background: var(--accent-soft); }
-.files .dot { width: 11px; height: 11px; border-radius: 50%; border: 2px solid var(--muted); flex-shrink: 0; }
-.files li.sel .dot { border-color: var(--accent); background: var(--accent); }
-.files b { display: block; font-size: 12px; font-weight: 500; word-break: break-all; }
-.files span { font-size: 11px; color: var(--muted); }
-.upload { padding: 8px; border: 1px dashed var(--border); border-radius: 10px; color: var(--muted); font-size: 12px; cursor: pointer; text-align: center; }
-.parse { width: 100%; }
-.hint { margin: 0; color: var(--muted); font-size: 11px; text-align: center; }
-.vars { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.vars :deep(.el-select) { width: 100%; }
-.pick-hint { margin: 0; color: var(--muted); font-size: 12px; }
-.picker { display: flex; flex-direction: column; gap: 6px; }
-.picker button { display: flex; align-items: center; justify-content: space-between; padding: 11px 13px; border: 1px solid var(--border); border-radius: 10px; background: var(--field); color: var(--text); font: inherit; font-size: 13px; cursor: pointer; transition: 0.15s; }
-.picker button:hover { border-color: var(--accent); }
-.picker button.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
-.picker button:disabled { opacity: 0.38; cursor: not-allowed; }
-.picker button:disabled:hover { border-color: var(--border); background: var(--field); color: var(--text); }
-.soon-tag { font-size: 10px; color: var(--muted); }
-.picker button .el-icon { font-size: 15px; }
+.rail button {
+  display: grid;
+  place-items: center;
+  gap: 3px;
+  width: 50px;
+  height: 50px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: 0.15s;
+}
 
-.center { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
-.maps { flex: 1; min-height: 0; display: grid; gap: 10px; }
-.cell { position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; }
-.cell-tag { position: absolute; top: 8px; right: 8px; z-index: 6; padding: 3px 9px; border: 1px solid rgba(255, 255, 255, 0.16); border-radius: 7px; background: rgba(16, 24, 38, 0.68); backdrop-filter: blur(10px); color: #eaf1fb; font-size: 11px; font-weight: 600; letter-spacing: 0.3px; pointer-events: none; }
-.cell :deep(.projmap) { position: absolute; inset: 0; }
+.rail button .el-icon {
+  font-size: 19px;
+}
 
-.timebar { flex-shrink: 0; padding: 6px 14px 8px; overflow: hidden; }
-.tb-head { display: flex; align-items: center; gap: 6px; padding: 0 0 6px; }
-.tc-btn { display: grid; place-items: center; width: 24px; height: 24px; border: 1px solid var(--border); border-radius: 7px; background: var(--field); color: var(--muted); cursor: pointer; transition: 0.15s; }
-.tc-btn:hover { color: var(--accent); border-color: var(--accent); }
-.tc-play { display: grid; place-items: center; width: 28px; height: 28px; border: 0; border-radius: 50%; background: var(--accent); color: #fff; font-size: 13px; cursor: pointer; transition: 0.15s; flex-shrink: 0; }
-.tc-play:hover { opacity: 0.85; }
-.tc-speed { display: flex; gap: 3px; margin: 0 4px; }
-.tc-speed button { padding: 3px 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--field); color: var(--muted); font: inherit; font-size: 11px; cursor: pointer; transition: 0.15s; }
-.tc-speed button:hover { color: var(--text); }
-.tc-speed button.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
-.tc-time { margin-left: auto; min-width: 92px; text-align: right; font-size: 12px; color: var(--muted); white-space: nowrap; }
-.version { margin-top: 18px; padding: 14px; border-radius: 12px; background: var(--field); }
-.version p { display: flex; align-items: center; gap: 7px; margin: 0 0 9px; font-size: 12px; color: var(--muted); }
-.version p:last-child { margin-bottom: 0; }
-.ok { color: var(--ok); }
-.run { color: var(--accent); }
+.dim-icon {
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  line-height: 1;
+}
+
+.rail button:hover {
+  color: var(--text);
+  background: var(--field);
+}
+
+.rail button.on {
+  color: #fff;
+  background: var(--accent);
+}
+
+.dock {
+  flex-shrink: 0;
+  width: 250px;
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  padding: 15px;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.dock::-webkit-scrollbar {
+  display: none;
+}
+
+.dock-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.dock-head h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.dock-head .el-icon {
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.path {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--field);
+  color: var(--muted);
+}
+
+.path input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  outline: none;
+}
+
+.list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.list-head .el-icon {
+  cursor: pointer;
+}
+
+.files {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.files li {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 10px;
+  border-radius: 10px;
+  cursor: pointer;
+  background: var(--field);
+  border: 1px solid transparent;
+  transition: 0.15s;
+}
+
+.files li.sel {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.files .dot {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 2px solid var(--muted);
+  flex-shrink: 0;
+}
+
+.files li.sel .dot {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.files b {
+  display: block;
+  font-size: 12px;
+  font-weight: 500;
+  word-break: break-all;
+}
+
+.files span {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.upload {
+  padding: 8px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: center;
+}
+
+.parse {
+  width: 100%;
+}
+
+.hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: center;
+}
+
+.vars {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.vars :deep(.el-select) {
+  width: 100%;
+}
+
+.pick-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.picker button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 11px 13px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--field);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: 0.15s;
+}
+
+.picker button:hover {
+  border-color: var(--accent);
+}
+
+.picker button.on {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.picker button:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+.picker button:disabled:hover {
+  border-color: var(--border);
+  background: var(--field);
+  color: var(--text);
+}
+
+.soon-tag {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.picker button .el-icon {
+  font-size: 15px;
+}
+
+.center {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.maps {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.cell {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+
+.cell-tag {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 6;
+  padding: 3px 9px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 7px;
+  background: rgba(16, 24, 38, 0.68);
+  backdrop-filter: blur(10px);
+  color: #eaf1fb;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  pointer-events: none;
+}
+
+.cell :deep(.projmap) {
+  position: absolute;
+  inset: 0;
+}
+
+.timebar {
+  flex-shrink: 0;
+  padding: 6px 14px 8px;
+  overflow: hidden;
+}
+
+.tb-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 0 6px;
+}
+
+.tc-btn {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--field);
+  color: var(--muted);
+  cursor: pointer;
+  transition: 0.15s;
+}
+
+.tc-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.tc-play {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-size: 13px;
+  cursor: pointer;
+  transition: 0.15s;
+  flex-shrink: 0;
+}
+
+.tc-play:hover {
+  opacity: 0.85;
+}
+
+.tc-speed {
+  display: flex;
+  gap: 3px;
+  margin: 0 4px;
+}
+
+.tc-speed button {
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--field);
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: 0.15s;
+}
+
+.tc-speed button:hover {
+  color: var(--text);
+}
+
+.tc-speed button.on {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.tc-time {
+  margin-left: auto;
+  min-width: 92px;
+  text-align: right;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.version {
+  margin-top: 18px;
+  padding: 14px;
+  border-radius: 12px;
+  background: var(--field);
+}
+
+.version p {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 0 9px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.version p:last-child {
+  margin-bottom: 0;
+}
+
+.ok {
+  color: var(--ok);
+}
+
+.run {
+  color: var(--accent);
+}
 </style>

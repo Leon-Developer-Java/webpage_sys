@@ -179,7 +179,7 @@
 import { computed, ref } from "vue";
 import { DataAnalysis, Delete, Upload, WarningFilled } from "@element-plus/icons-vue";
 import MetaPanel from "../components/MetaPanel.vue";
-import { uploadFileResumable, parseFile } from "../api.js";
+import { uploadFileResumable, authedFetch } from "../api.js";
 
 const files = ref([]);
 const selected = ref(null);
@@ -190,7 +190,10 @@ const dlgVisible = ref(false);
 const missingTypeFiles = ref([]);
 const pendingUpload = ref([]);
 
-const TYPES = ["ERA5", "GFS/ECMWF", "CMA", "雷达", "葵花", "WRF"];
+const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8002";
+
+// GFS 与 ECMWF 必须分开。不能再使用合并入口，否则 ECMWF 可能会被落入 GFS 目录。
+const TYPES = ["ERA5", "GFS", "ECMWF", "CMA", "雷达", "葵花", "WRF"];
 const STATUS = { pending: "待上传", uploading: "上传中", done: "完成", error: "失败" };
 const PARSE_STATUS = { pending: "待解析", parsing: "解析中", done: "已解析", error: "失败" };
 
@@ -198,7 +201,7 @@ const parseQueue = ref([
   { id: 101, name: "era5_t2m_20250610.nc", fmt: "NC", size: "1.28 GB", uploaded: "06-15 09:28", dataType: "ERA5", status: "pending", checked: false },
   { id: 102, name: "radar_xh_20250611_1000.cinrad", fmt: "CINRAD", size: "2.14 MB", uploaded: "06-15 10:15", dataType: "雷达", status: "pending", checked: false },
   { id: 103, name: "himawari_20250612_0000.hsd", fmt: "HSD", size: "380 MB", uploaded: "06-16 07:45", dataType: "葵花", status: "pending", checked: false },
-  { id: 104, name: "gfs.t00z.pgrb2.0p25.f012", fmt: "GRIB2", size: "524 MB", uploaded: "06-16 08:10", dataType: "GFS/ECMWF", status: "pending", checked: false },
+  { id: 104, name: "gfs.t00z.pgrb2.0p25.f012", fmt: "GRIB2", size: "524 MB", uploaded: "06-16 08:10", dataType: "GFS", status: "pending", checked: false },
 ]);
 
 const checked = computed(() => files.value.filter(f => f.checked));
@@ -467,18 +470,68 @@ function addFiles(list) {
   }
 }
 
+
+function normalizeDataTypeForBackend(dataType, fileName = "") {
+  const raw = String(dataType || "").trim();
+  const upper = raw.toUpperCase();
+  const name = String(fileName || "").toLowerCase();
+
+  if (upper === "ECMWF" || upper === "EC" || upper === "IFS") return "ECMWF";
+  if (upper === "GFS") return "GFS";
+
+  // 兼容旧值：如果之前缓存了合并入口，尽量按文件名判断。
+  if (upper === "GFS/ECMWF" || upper === "GFS·ECMWF" || upper === "GRIB") {
+    if (name.includes("ecmwf") || name.includes("ifs") || name.startsWith("ec_") || name.startsWith("ec-")) {
+      return "ECMWF";
+    }
+    return "GFS";
+  }
+
+  return raw;
+}
+
+async function parseFileWithType(fileOrFiles, dataType) {
+  const body = new FormData();
+  const filesToParse = Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles];
+  const normalizedType = normalizeDataTypeForBackend(dataType, filesToParse[0]?.name || "");
+
+  if (filesToParse.length === 1) {
+    body.append("file", filesToParse[0]);
+  } else {
+    filesToParse.forEach(file => body.append("files", file));
+  }
+
+  // backend_system/main.py 需要支持 business_type/data_type Form 字段。
+  // 这样 ECMWF 不依赖文件名，也不会被误识别成 GFS。
+  body.append("business_type", normalizedType);
+  body.append("data_type", normalizedType);
+
+  const response = await authedFetch(`${API_BASE}/api/files/parse`, {
+    method: "POST",
+    body,
+  });
+
+  const payload = await response.json();
+  if (!response.ok || payload.code !== 0) {
+    throw new Error(payload.detail || payload.message || "解析失败");
+  }
+
+  return payload.data;
+}
+
 async function run(f) {
   f.status = "uploading";
   f.percent = 0;
   f.steps = [
     { label: "上传", state: "上传中 0%", t: "", ok: false, running: true },
     { label: "解析", state: "待解析", t: "", ok: false, running: false },
-    { label: "渲染 PNG", state: "等待", t: "", ok: false, running: false },
+    { label: "渲染 WEBP", state: "等待", t: "", ok: false, running: false },
     { label: "前端展示", state: "等待", t: "", ok: false, running: false },
   ];
 
   try {
-    const uploadData = await uploadFileResumable(f.raw, f.dataType, p => {
+    const uploadType = normalizeDataTypeForBackend(f.dataType, f.name);
+    const uploadData = await uploadFileResumable(f.raw, uploadType, p => {
       f.percent = p;
       f.steps[0].state = `上传中 ${Math.floor(p)}%`;
     });
@@ -491,7 +544,7 @@ async function run(f) {
     f.steps[1].running = true;
     f.steps[1].state = "解析中";
 
-    const parsedData = await parseFile(f.raw);
+    const parsedData = await parseFileWithType(f.raw, uploadType);
 
     f.steps[1].ok = true;
     f.steps[1].running = false;
@@ -960,4 +1013,4 @@ input[type="checkbox"] { cursor: pointer; accent-color: var(--accent); }
   transition: 0.15s;
 }
 .dlg-ok:hover { opacity: 0.88; }
-</style>
+</style>main.py

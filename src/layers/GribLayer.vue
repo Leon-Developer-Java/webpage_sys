@@ -1,10 +1,10 @@
 <template>
   <!--
-    自包含 GFS/ECMWF 图层：
-    1. 不依赖 WebglLayer.vue
-    2. 优先读取后端 float32 二进制格点并在本组件内渲染成图层
-    3. PNG 只作为二进制未加载时的兜底预览
-    4. float32 同时用于点查
+    自包含 GFS / ECMWF 图层：
+    1. GFS 和 ECMWF 作为两个独立数据源入口；
+    2. 二者复用同一个 GRIB 图层组件；
+    3. 后端优先返回 WEBP，PNG 仅作兜底兼容；
+    4. 如果后端同时返回 float32，本组件仍支持点查真实值。
   -->
   <canvas ref="renderCanvas" class="gfs-render-canvas"></canvas>
 
@@ -43,6 +43,19 @@
         <select v-model="selectedLevelKey">
           <option
             v-for="item in levelOptions"
+            :key="item.key"
+            :value="item.key"
+          >
+            {{ item.label }}
+          </option>
+        </select>
+      </label>
+
+      <label v-if="resolutionOptions.length > 1" class="lc-row">
+        <span>显示分辨率</span>
+        <select v-model="selectedResolutionKey">
+          <option
+            v-for="item in resolutionOptions"
             :key="item.key"
             :value="item.key"
           >
@@ -126,7 +139,7 @@ const emit = defineEmits(["variable-change", "display-loaded"]);
 
 const API_BASE = "http://127.0.0.1:8002";
 const FALLBACK_EXTENT = [0, -90, 359.75, 90];
-const FALLBACK_IMAGE = `${API_BASE}/data/GFS/053031.grib.png`;
+const FALLBACK_IMAGE = `${API_BASE}/data/GFS/053031.grib.webp`;
 const DEFAULT_MISSING = -9999;
 
 const surface = inject("mapSurface", null);
@@ -137,8 +150,21 @@ const registerMapClick = inject("registerMapClick", null);
 const DEFAULT_FOCUS_EXTENT = [73, 15, 135, 55];
 
 const sourceName = computed(() => {
-  const v = String(props.dataType || "GFS").toUpperCase();
-  return v === "ECMWF" ? "ECMWF" : "GFS";
+  const candidates = [
+    props.dataType,
+    props.parsed?.business_type,
+    props.parsed?.data_type,
+    props.parsed?.source,
+    props.parsed?.meta?.business_type,
+    props.parsed?.meta?.data_type,
+    props.parsed?.weather_info?.source,
+    props.parsed?.meta_json?.business_type,
+    props.parsed?.meta_json?.data_type,
+    props.parsed?.meta_json?.weather_info?.source,
+  ];
+
+  const text = candidates.map(v => String(v || "").toUpperCase()).join(" ");
+  return text.includes("ECMWF") || text.includes("IFS") ? "ECMWF" : "GFS";
 });
 
 const renderCanvas = ref(null);
@@ -150,6 +176,7 @@ const loading = ref(false);
 const selectedProductCategory = ref("");
 const selectedVariableKey = ref("");
 const selectedLevelKey = ref("surface");
+const selectedResolutionKey = ref("raw");
 
 const gridValues = shallowRef(null);
 const gridLoading = ref(false);
@@ -302,6 +329,67 @@ const currentLayer = computed(() => {
   return variableLayers.value[key] || Object.values(variableLayers.value)[0] || null;
 });
 
+const resolutionOptions = computed(() => {
+  const opts =
+    currentLayer.value?.resolution_options ||
+    currentLayer.value?.resolutionOptions ||
+    [];
+
+  if (Array.isArray(opts) && opts.length) {
+    return opts.map(item => ({
+      key: String(item.key || item.value || "raw"),
+      label: item.label || item.name || String(item.key || item.value || "原始分辨率"),
+      ...item,
+    }));
+  }
+
+  return [{ key: "raw", label: "原始分辨率" }];
+});
+
+const currentResolutionVariant = computed(() => {
+  const variants =
+    currentLayer.value?.resolution_variants ||
+    currentLayer.value?.resolutionVariants ||
+    {};
+
+  const key = selectedResolutionKey.value || "raw";
+  const selected = variants?.[key];
+
+  // 差分产品未预生成或生成失败时，回退 raw，避免地图空白。
+  if (selected && selected.status !== "pending" && selected.status !== "failed") {
+    return selected;
+  }
+
+  return variants?.raw || null;
+});
+
+const currentDisplayLayer = computed(() => {
+  if (!currentLayer.value) return null;
+
+  const variant = currentResolutionVariant.value;
+  if (!variant) return currentLayer.value;
+
+  return {
+    ...currentLayer.value,
+    ...variant,
+    // 这些基础属性优先保留变量层，避免 variant 信息不全导致面板空白。
+    key: currentLayer.value.key,
+    label: currentLayer.value.label,
+    element: currentLayer.value.element,
+    unit: currentLayer.value.unit,
+    displayUnit: currentLayer.value.displayUnit,
+    varType: currentLayer.value.varType,
+    color_range: currentLayer.value.color_range,
+    legend_ticks: currentLayer.value.legend_ticks,
+    times: currentLayer.value.times,
+    valid_times: currentLayer.value.valid_times,
+    valid_hours: currentLayer.value.valid_hours,
+    valid_time_hours: currentLayer.value.valid_time_hours,
+    forecast_hours: currentLayer.value.forecast_hours,
+    forecast_labels: currentLayer.value.forecast_labels,
+  };
+});
+
 const levelOptions = computed(() => {
   const levelText =
     currentLayer.value?.level ||
@@ -318,28 +406,32 @@ const levelOptions = computed(() => {
 });
 
 const currentPngUrls = computed(() => {
+  const layer = currentDisplayLayer.value || currentLayer.value || {};
+
+  // 字段名保留 currentPngUrls 是为了少改旧逻辑；
+  // 实际上这里优先承载 image_urls / webp_urls，PNG 只兜底。
   const urls =
-    currentLayer.value?.image_urls ||
-    currentLayer.value?.imageUrls ||
-    currentLayer.value?.webp_urls ||
-    currentLayer.value?.webpUrls ||
-    currentLayer.value?.png_urls ||
-    currentLayer.value?.pngUrls ||
+    layer.image_urls ||
+    layer.imageUrls ||
+    layer.webp_urls ||
+    layer.webpUrls ||
+    layer.png_urls ||
+    layer.pngUrls ||
     [];
 
-  const normalized = urls.map(toPublicUrl).filter(Boolean);
+  const normalized = Array.isArray(urls) ? urls.map(toPublicUrl).filter(Boolean) : [];
 
   if (normalized.length) {
     return normalized;
   }
 
   const single = toPublicUrl(
-    currentLayer.value?.image_url ||
-    currentLayer.value?.image ||
-    currentLayer.value?.webp_url ||
-    currentLayer.value?.webp ||
-    currentLayer.value?.png_url ||
-    currentLayer.value?.png ||
+    layer.image_url ||
+    layer.image ||
+    layer.webp_url ||
+    layer.webp ||
+    layer.png_url ||
+    layer.png ||
     props.src
   );
 
@@ -347,12 +439,14 @@ const currentPngUrls = computed(() => {
 });
 
 const currentGridUrls = computed(() => {
+  const layer = currentDisplayLayer.value || currentLayer.value || {};
+
   const urls =
-    currentLayer.value?.grid_urls ||
-    currentLayer.value?.gridUrls ||
-    currentLayer.value?.binary_urls ||
-    currentLayer.value?.binaryUrls ||
-    currentLayer.value?.binary_layer?.grid_urls ||
+    layer.grid_urls ||
+    layer.gridUrls ||
+    layer.binary_urls ||
+    layer.binaryUrls ||
+    layer.binary_layer?.grid_urls ||
     [];
 
   return Array.isArray(urls) ? urls.map(toPublicUrl).filter(Boolean) : [];
@@ -361,6 +455,7 @@ const currentGridUrls = computed(() => {
 const imageExtent = computed(() => {
   const candidate =
     props.extent ||
+    currentDisplayLayer.value?.extent ||
     currentLayer.value?.extent ||
     display.value?.extent ||
     display.value?.weather_info?.extent ||
@@ -459,34 +554,39 @@ const currentTimeLabel = computed(() => {
 });
 
 const gridWidth = computed(() => {
+  const layer = currentDisplayLayer.value || currentLayer.value || {};
   return Number(
-    currentLayer.value?.grid?.nx ||
-    currentLayer.value?.gridShape?.nx ||
-    currentLayer.value?.binary_layer?.width ||
-    currentLayer.value?.binary_layer?.shape?.[1] ||
+    layer.grid?.nx ||
+    layer.gridShape?.nx ||
+    layer.binary_layer?.width ||
+    layer.binary_layer?.shape?.[1] ||
     0
   );
 });
 
 const gridHeight = computed(() => {
+  const layer = currentDisplayLayer.value || currentLayer.value || {};
   return Number(
-    currentLayer.value?.grid?.ny ||
-    currentLayer.value?.gridShape?.ny ||
-    currentLayer.value?.binary_layer?.height ||
-    currentLayer.value?.binary_layer?.shape?.[0] ||
+    layer.grid?.ny ||
+    layer.gridShape?.ny ||
+    layer.binary_layer?.height ||
+    layer.binary_layer?.shape?.[0] ||
     0
   );
 });
 
 const gridMissing = computed(() => {
-  return Number(currentLayer.value?.missing ?? currentLayer.value?.binary_layer?.missing ?? DEFAULT_MISSING);
+  const layer = currentDisplayLayer.value || currentLayer.value || {};
+  return Number(layer.missing ?? layer.binary_layer?.missing ?? DEFAULT_MISSING);
 });
 
 const currentStepStats = computed(() => {
+  const layer = currentDisplayLayer.value || currentLayer.value || {};
+
   const stats =
-    currentLayer.value?.step_stats ||
-    currentLayer.value?.stepStats ||
-    currentLayer.value?.binary_layer?.step_stats ||
+    layer.step_stats ||
+    layer.stepStats ||
+    layer.binary_layer?.step_stats ||
     [];
 
   return stats[safeIndex.value] || {
@@ -567,7 +667,13 @@ const binaryReady = computed(() => {
 const renderModeText = computed(() => {
   if (gridLoading.value) return "二进制加载中";
   if (binaryReady.value) return "二进制格点";
-  return "PNG预览";
+
+  const fmt =
+    currentDisplayLayer.value?.image_format ||
+    currentDisplayLayer.value?.imageFormat ||
+    (String(currentImageUrl.value || "").toLowerCase().includes(".webp") ? "webp" : "png");
+
+  return String(fmt).toLowerCase() === "webp" ? "WEBP预览" : "PNG预览";
 });
 
 const currentValidHours = computed(() => {
@@ -752,6 +858,10 @@ function syncSelection() {
   if (!levelOptions.value.some(item => item.key === selectedLevelKey.value)) {
     selectedLevelKey.value = levelOptions.value[0]?.key || "surface";
   }
+
+  if (!resolutionOptions.value.some(item => item.key === selectedResolutionKey.value)) {
+    selectedResolutionKey.value = resolutionOptions.value[0]?.key || "raw";
+  }
 }
 
 function pickPayload(payload) {
@@ -781,7 +891,8 @@ async function loadGfsDisplay() {
   loading.value = true;
 
   try {
-    const response = await authedFetch(`${API_BASE}/api/display/GFS?t=${Date.now()}`, {
+    const displayType = sourceName.value === "ECMWF" ? "ECMWF" : "GFS";
+    const response = await authedFetch(`${API_BASE}/api/display/${displayType}?t=${Date.now()}`, {
       method: "GET",
       cache: "no-store",
     });
@@ -1181,14 +1292,16 @@ function emitCurrentVariable() {
     alert: currentLayer.value.alert || "无",
     extent: imageExtent.value,
 
-    render_mode: binaryReady.value ? "binary" : "png",
-    png_url: currentImageUrl.value,
-    png_urls: currentPngUrls.value,
-    webp_url: currentImageUrl.value,
-    webp_urls: currentPngUrls.value,
+    render_mode: binaryReady.value ? "binary" : renderModeText.value.replace("预览", "").toLowerCase(),
+    png_url: String(currentImageUrl.value || "").toLowerCase().includes(".png") ? currentImageUrl.value : "",
+    png_urls: currentPngUrls.value.filter(url => String(url).toLowerCase().includes(".png")),
+    webp_url: String(currentImageUrl.value || "").toLowerCase().includes(".webp") ? currentImageUrl.value : "",
+    webp_urls: currentPngUrls.value.filter(url => String(url).toLowerCase().includes(".webp")),
     image_url: currentImageUrl.value,
     image_urls: currentPngUrls.value,
     image_format: String(currentImageUrl.value || "").toLowerCase().includes(".webp") ? "webp" : "png",
+    resolution_key: selectedResolutionKey.value,
+    resolution_label: resolutionOptions.value.find(item => item.key === selectedResolutionKey.value)?.label || "原始分辨率",
 
     grid_url: currentGridUrl.value,
     grid_urls: currentGridUrls.value,
@@ -1261,13 +1374,21 @@ watch(selectedVariableKey, () => {
   emitCurrentVariable();
 });
 
-watch(currentLayer, () => {
+watch(selectedResolutionKey, () => {
+  pickedPoint.value = null;
+  gridValues.value = null;
+  loadGrid();
+  emitCurrentVariable();
+  renderLayer();
+});
+
+watch(currentDisplayLayer, () => {
   pickedPoint.value = null;
   emitCurrentVariable();
 });
 
 watch(
-  () => [currentVariable.value?.key, safeIndex.value, currentGridUrl.value, gridWidth.value, gridHeight.value],
+  () => [currentVariable.value?.key, selectedResolutionKey.value, safeIndex.value, currentGridUrl.value, gridWidth.value, gridHeight.value],
   () => {
     pickedPoint.value = null;
     loadGrid();
@@ -1277,7 +1398,7 @@ watch(
 );
 
 watch(
-  () => [currentImageUrl.value, imageExtent.value?.join(","), currentVariable.value?.key, currentLayer.value?.level],
+  () => [currentImageUrl.value, imageExtent.value?.join(","), currentVariable.value?.key, selectedResolutionKey.value, currentLayer.value?.level],
   () => {
     zoomToData();
     setupClickHandler();
@@ -1302,6 +1423,7 @@ watch(
     error.value = "";
     gridError.value = "";
     pickedPoint.value = null;
+    selectedResolutionKey.value = "raw";
     loadGfsDisplay();
   }
 );
