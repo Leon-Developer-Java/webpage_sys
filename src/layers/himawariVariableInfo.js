@@ -5,9 +5,38 @@ export function buildHimawariVariableInfo({ product, display }) {
   const isRgb = isHimawariRgbProduct(product);
   const unit = isRgb ? "RGB合成" : product?.display_unit || product?.unit || weather.unit || "";
 
+  // 中文说明
+  const cnDescription = firstText(
+    product?.description_cn,
+    product?.description_zh,
+    product?.explanation_cn,
+    product?.explanation_zh,
+  );
+  // 英文说明 — 部分产品以 "; " 分隔标签与解释
+  const enDescription = firstText(
+    product?.description_en,
+    product?.description,
+    product?.long_name,
+    product?.plain_name,
+  );
+  const { label: enLabel, explanation: enExplanation } = splitEnDescription(enDescription);
+
+  // 要素的英文标识：产品 ID · 英文标签
+  const productId = product?.name || product?.key || "";
+  const elementEn = productId
+    ? productId + (enLabel ? ` · ${enLabel}` : "")
+    : enLabel;
+
+  // 含义：中文说明 + 英文解释（不含英文标签部分，空格分隔同排显示）
+  const elementMeaning = cnDescription
+    ? cnDescription + (enExplanation && enExplanation !== cnDescription ? ` ${enExplanation}` : "")
+    : (enExplanation || "");
+
   return {
     file: meta.scene_id || display?.meta_file || weather.file || "—",
     element: productName || weather.element || "—",
+    element_en: elementEn,
+    elementMeaning,
     time: meta.observation_time || weather.time || "—",
     level: weather.level || "卫星观测",
     range: weather.range || formatExtent(meta.extent || display?.extent),
@@ -15,6 +44,10 @@ export function buildHimawariVariableInfo({ product, display }) {
     unit,
     missing: isRgb ? "—" : weather.missing || product?.missing || "—",
     status: weather.status || "解析完成",
+    // 时间分辨率（Himawari 全圆盘 10 分钟扫描间隔）
+    timeResolution: "10分钟",
+    // 空间分辨率（来自网格分辨率）
+    spatialResolution: weather.resolution || (meta.resolution ? `${meta.resolution}°` : ""),
     extraRows: buildExtraRows(product),
   };
 }
@@ -28,7 +61,6 @@ export function resolveHimawariImageUrl({ product, display, fallback = "", apiBa
     product?.src,
     product?.png_url,
     product?.png,
-    product?.png_data_url,
     display?.webp_url,
     display?.image_url,
     display?.image,
@@ -36,7 +68,6 @@ export function resolveHimawariImageUrl({ product, display, fallback = "", apiBa
     display?.src,
     display?.png_url,
     display?.png,
-    display?.png_data_url,
     fallback,
   ];
 
@@ -60,24 +91,9 @@ export function isHimawariRgbProduct(product) {
 
 function buildExtraRows(product) {
   if (!product) return [];
-  const cnDescription = firstText(
-    product.description_cn,
-    product.description_zh,
-    product.explanation_cn,
-    product.explanation_zh,
-  );
-  const enDescription = firstText(
-    product.description_en,
-    product.description,
-    product.long_name,
-    product.plain_name,
-  );
   return [
-    { key: "category", label: "类型", value: product.category },
     { key: "wavelength", label: "波长", value: product.wavelength },
     { key: "source_bands", label: "来源", value: formatSourceBands(product.source_bands) },
-    { key: "description_cn", label: "说明", value: clipText(cnDescription || enDescription, 34) },
-    { key: "description_en", label: "英文", value: enDescription && enDescription !== cnDescription ? clipText(enDescription, 46) : "" },
   ].filter((row) => row.value !== undefined && row.value !== null && row.value !== "");
 }
 
@@ -87,16 +103,28 @@ function firstText(...values) {
     .find(Boolean) || "";
 }
 
-function clipText(value, maxLength) {
-  const text = String(value || "").replace(/\s+/g, " ").trim();
-  if (!text || text.length <= maxLength) return text;
-  return `${text.slice(0, Math.max(0, maxLength - 3))}...`;
+/**
+ * 拆分英文说明为标签部分（要素栏用）和解释部分（含义栏用）。
+ * 部分产品以 "; " 分隔（如 B13: "Infrared window brightness temperature; colder..."）。
+ * 无分隔时标签和解释相同。
+ */
+function splitEnDescription(text) {
+  if (!text) return { label: "", explanation: "" };
+  const idx = text.indexOf("; ");
+  if (idx > 0) {
+    return {
+      label: text.slice(0, idx).trim(),
+      explanation: text.slice(idx + 2).trim(),
+    };
+  }
+  return { label: text, explanation: text };
 }
 
 function toPublicUrl(value, apiBase) {
   const text = String(value || "").trim();
   if (!text) return "";
-  if (/^(data:|blob:|https?:\/\/)/i.test(text)) return text;
+  if (!/\.webp(\?.*)?$/i.test(text)) return "";
+  if (/^https?:\/\//i.test(text)) return text;
   if (text.startsWith("/")) return `${String(apiBase || "").replace(/\/$/, "")}${text}`;
   if (/^(data|static|assets)\//i.test(text)) return `${String(apiBase || "").replace(/\/$/, "")}/${text}`;
   return "";

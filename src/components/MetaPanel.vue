@@ -130,17 +130,23 @@ function getElementMeaning(info, meta = {}) {
 const allRows = computed(() => {
   const meta = props.meta || {};
   const info = meta.weather_info || meta;
-  const elementMeaning = getElementMeaning(info, meta);
+  // 优先使用数据源提供的 elementMeaning，否则从关键字推断
+  const elementMeaning = info.elementMeaning || getElementMeaning(info, meta);
+  // 要素中文名后附加英文名
+  const elementValue = info.element
+    + (info.element_en ? ` · ${info.element_en}` : "");
 
   const baseRows = [
     ["file", "文件", info.file || meta.file?.name || meta.file_name || meta.source_file],
-    ["element", "要素", info.element],
+    ["element", "要素", elementValue],
     ["elementExplain", "含义", elementMeaning],
     ["time", "时间", info.time],
     ["level", "层级", info.level],
     ["range", "范围", info.range],
     ["grid", "网格", info.grid],
     ["resolution", "分辨率", info.resolution || info.spatial_resolution || meta.resolution || meta.spatial_resolution],
+    ["timeResolution", "时间分辨率", info.timeResolution],
+    ["spatialResolution", "空间分辨率", info.spatialResolution],
     ["unit", "单位", info.unit],
     ["missing", "缺测", info.missing],
     ["status", "状态", info.status],

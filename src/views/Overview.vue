@@ -122,7 +122,7 @@
           <span class="tc-time">{{ activeTimeLabel }}</span>
         </div>
         <HimawariTimeAxis
-          v-if="active === 'himawari' || active === 'cma'"
+          v-if="active === 'himawari' || active === 'fy3' || active === 'cma'"
           :key="timeAxisKey"
           :times="axisTimes"
           :active="animPos"
@@ -168,6 +168,7 @@ import GribLayer from "../layers/GribLayer.vue";
 import CmaLayer from "../layers/CmaLayer.vue";
 import RadarLayer from "../layers/RadarWebpLayer.vue";
 import HimawariLayer from "../layers/HimawariLayer.vue";
+import FY3Layer from "../layers/FY3Layer.vue";
 import HimawariTimeAxis from "../layers/HimawariTimeAxis.vue";
 import WrfLayer from "../layers/WrfLayer.vue";
 
@@ -178,7 +179,8 @@ const sources = [
   {key: "ecmwf", btn: "ECMWF", comp: GribLayer, dataType: "ECMWF"},
   {key: "cma", btn: "CMA", comp: CmaLayer},
   {key: "radar", btn: "雷达", comp: RadarLayer},
-  {key: "himawari", btn: "葵花卫星", comp: HimawariLayer},
+  {key: "himawari", btn: "Himawari", comp: HimawariLayer},
+  {key: "fy3", btn: "FY-3", comp: FY3Layer},
   {key: "wrf", btn: "WRF", comp: WrfLayer},
   {key: "era5", btn: "ERA5", comp: Era5Layer}
 ];
@@ -186,6 +188,7 @@ const sources = [
 const infos = {
   radar: { file: "radar_xh_20250616_1000.cinrad", element: "组合反射率 DBZH、径向速度、谱宽", time: "2025-06-16 10:00", level: "0.5° 仰角", range: "73°E-135°E, 15°N-55°N", grid: "721 × 361", missing: "-9999", unit: "dBZ / m·s⁻¹", vars: "3", steps: "24" },
   himawari: { file: "himawari_20250616_1000.hsd", element: "B01-B16 全通道、真彩色合成", time: "2025-06-16 10:00", level: "全圆盘 / 区域", range: "80°E-160°E, 0°N-60°N", grid: "5500 × 5500", missing: "-9999", unit: "°C / %", vars: "16", steps: "25" },
+  fy3: { file: "FY3D_MERSI_GBAL_L1_20260701_0055_1000M_MS.HDF", element: "MERSI-II 25 波段", time: "2026-07-01 08:55", level: "极轨卫星观测", range: "按实际轨迹自动映射", grid: "随轨迹变化", missing: "NaN", unit: "% / K", vars: "25", steps: "12" },
   era5: { file: "era5_t2m_20250616.nc", element: "2m 温度、位势、风场", time: "2025-06-16 09:00", level: "2m / 1000-200hPa", range: "73°E-135°E, 15°N-55°N", grid: "248 × 161", missing: "NaN", unit: "°C", vars: "5", steps: "24" },
   grib: { file: "gfs.t00z.pgrb2.0p25.f006", element: "500hPa 位势高度、温度", time: "2025-06-16 08:00", level: "500hPa / 850hPa", range: "73°E-135°E, 15°N-55°N", grid: "249 × 161", missing: "9999", unit: "gpm", vars: "8", steps: "40" },
   cma: { file: "cma_meso_20250616.grib2", element: "2m 温度、降水", time: "2025-06-16 08:00", level: "地面 / 多层", range: "70°E-140°E, 10°N-60°N", grid: "1025 × 801", missing: "9999", unit: "°C / mm", vars: "6", steps: "24" },
@@ -197,7 +200,8 @@ const files = [
   {name: "era5_t2m_20250616.nc", time: "2025-06-16 09:00", size: "1.28 GB", key: "era5"},
   {name: "gfs.t00z.pgrb2.0p25.f006", time: "2025-06-16 08:00", size: "524 MB", key: "gfs"},
   {name: "ecmwf_realtime_20250616_00z_f000_f024.grib2", time: "2025-06-16 08:00", size: "480 MB", key: "ecmwf"},
-  {name: "himawari_20250616_1000.hsd", time: "2025-06-16 10:00", size: "380 MB", key: "himawari"}
+  {name: "himawari_20250616_1000.hsd", time: "2025-06-16 10:00", size: "380 MB", key: "himawari"},
+  {name: "FY3D_MERSI_GBAL_L1_20260701_0055_1000M_MS.HDF", time: "2026-07-01 08:55", size: "1.4 GB", key: "fy3"}
 ];
 
 const defaultProcessing = [
@@ -235,7 +239,7 @@ const parsed = ref(null);
 const parsedLayerKey = ref(null);
 const parseProcessing = ref(null);
 const layerDisplays = ref({});
-const layerResolutions = ref({cma: "native"});
+const layerResolutions = ref({cma: "native", fy3: "original", himawari: "original"});
 const himawariTimeline = ref([]);
 const playing = ref(false);
 const speed = ref(1);
@@ -356,10 +360,11 @@ function onLayerVariableChange(paneIndex, key, payload) {
 }
 
 function onLayerResolutionChange(key, value) {
-  if (key !== "cma") return;
+  if (!key) return;
+  const defaultValue = key === "cma" ? "native" : "original";
   layerResolutions.value = {
     ...layerResolutions.value,
-    cma: value || "native",
+    [key]: value || defaultValue,
   };
 }
 
@@ -1048,7 +1053,8 @@ const selectedHimawariSceneId = computed(() => {
 function layerProps(key) {
   if (key === "gfs") return {dataType: "GFS"};
   if (key === "ecmwf") return {dataType: "ECMWF"};
-  if (key === "himawari") return {sceneId: selectedHimawariSceneId.value};
+  if (key === "himawari") return {sceneId: selectedHimawariSceneId.value, resolution: layerResolutions.value.himawari || "original"};
+  if (key === "fy3") return {resolution: layerResolutions.value.fy3 || "original"};
   if (key === "cma") {
     return {
       resolution: layerResolutions.value.cma || "native",
