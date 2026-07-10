@@ -55,12 +55,10 @@ const lastFrameCount = ref(0);
 
 let syncingVariable = false;
 let displayRequestId = 0;
-let binaryRequestId = 0;
 let cacheRevision = 0;
 const displayCache = new Map();
 const pendingDisplays = new Map();
 const imageCache = new Map();
-const COMMON_NC_DISPLAY_VARIABLES = ["Tair_f_inst", "Rainf_tavg", "AvgSurfT_inst", "Wind_f_inst"];
 const INITIAL_PRELOAD_AHEAD = 3;
 const PLAYING_PRELOAD_AHEAD = 6;
 const CACHE_BEHIND = 3;
@@ -168,7 +166,7 @@ function apiUrl(path) {
 }
 
 function displayImagePath(data) {
-  return data?.grid?.webp_url || data?.grid?.image_url || data?.webp_url || data?.image_url || "";
+  return data?.grid?.webp_url || data?.webp_url || data?.webp || "";
 }
 
 function preloadImage(path) {
@@ -218,7 +216,7 @@ function clearImageryLayer() {
 }
 
 function applyImageryLayer() {
-  const imageUrl = apiUrl(grid.value?.webp_url || grid.value?.image_url);
+  const imageUrl = apiUrl(grid.value?.webp_url);
   const extent = grid.value?.extent;
   if (!imageUrl || !Array.isArray(extent) || extent.length !== 4) {
     clearImageryLayer();
@@ -331,7 +329,6 @@ function emitDisplay(data) {
     product: panelInfo.product,
     product_type: panelInfo.product_type,
     extent: currentGrid.extent || [],
-    image_url: currentGrid.webp_url || currentGrid.image_url || "",
     webp_url: currentGrid.webp_url || "",
     resolution_key: currentGrid.resolution_key || selectedResolution.value,
     resolution_options: resolutionOptions.value,
@@ -483,163 +480,6 @@ function preloadNativeFrames(data, variableName) {
       })
       .catch(() => {});
   }
-}
-
-function displayFromParsed(parsed, variableName) {
-  const meta = parsed?.meta || {};
-  const cma = meta.extra?.cma || {};
-  const product = Object.values(cma.products || {})[0] || {};
-  const topVariables = Array.isArray(meta.variables) ? meta.variables : [];
-  const productVariables = Array.isArray(product.variables) ? product.variables : [];
-  const allVariables = topVariables.length && typeof topVariables[0] === "object" ? topVariables : productVariables;
-  const displayVariables = allVariables
-    .filter(item => isGridVariable(item))
-    .map(item => ({
-      name: item.name,
-      label: item.long_name || item.name,
-      unit: item.display_unit || item.unit || "",
-      dims: item.dims || [],
-      shape: item.shape || [],
-      float32: item.float32 || null,
-      band: item.band || null,
-      stats: item.stats || null,
-    }));
-  const variables = cma.product_type === "LAND_NC" || product.product_type === "LAND_NC"
-    ? commonNcVariables(displayVariables)
-    : displayVariables;
-  const frames = normalizeFrames(meta, parsed);
-  const firstMetaVariable = topVariables[0]?.name || topVariables[0] || "";
-  const primary = variableName || meta.default_variable || cma.primary_variable || variables[0]?.name || firstMetaVariable || "";
-  return {
-    business_type: "CMA",
-    meta_json: meta,
-    variables,
-    frames,
-    times: frames.map(frame => frame.time).filter(Boolean).length
-      ? frames.map(frame => frame.time).filter(Boolean)
-      : (Array.isArray(meta.times) ? meta.times : []),
-    frame_count: frames.length,
-    grid: {
-      file: frames[0]?.file || parsed?.file_name || meta.file || sourceFileName(meta.source_file) || "",
-      variable: primary,
-      unit: variableUnit(variables, primary) || meta.unit || "",
-      extent: meta.extent || meta.bbox || [73, 15, 135, 55],
-      min: 0,
-      max: 1,
-      mean: 0,
-      nodata: -999999,
-      resolution_key: "native",
-      resolution: meta.weather_info?.resolution || "",
-      playable: true,
-      meta,
-    },
-    resolution_options: meta.resolution_options || meta.extra?.cma?.resolutions || defaultResolutionOptions(),
-  };
-}
-
-function isGridVariable(item) {
-  const dims = item?.dims || [];
-  const shape = item?.shape || [];
-  return Boolean(item?.float32) || Boolean(item?.band) || dims.slice(-2).join(",") === "lat,lon" || [2, 3].includes(shape.length);
-}
-
-function commonNcVariables(items) {
-  const byName = new Map(items.filter(item => item.name).map(item => [item.name, item]));
-  const picked = COMMON_NC_DISPLAY_VARIABLES.map(name => byName.get(name)).filter(Boolean);
-  return picked.length ? picked : items;
-}
-
-function variableUnit(items, name) {
-  return items.find(item => item.name === name)?.unit || "";
-}
-
-function variableStats(items, name) {
-  const stats = items.find(item => item.name === name)?.stats;
-  if (!stats) return null;
-  const min = Number(stats.min);
-  const max = Number(stats.max);
-  return Number.isFinite(min) && Number.isFinite(max) && max > min
-    ? { min, max, mean: Number(stats.mean) }
-    : null;
-}
-
-function normalizeFrames(meta, parsed) {
-  if (Array.isArray(meta?.frames) && meta.frames.length) return meta.frames;
-  const source = Array.isArray(meta?.source_file) ? meta.source_file : [meta?.source_file || parsed?.file_name || meta?.file].filter(Boolean);
-  return source.map((item, index) => ({
-    index,
-    file: sourceFileName(item),
-    source_file: item,
-    time: Array.isArray(meta?.times) ? meta.times[index] : "",
-    time_label: Array.isArray(meta?.times) ? meta.times[index] : "",
-    extent: meta?.extent || meta?.bbox || null,
-  }));
-}
-
-function sourceFileName(value) {
-  const text = String(value || "");
-  if (!text) return "";
-  return text.split(/[\\/]/).pop();
-}
-
-function binaryUrl(display, variableName) {
-  const params = new URLSearchParams();
-  const frame = activeFrame(display);
-  const fileName = frame?.file || display?.grid?.file || props.file || "";
-  if (fileName) params.set("file", fileName);
-  if (variableName) params.set("variable", variableName);
-  params.set("level_index", String(props.levelIndex));
-  return `${API_BASE}/api/cma/grid?${params.toString()}`;
-}
-
-function headerNumber(headers, name, fallback = 0) {
-  const raw = headers.get(name);
-  if (raw === null || raw === "") return fallback;
-  const value = Number(raw);
-  return Number.isFinite(value) ? value : fallback;
-}
-
-function headerExtent(headers, fallback) {
-  const value = headers.get("X-CMA-Extent");
-  if (!value) return fallback;
-  const extent = value.split(",").map(Number);
-  return extent.length === 4 && extent.every(Number.isFinite) ? extent : fallback;
-}
-
-async function loadBinaryGrid(display, variableName) {
-  const requestId = ++binaryRequestId;
-  const response = await authedFetch(binaryUrl(display, variableName));
-  if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(detail || "CMA 二进制格点读取失败");
-  }
-
-  const buffer = await response.arrayBuffer();
-  if (requestId !== binaryRequestId) return;
-
-  const baseGrid = display.grid || {};
-  const fixedStats = variableStats(display.variables || [], variableName);
-  const values = new Float32Array(buffer);
-  const width = headerNumber(response.headers, "X-CMA-Nx", baseGrid.width);
-  const height = headerNumber(response.headers, "X-CMA-Ny", baseGrid.height);
-  if (values.length !== width * height) {
-    throw new Error(`CMA 二进制格点尺寸不匹配：${values.length} != ${width * height}`);
-  }
-
-  grid.value = {
-    ...baseGrid,
-    file: activeFrame(display)?.file || baseGrid.file,
-    variable: response.headers.get("X-CMA-Variable") || variableName || baseGrid.variable,
-    unit: response.headers.get("X-CMA-Unit") || baseGrid.unit,
-    width,
-    height,
-    extent: headerExtent(response.headers, baseGrid.extent),
-    min: fixedStats?.min ?? headerNumber(response.headers, "X-CMA-Min", baseGrid.min),
-    max: fixedStats?.max ?? headerNumber(response.headers, "X-CMA-Max", baseGrid.max),
-    mean: fixedStats?.mean ?? headerNumber(response.headers, "X-CMA-Mean", baseGrid.mean),
-    nodata: headerNumber(response.headers, "X-CMA-Missing", baseGrid.nodata ?? -999999),
-    values,
-  };
 }
 
 async function loadDisplay(variableName = selectedVariable.value) {
