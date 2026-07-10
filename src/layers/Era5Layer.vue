@@ -60,51 +60,12 @@ const loading = ref(false);
 const error = ref("");
 const framePayload = ref(null);
 
-let renderCanvas = null;
-let gl = null;
-let program = null;
-let buffer = null;
-let valueTexture = null;
 let syncingSelection = false;
 let loadToken = 0;
 let lastExtentKey = "";
 const PRELOAD_RADIUS = 2;
 const MAX_PRELOADED_IMAGES = 7;
 const imageFrameCache = new Map();
-
-const vert = `#version 300 es
-in vec2 aPos;
-out vec2 vUv;
-void main() {
-  vUv = aPos * 0.5 + 0.5;
-  gl_Position = vec4(aPos, 0.0, 1.0);
-}`;
-
-const frag = `#version 300 es
-precision highp float;
-in vec2 vUv;
-out vec4 frag;
-uniform sampler2D uGrid;
-uniform float uOpacity;
-
-vec3 ramp(float t) {
-  vec3 c0 = vec3(0.15, 0.39, 0.92);
-  vec3 c1 = vec3(0.03, 0.57, 0.70);
-  vec3 c2 = vec3(0.09, 0.64, 0.29);
-  vec3 c3 = vec3(0.98, 0.80, 0.13);
-  vec3 c4 = vec3(0.86, 0.15, 0.22);
-  if (t < 0.25) return mix(c0, c1, t / 0.25);
-  if (t < 0.50) return mix(c1, c2, (t - 0.25) / 0.25);
-  if (t < 0.75) return mix(c2, c3, (t - 0.50) / 0.25);
-  return mix(c3, c4, (t - 0.75) / 0.25);
-}
-
-void main() {
-  float packed = texture(uGrid, vec2(vUv.x, 1.0 - vUv.y)).r;
-  if (packed <= 0.0) discard;
-  float t = clamp((packed * 255.0 - 1.0) / 254.0, 0.0, 1.0);
-  frag = vec4(ramp(t), uOpacity);
-}`;
 
 const meta = computed(() => display.value?.meta_json ?? display.value ?? null);
 const baseLayer = computed(() => layerForVariable(selectedVariable.value));
@@ -114,13 +75,12 @@ const resolutionOptions = computed(() => buildResolutionOptions(baseLayer.value,
 const frameIndex = computed(() => {
   const count = Math.max(
     layerImageUrls(currentLayer.value).length || 0,
-    currentLayer.value?.grid_urls?.length || 0,
     currentLayer.value?.times?.length || 0,
     1
   );
   return Math.min(Math.max(Number(props.timeIndex) || 0, 0), count - 1);
 });
-const imageSrc = computed(() => props.src || toPublicUrl(display.value?.webp || display.value?.image_url || display.value?.png));
+const imageSrc = computed(() => props.src || toPublicUrl(display.value?.webp || display.value?.image_url));
 const imageExtent = computed(() => props.extent || meta.value?.extent || meta.value?.bbox || [-180, -90, 180, 90]);
 const resolvedFile = computed(() => fileName(meta.value?.source_file) || fileName(display.value?.meta_file) || props.file || "");
 const currentTime = computed(() => currentLayer.value?.times?.[frameIndex.value] || meta.value?.times?.[frameIndex.value] || "");
@@ -368,7 +328,7 @@ function buildResolutionOptions(layer, metaValue) {
 }
 
 function layerImageUrls(layer) {
-  return layer?.webp_urls || layer?.image_urls || layer?.png_urls || [];
+  return layer?.webp_urls || layer?.image_urls || [];
 }
 
 function frameCacheKey(url) {
@@ -484,160 +444,8 @@ function buildPanelInfo(layer, imageUrls = []) {
   };
 }
 
-function compile(type, source) {
-  const shader = gl.createShader(type);
-  gl.shaderSource(shader, source);
-  gl.compileShader(shader);
-  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-    throw new Error(gl.getShaderInfoLog(shader));
-  }
-  return shader;
-}
-
-function initRenderer(width, height) {
-  renderCanvas = renderCanvas || document.createElement("canvas");
-  renderCanvas.width = Math.max(2, width);
-  renderCanvas.height = Math.max(2, height);
-  gl = gl || renderCanvas.getContext("webgl2", {
-    alpha: true,
-    premultipliedAlpha: false,
-    preserveDrawingBuffer: true,
-  });
-  if (!gl) throw new Error("WebGL2 is not supported by this browser.");
-
-  if (program) return;
-
-  program = gl.createProgram();
-  gl.attachShader(program, compile(gl.VERTEX_SHADER, vert));
-  gl.attachShader(program, compile(gl.FRAGMENT_SHADER, frag));
-  gl.linkProgram(program);
-  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-    throw new Error(gl.getProgramInfoLog(program));
-  }
-
-  buffer = gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
-
-  const aPos = gl.getAttribLocation(program, "aPos");
-  gl.enableVertexAttribArray(aPos);
-  gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
-
-  valueTexture = gl.createTexture();
-  gl.bindTexture(gl.TEXTURE_2D, valueTexture);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-}
-
-function packValues(values, stats, nodata) {
-  const min = Number(stats.min ?? 0);
-  const max = Number(stats.max ?? 1);
-  const span = Math.max(max - min, 0.000001);
-  return Uint8Array.from(values, value => {
-    const numeric = Number(value);
-    if (!Number.isFinite(numeric) || numeric <= nodata + 1) return 0;
-    return Math.max(1, Math.min(255, Math.round(((numeric - min) / span) * 254 + 1)));
-  });
-}
-
-function renderGridImage(payload) {
-  try {
-    initRenderer(payload.width, payload.height);
-    gl.viewport(0, 0, renderCanvas.width, renderCanvas.height);
-    gl.clearColor(0, 0, 0, 0);
-    gl.clear(gl.COLOR_BUFFER_BIT);
-    gl.useProgram(program);
-    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-    gl.bindTexture(gl.TEXTURE_2D, valueTexture);
-    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    gl.texImage2D(
-      gl.TEXTURE_2D,
-      0,
-      gl.R8,
-      payload.width,
-      payload.height,
-      0,
-      gl.RED,
-      gl.UNSIGNED_BYTE,
-      packValues(payload.values, payload, payload.nodata)
-    );
-    gl.uniform1i(gl.getUniformLocation(program, "uGrid"), 0);
-    gl.uniform1f(gl.getUniformLocation(program, "uOpacity"), 0.78);
-    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-    return renderCanvas.toDataURL("image/png");
-  } catch (err) {
-    console.error("ERA5 WebGL render failed", err);
-    return renderGridImage2d(payload);
-  }
-}
-
-function renderGridImage2d(payload) {
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.max(2, payload.width);
-  canvas.height = Math.max(2, payload.height);
-  const ctx = canvas.getContext("2d");
-  const image = ctx.createImageData(payload.width, payload.height);
-  const packed = packValues(payload.values, payload, payload.nodata);
-
-  for (let i = 0; i < packed.length; i += 1) {
-    const offset = i * 4;
-    if (packed[i] === 0) {
-      image.data[offset + 3] = 0;
-      continue;
-    }
-    const [r, g, b] = colorRamp((packed[i] - 1) / 254);
-    image.data[offset] = r;
-    image.data[offset + 1] = g;
-    image.data[offset + 2] = b;
-    image.data[offset + 3] = 200;
-  }
-
-  ctx.putImageData(image, 0, 0);
-  return canvas.toDataURL("image/png");
-}
-
-function colorRamp(t) {
-  const stops = [
-    [37, 99, 235],
-    [8, 145, 178],
-    [22, 163, 74],
-    [250, 204, 21],
-    [220, 38, 38],
-  ];
-  const scaled = Math.max(0, Math.min(1, t)) * (stops.length - 1);
-  const index = Math.min(stops.length - 2, Math.floor(scaled));
-  const local = scaled - index;
-  return [0, 1, 2].map(channel =>
-    Math.round(stops[index][channel] + (stops[index + 1][channel] - stops[index][channel]) * local)
-  );
-}
-
 function removeImageryLayer() {
   surface?.clear();
-}
-
-function applyImageryLayer(payload) {
-  if (!payload?.extent || !payload?.values?.length) {
-    surface?.clear();
-    return;
-  }
-
-  const [west, south, east, north] = payload.extent.map(Number);
-  if ([west, south, east, north].some(value => !Number.isFinite(value)) || west >= east || south >= north) {
-    error.value = "Invalid ERA5 extent";
-    return;
-  }
-
-  surface?.setData(renderGridImage(payload), [west, south, east, north], 1);
-  const extentKey = [west, south, east, north].join(",");
-  if (extentKey !== lastExtentKey) {
-    lastExtentKey = extentKey;
-    const dx = Math.max((east - west) * 0.35, 0.5);
-    const dy = Math.max((north - south) * 0.35, 0.5);
-    flyToExtent?.([Math.max(-180, west - dx), Math.max(-90, south - dy), Math.min(180, east + dx), Math.min(90, north + dy)]);
-  }
 }
 
 function applyImageLayer(payload) {
@@ -660,14 +468,6 @@ function applyImageLayer(payload) {
     const dy = Math.max((north - south) * 0.35, 0.5);
     flyToExtent?.([Math.max(-180, west - dx), Math.max(-90, south - dy), Math.min(180, east + dx), Math.min(90, north + dy)]);
   }
-}
-
-async function paintImageryLayer(payload) {
-  await nextTick();
-  applyImageryLayer(payload);
-  requestAnimationFrame(() => {
-    if (framePayload.value === payload) applyImageryLayer(payload);
-  });
 }
 
 async function paintImageLayer(payload) {
@@ -704,12 +504,10 @@ function emitLayerMeta() {
     axis_times: times,
     webp_urls: layer.webp_urls || [],
     image_urls: imageUrls,
-    png_urls: layer.png_urls || [],
-    grid_urls: layer.grid_urls || [],
     extent: panelInfo.extent,
     image_url: panelInfo.image_url,
     webp_url: panelInfo.webp_url,
-    frame_count: Math.max(imageUrls.length || 0, layer.grid_urls?.length || 0, times.length || 0),
+    frame_count: Math.max(imageUrls.length || 0, times.length || 0),
   };
   emit("variable-change", payload);
   emit("display-loaded", {
@@ -750,7 +548,10 @@ async function loadFrame() {
   const layer = currentLayer.value;
   const imageUrls = layerImageUrls(layer);
   if (!imageUrls.length) {
-    await loadBinaryFrame();
+    gridLayer.value = null;
+    framePayload.value = null;
+    removeImageryLayer();
+    emitLayerMeta();
     return;
   }
 
@@ -779,53 +580,6 @@ async function loadFrame() {
   gridLayer.value = layer;
   await paintImageLayer(payload);
   preloadNearbyFrames(imageUrls, index);
-}
-
-async function loadBinaryFrame() {
-  const layer = currentLayer.value;
-  if (!layer?.grid_urls?.length) {
-    gridLayer.value = null;
-    framePayload.value = null;
-    removeImageryLayer();
-    emitLayerMeta();
-    return;
-  }
-
-  const token = ++loadToken;
-  const index = frameIndex.value;
-  const url = toPublicUrl(layer.grid_urls[index] || layer.grid_urls[0]);
-  const response = await authedFetch(url);
-  if (!response.ok) throw new Error(`ERA5 binary grid load failed: ${response.status}`);
-  const bufferData = await response.arrayBuffer();
-  if (token !== loadToken) return;
-
-  const width = Number(layer.width);
-  const height = Number(layer.height);
-  const values = new Float32Array(bufferData);
-  if (!width || !height || values.length !== width * height) {
-    throw new Error(`ERA5 binary grid size mismatch: ${values.length} != ${width} x ${height}`);
-  }
-
-  const stats = layer.stats?.[index] || layer.stats?.[0] || {};
-  const payload = {
-    variable: selectedVariable.value,
-    resolution: selectedResolution.value,
-    label: layer.label || selectedVariable.value,
-    unit: layer.unit || "",
-    width,
-    height,
-    extent: layer.extent || meta.value?.extent || meta.value?.bbox,
-    nodata: Number(layer.nodata ?? -999999),
-    values,
-    min: Number(stats.min ?? 0),
-    max: Number(stats.max ?? 1),
-    mean: Number(stats.mean ?? 0),
-    time: layer.times?.[index] || "",
-  };
-
-  framePayload.value = payload;
-  gridLayer.value = layer;
-  await paintImageryLayer(payload);
 }
 
 function syncSelectedVariable(value) {
@@ -902,11 +656,6 @@ watch(() => props.src, emitLayerMeta);
 onBeforeUnmount(() => {
   releaseFrameCache();
   removeImageryLayer();
-  if (gl) {
-    if (valueTexture) gl.deleteTexture(valueTexture);
-    gl.getExtension("WEBGL_lose_context")?.loseContext();
-    gl = null;
-  }
 });
 </script>
 
