@@ -349,15 +349,84 @@ const currentTimeLabel = computed(() => {
   )}`;
 });
 
-const weatherInfo = computed(() => display.value?.weather_info || {});
+const weatherInfo = computed(() => {
+  const data = display.value || {};
+  return data.weather_info || data.meta?.weather_info || {};
+});
+
+function extractGribFileName(value) {
+  if (!value) return "";
+
+  let text = String(value)
+    .replaceAll("\\", "/")
+    .split("?")[0]
+    .split("#")[0];
+
+  try {
+    text = decodeURIComponent(text);
+  } catch {
+    // URL 解码失败时继续使用原字符串。
+  }
+
+  let name = text.split("/").pop() || "";
+
+  // xxx.grib2.meta.json -> xxx.grib2
+  name = name.replace(/\.meta\.json$/i, "");
+
+  // xxx.grib2_t2m_step000.webp -> xxx.grib2
+  const match = name.match(/^(.+\.(?:grib2|grib|grb2|grb))/i);
+  if (match) return match[1];
+
+  if (/\.(?:grib2|grib|grb2|grb)$/i.test(name)) {
+    return name;
+  }
+
+  return "";
+}
 
 const resolvedFile = computed(() => {
-  return (
-    props.file ||
-    display.value?.file_name ||
-    weatherInfo.value.file ||
-    `${sourceName.value} realtime`
-  );
+  const data = display.value || {};
+  const meta =
+    data.meta && typeof data.meta === "object"
+      ? data.meta
+      : {};
+  const info =
+    data.weather_info ||
+    meta.weather_info ||
+    {};
+
+  const candidates = [
+    props.file,
+
+    data.file_name,
+    data.filename,
+    data.file,
+
+    meta.file_name,
+    meta.filename,
+    meta.file,
+
+    info.file_name,
+    info.filename,
+    info.file,
+
+    data.meta_url,
+    meta.meta_url,
+
+    currentLayer.value?.image_url,
+    currentFrame.value?.url,
+    data.image_url,
+
+    currentLayer.value?.frames?.[0]?.url,
+    data.image_urls?.[0],
+  ];
+
+  for (const candidate of candidates) {
+    const fileName = extractGribFileName(candidate);
+    if (fileName) return fileName;
+  }
+
+  return `${sourceName.value} realtime`;
 });
 
 const displayUnit = computed(() => {
@@ -574,10 +643,64 @@ function pickPayload(payload) {
 }
 
 function applyDisplayData(payload) {
-  const data = pickPayload(payload);
-  if (!data) return;
+  const raw = pickPayload(payload);
+  if (!raw) return;
 
-  display.value = data;
+  /*
+   * 在线展示接口通常直接返回 compact meta v2；
+   * 上传接口可能返回 { file_name, business_type, meta, weather_info }。
+   * 这里统一成 GribLayer 可以直接读取的结构，并保留外层文件名。
+   */
+  const nestedMeta =
+    raw.meta &&
+    typeof raw.meta === "object" &&
+    (raw.meta.variable_layers || raw.meta.schema_version)
+      ? raw.meta
+      : null;
+
+  display.value = nestedMeta
+    ? {
+        ...nestedMeta,
+        file_name:
+          raw.file_name ||
+          raw.filename ||
+          raw.file ||
+          nestedMeta.file_name ||
+          nestedMeta.filename ||
+          nestedMeta.file ||
+          "",
+        file:
+          raw.file ||
+          raw.file_name ||
+          nestedMeta.file ||
+          nestedMeta.file_name ||
+          "",
+        business_type:
+          raw.business_type ||
+          nestedMeta.business_type ||
+          nestedMeta.source ||
+          sourceName.value,
+        data_type:
+          raw.data_type ||
+          nestedMeta.data_type ||
+          nestedMeta.source ||
+          sourceName.value,
+        source:
+          raw.source ||
+          nestedMeta.source ||
+          raw.business_type ||
+          sourceName.value,
+        meta_url:
+          raw.meta_url ||
+          nestedMeta.meta_url ||
+          "",
+        weather_info:
+          raw.weather_info ||
+          nestedMeta.weather_info ||
+          {},
+      }
+    : raw;
+
   syncSelection();
   renderLayer();
   emitCurrentVariable();
@@ -694,6 +817,7 @@ function emitCurrentVariable() {
     business_type: sourceName.value,
     data_type: sourceName.value,
     file: resolvedFile.value,
+    file_name: resolvedFile.value,
     element:
       currentLayer.value.element ||
       currentLayer.value.label ||
@@ -743,6 +867,7 @@ function emitCurrentVariable() {
   emit("display-loaded", {
     ...display.value,
     file: resolvedFile.value,
+    file_name: resolvedFile.value,
     product: currentVariable.value,
     level: currentLayer.value?.level || "",
     render_mode: "webp",

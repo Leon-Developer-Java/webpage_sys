@@ -302,16 +302,55 @@ function updatePaneLabel(paneIndex, key, payload) {
 
 function onLayerDisplayLoaded(paneIndex, key, payload) {
   if (!payload) return;
-  updatePaneLabel(paneIndex, key, payload);
-  if (switching.value && paneIndex === switchingTarget.pane && key === switchingTarget.key) {
+
+  const fileName =
+    resolveOverviewFileName(payload) ||
+    payload.file_name ||
+    payload.filename ||
+    payload.file ||
+    "";
+
+  const normalizedPayload = {
+    ...payload,
+    file_name: fileName || payload.file_name,
+    file: fileName || payload.file,
+    meta: payload.meta
+      ? {
+          ...payload.meta,
+          file_name: fileName || payload.meta.file_name,
+          file: fileName || payload.meta.file,
+        }
+      : payload.meta,
+    weather_info: payload.weather_info
+      ? {
+          ...payload.weather_info,
+          file_name: fileName || payload.weather_info.file_name,
+          file: fileName || payload.weather_info.file,
+        }
+      : payload.weather_info,
+  };
+
+  updatePaneLabel(paneIndex, key, normalizedPayload);
+
+  if (
+    switching.value &&
+    paneIndex === switchingTarget.pane &&
+    key === switchingTarget.key
+  ) {
     switching.value = false;
     clearTimeout(switchingTimer);
   }
+
   if (paneIndex === 0) {
     if (key === "himawari") {
-      updateHimawariTimeline(payload);
+      updateHimawariTimeline(normalizedPayload);
     }
-    layerDisplays.value = {...layerDisplays.value, [key]: payload};
+
+    layerDisplays.value = {
+      ...layerDisplays.value,
+      [key]: normalizedPayload,
+    };
+
     if (key === "cma") {
       animPos.value = tIndex.value;
       cmaPlaybackWaiting.value = false;
@@ -327,14 +366,36 @@ function onLayerVariableChange(paneIndex, key, payload) {
   if (paneIndex !== 0) return;
 
   const previous = layerDisplays.value[key] || {};
+
+  const currentFileName =
+    resolveOverviewFileName(payload) ||
+    resolveOverviewFileName(previous) ||
+    payload.file_name ||
+    payload.filename ||
+    payload.file ||
+    previous.file_name ||
+    previous.file ||
+    "";
+
+  const normalizedWeatherInfo = {
+    ...(previous.weather_info || {}),
+    ...payload,
+    file_name: currentFileName || payload.file_name,
+    file: currentFileName || payload.file,
+  };
+
   const nextDisplay = {
     ...previous,
+    file_name: currentFileName || previous.file_name,
+    file: currentFileName || previous.file,
     meta: {
       ...(previous.meta || {}),
-      weather_info: payload,
       ...payload,
+      file_name: currentFileName || payload.file_name,
+      file: currentFileName || payload.file,
+      weather_info: normalizedWeatherInfo,
     },
-    weather_info: payload,
+    weather_info: normalizedWeatherInfo,
     times: payload.times || previous.times,
     forecast_hours: payload.forecast_hours || previous.forecast_hours,
     forecast_labels: payload.forecast_labels || previous.forecast_labels,
@@ -926,11 +987,92 @@ function businessTypeToLayerKey(type) {
   return active.value;
 }
 
+function extractOverviewGribFileName(value) {
+  if (!value) return "";
+
+  let text = String(value)
+    .replaceAll("\\", "/")
+    .split("?")[0]
+    .split("#")[0];
+
+  try {
+    text = decodeURIComponent(text);
+  } catch {
+    // URL 解码失败时继续使用原字符串。
+  }
+
+  let name = text.split("/").pop() || "";
+  name = name.replace(/\.meta\.json$/i, "");
+
+  const match = name.match(/^(.+\.(?:grib2|grib|grb2|grb))/i);
+  if (match) return match[1];
+
+  if (/\.(?:grib2|grib|grb2|grb)$/i.test(name)) {
+    return name;
+  }
+
+  return "";
+}
+
+function resolveOverviewFileName(source) {
+  if (!source) return "";
+
+  const meta =
+    source.meta ||
+    source.meta_json ||
+    {};
+
+  const info =
+    source.weather_info ||
+    meta.weather_info ||
+    {};
+
+  const layer =
+    preferredVariableLayer(source) ||
+    {};
+
+  const candidates = [
+    source.file_name,
+    source.filename,
+    source.file,
+
+    meta.file_name,
+    meta.filename,
+    meta.file,
+
+    info.file_name,
+    info.filename,
+    info.file,
+
+    source.meta_url,
+    meta.meta_url,
+
+    source.image_url,
+    source.image_urls?.[0],
+
+    layer.image_url,
+    layer.image_urls?.[0],
+    layer.frames?.[0]?.url,
+
+    source.frames?.[0]?.url,
+  ];
+
+  for (const candidate of candidates) {
+    const fileName = extractOverviewGribFileName(candidate);
+    if (fileName) return fileName;
+  }
+
+  return "";
+}
+
 function normalizeParsedMeta(result) {
   if (!result) return null;
 
-  const panelMeta = result.meta || {};
-  const info = result.weather_info || {};
+  const panelMeta = result.meta || result.meta_json || {};
+  const info =
+    result.weather_info ||
+    panelMeta.weather_info ||
+    {};
 
   const frames = firstArray(
     result.frames,
@@ -966,7 +1108,30 @@ function normalizeParsedMeta(result) {
     null;
 
   return {
-    file: result.file_name || panelMeta.file || info.file || "—",
+    file:
+      resolveOverviewFileName(result) ||
+      result.file_name ||
+      result.filename ||
+      result.file ||
+      panelMeta.file_name ||
+      panelMeta.filename ||
+      panelMeta.file ||
+      info.file_name ||
+      info.filename ||
+      info.file ||
+      "—",
+    file_name:
+      resolveOverviewFileName(result) ||
+      result.file_name ||
+      result.filename ||
+      result.file ||
+      panelMeta.file_name ||
+      panelMeta.filename ||
+      panelMeta.file ||
+      info.file_name ||
+      info.filename ||
+      info.file ||
+      "—",
     element: panelMeta.element || info.element || "—",
     time: panelMeta.time || info.time || "—",
     level: panelMeta.level || info.level || "—",
@@ -1011,17 +1176,43 @@ function normalizeParsedMeta(result) {
 
 const meta = computed(() => {
   const display = layerDisplays.value[active.value];
-  const displayMeta = display?.meta || display?.weather_info || null;
+  const rawDisplayMeta =
+    display?.meta ||
+    display?.weather_info ||
+    null;
 
-  // CMA 面板跟随卡片中选中的要素，图层上报的 meta 优先于解析快照
+  const displayFileName =
+    resolveOverviewFileName(display) ||
+    resolveOverviewFileName(rawDisplayMeta) ||
+    "";
+
+  const displayMeta = rawDisplayMeta
+    ? {
+        ...rawDisplayMeta,
+        file:
+          displayFileName ||
+          rawDisplayMeta.file ||
+          rawDisplayMeta.file_name ||
+          "—",
+        file_name:
+          displayFileName ||
+          rawDisplayMeta.file_name ||
+          rawDisplayMeta.file ||
+          "—",
+      }
+    : null;
+
+  // CMA 面板跟随卡片中选中的要素。
   if (active.value === "cma" && displayMeta) {
     return displayMeta;
   }
 
+  // 本地上传解析结果。
   if (parsed.value && parsedLayerKey.value === active.value) {
     return normalizeParsedMeta(parsed.value);
   }
 
+  // 在线 GFS / ECMWF 以及其他图层。
   if (displayMeta) {
     return displayMeta;
   }
@@ -1062,7 +1253,18 @@ function layerParsed(key) {
     return {
       ...parsed.value.meta,
       file_name:
+        resolveOverviewFileName(parsed.value) ||
         parsed.value.file_name ||
+        parsed.value.filename ||
+        parsed.value.file ||
+        parsed.value.meta.file_name ||
+        parsed.value.meta.filename ||
+        parsed.value.meta.file,
+      file:
+        resolveOverviewFileName(parsed.value) ||
+        parsed.value.file ||
+        parsed.value.file_name ||
+        parsed.value.meta.file ||
         parsed.value.meta.file_name,
       business_type:
         parsed.value.business_type ||
