@@ -5,6 +5,7 @@ const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8002";
 const UPLOAD_BASE = import.meta.env.VITE_UPLOAD_BASE ?? "http://127.0.0.1:8003";
 const AGENT_BASE = import.meta.env.VITE_AGENT_BASE ?? "http://127.0.0.1:8004";
 const AUTH_BASE = import.meta.env.VITE_AUTH_BASE ?? "http://127.0.0.1:8005";
+const MODEL_BASE = import.meta.env.VITE_MODEL_BASE ?? "http://127.0.0.1:8006";
 const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB
 
 export function getToken() {
@@ -107,6 +108,110 @@ export function withToken(url) {
   const value = String(url || "");
   if (!value.includes("/data/") && !value.includes("/outputs/")) return value;
   return `${value}${value.includes("?") ? "&" : "?"}token=${encodeURIComponent(getToken())}`;
+}
+
+function apiError(payload, fallback = "请求失败") {
+  const detail = payload?.detail;
+  if (typeof detail === "string") return detail;
+  if (typeof detail?.message === "string") return detail.message;
+  if (typeof payload?.message === "string" && payload.message !== "success") return payload.message;
+  return fallback;
+}
+
+async function modelRequest(path, options = {}) {
+  const response = await authedFetch(`${MODEL_BASE}${path}`, options);
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new Error(`模型服务返回了无法解析的响应（HTTP ${response.status}）`);
+  }
+  if (!response.ok || payload?.code !== 0) {
+    throw new Error(apiError(payload, `模型服务请求失败（HTTP ${response.status}）`));
+  }
+  return payload.data;
+}
+
+export function modelAssetUrl(path) {
+  const value = String(path || "");
+  if (!value || /^(https?:|data:|blob:)/i.test(value)) return value;
+  const base = MODEL_BASE || globalThis.location?.origin || "http://127.0.0.1:8006";
+  return new URL(value, `${base.replace(/\/$/, "")}/`).toString();
+}
+
+export async function getModelHealth() {
+  return modelRequest("/api/health");
+}
+
+export async function getDedicatedModels() {
+  const data = await modelRequest("/api/models");
+  return data?.items ?? [];
+}
+
+export async function getModelRun(runId) {
+  return modelRequest(`/api/model-runs/${encodeURIComponent(runId)}`);
+}
+
+export async function getModelRunResult(runId) {
+  const result = await modelRequest(`/api/model-runs/${encodeURIComponent(runId)}/result`);
+  return {
+    ...result,
+    metrics_url: modelAssetUrl(result?.metrics_url),
+    lead_metrics_url: modelAssetUrl(result?.lead_metrics_url),
+    frames: (result?.frames ?? []).map(frame => ({
+      ...frame,
+      truth_url: modelAssetUrl(frame.truth_url),
+      prediction_url: modelAssetUrl(frame.prediction_url),
+    })),
+  };
+}
+
+export async function getModelMetrics(url) {
+  const response = await authedFetch(modelAssetUrl(url));
+  const payload = await response.json();
+  if (!response.ok) throw new Error(apiError(payload, "预报指标读取失败"));
+  return payload;
+}
+
+export async function cancelModelRun(runId) {
+  return modelRequest(`/api/model-runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" });
+}
+
+// 大文件上传使用 XHR 获取真实上传进度；任务入队后由状态接口继续异步轮询。
+export async function submitModelRun({ modelId, files, startTimestamp, onUploadProgress = () => {} }) {
+  await ensureFreshToken();
+  const body = new FormData();
+  body.append("model_id", modelId);
+  if (startTimestamp) body.append("start_timestamp", startTimestamp);
+  Array.from(files || []).forEach(file => body.append("files", file, file.name));
+
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${MODEL_BASE}/api/model-runs`);
+    xhr.setRequestHeader("Authorization", `Bearer ${getToken()}`);
+    xhr.upload.onprogress = event => {
+      if (event.lengthComputable) onUploadProgress((event.loaded / event.total) * 100);
+    };
+    xhr.onerror = () => reject(new Error("无法连接模型服务，请确认 backend_model 已启动。"));
+    xhr.onload = () => {
+      let payload = null;
+      try {
+        payload = JSON.parse(xhr.responseText || "null");
+      } catch {
+        reject(new Error(`模型服务返回了无法解析的响应（HTTP ${xhr.status}）`));
+        return;
+      }
+      if (xhr.status === 401) logout();
+      if (xhr.status === 403) ElMessage.warning("权限不足，请联系管理员开通。");
+      if (xhr.status < 200 || xhr.status >= 300 || payload?.code !== 0) {
+        reject(new Error(apiError(payload, `任务提交失败（HTTP ${xhr.status}）`)));
+        return;
+      }
+      onUploadProgress(100);
+      resolve(payload.data);
+    };
+    xhr.send(body);
+  });
 }
 
 // 与智能体后端的 NDJSON 流式对话：逐行解析，产出事件对象
