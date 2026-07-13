@@ -1,10 +1,16 @@
-<template>
+﻿<template>
   <WebglLayer :key="layerKey" :src="imageUrl" :extent="extent" />
   <LayerCard :badge="label" :file="currentVariable.name" :legend-title="currentVariable.unit" :gradient="currentVariable.gradient" :ticks="currentVariable.ticks">
     <label class="lc-row">
       <span>区域</span>
       <select v-model="domain">
         <option v-for="item in domainOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
+      </select>
+    </label>
+    <label class="lc-row">
+      <span>分辨率</span>
+      <select v-model="selectedResolution">
+        <option v-for="item in resolutionOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
       </select>
     </label>
     <label class="lc-row">
@@ -30,7 +36,6 @@
 import { computed, inject, onMounted, ref, watch } from "vue";
 import WebglLayer from "../components/WebglLayer.vue";
 import LayerCard from "../components/LayerCard.vue";
-import { authedFetch } from "../api";
 
 const props = defineProps({
   timeIndex: { type: Number, default: 12 },
@@ -84,93 +89,119 @@ const hiddenVariables = new Set(["PM2_5_DRY", "PM10", "AOD2D_OUT"]);
 const variables = [
   {
     value: "PM2_5_DRY",
-    name: "PM2.5 干质量浓度",
+    name: "PM2.5 dry mass concentration",
     unit: "ug/m3",
-    desc: "近地面细颗粒物浓度，用于空气质量预报展示。",
+    desc: "Near-surface PM2.5 concentration.",
     gradient: "linear-gradient(to right, #2563eb, #22c55e, #facc15, #f97316, #e11d48)",
-    ticks: ["低", "中", "偏高", "高", "极高"],
+    ticks: ["Low", "Medium", "High", "Very high", "Extreme"],
   },
   {
     value: "PM10",
-    name: "PM10 颗粒物浓度",
+    name: "PM10 mass concentration",
     unit: "ug/m3",
-    desc: "可吸入颗粒物浓度，适合与 PM2.5 联合展示污染过程。",
+    desc: "Near-surface PM10 concentration.",
     gradient: "linear-gradient(to right, #38bdf8, #22c55e, #facc15, #fb923c, #b91c1c)",
-    ticks: ["低", "中", "偏高", "高", "极高"],
+    ticks: ["Low", "Medium", "High", "Very high", "Extreme"],
   },
   {
     value: "AOD2D_OUT",
-    name: "气溶胶光学厚度",
+    name: "Aerosol optical depth",
     unit: "AOD",
-    desc: "柱积分气溶胶光学厚度，反映大气浑浊程度。",
+    desc: "Column aerosol optical depth.",
     gradient: "linear-gradient(to right, #eff6ff, #93c5fd, #facc15, #fb923c, #7f1d1d)",
-    ticks: ["0", "0.4", "0.8", "1.2", "高"],
+    ticks: ["0", "0.4", "0.8", "1.2", "High"],
   },
   {
     value: "T2",
-    name: "2 米气温",
+    name: "2m temperature",
     unit: "K",
-    desc: "近地面 2 米气温，可用于天气背景场展示。",
+    desc: "Air temperature at 2 metres above ground.",
     gradient: "linear-gradient(to right, #2563eb, #60a5fa, #fde68a, #fb923c, #dc2626)",
-    ticks: ["低温", "偏低", "适中", "偏高", "高温"],
+    ticks: ["Cold", "Cool", "Normal", "Warm", "Hot"],
   },
   {
     value: "U10",
-    name: "10 米东西风",
+    name: "10m U wind",
     unit: "m/s",
-    desc: "10 米高度东西向风速，正值表示偏西风分量。",
+    desc: "East-west wind component at 10 metres.",
     gradient: "linear-gradient(to right, #1d4ed8, #93c5fd, #f8fafc, #fdba74, #b91c1c)",
-    ticks: ["负", "弱负", "0", "弱正", "正"],
+    ticks: ["Negative", "Weak negative", "0", "Weak positive", "Positive"],
   },
   {
     value: "V10",
-    name: "10 米南北风",
+    name: "10m V wind",
     unit: "m/s",
-    desc: "10 米高度南北向风速，正值表示偏南风分量。",
+    desc: "North-south wind component at 10 metres.",
     gradient: "linear-gradient(to right, #1d4ed8, #93c5fd, #f8fafc, #fdba74, #b91c1c)",
-    ticks: ["负", "弱负", "0", "弱正", "正"],
+    ticks: ["Negative", "Weak negative", "0", "Weak positive", "Positive"],
   },
   {
     value: "PSFC",
-    name: "地面气压",
+    name: "Surface pressure",
     unit: "Pa",
-    desc: "模式地面气压场，可辅助判断天气系统。",
+    desc: "Model surface pressure.",
     gradient: "linear-gradient(to right, #312e81, #2563eb, #22c55e, #facc15, #dc2626)",
-    ticks: ["低", "偏低", "中", "偏高", "高"],
+    ticks: ["Low", "Lower", "Medium", "Higher", "High"],
   },
   {
     value: "PBLH",
-    name: "边界层高度",
+    name: "Boundary layer height",
     unit: "m",
-    desc: "行星边界层高度，对污染扩散能力判断很关键。",
+    desc: "Planetary boundary layer height.",
     gradient: "linear-gradient(to right, #0f172a, #2563eb, #22c55e, #facc15, #f97316)",
-    ticks: ["低", "较低", "中", "较高", "高"],
+    ticks: ["Low", "Lower", "Medium", "Higher", "High"],
   },
   {
     value: "RAINC",
-    name: "累积对流降水",
+    name: "Accumulated convective rain",
     unit: "mm",
-    desc: "对流降水累积量，用于识别强对流降水贡献。",
+    desc: "Accumulated convective precipitation.",
     gradient: "linear-gradient(to right, #f8fafc, #bfdbfe, #38bdf8, #2563eb, #1e3a8a)",
-    ticks: ["0", "小", "中", "大", "强"],
+    ticks: ["0", "Light", "Moderate", "Heavy", "Strong"],
   },
   {
     value: "RAINNC",
-    name: "累积非对流降水",
+    name: "Accumulated non-convective rain",
     unit: "mm",
-    desc: "非对流降水累积量，常用于连续性降水展示。",
+    desc: "Accumulated non-convective precipitation.",
     gradient: "linear-gradient(to right, #f8fafc, #bfdbfe, #38bdf8, #2563eb, #1e3a8a)",
-    ticks: ["0", "小", "中", "大", "强"],
+    ticks: ["0", "Light", "Moderate", "Heavy", "Strong"],
   },
 ];
 
 const domain = ref("d02");
 const variable = ref("T2");
+const selectedResolution = ref("3km");
 const selectedDate = ref(defaultDates[0]);
 const flyToExtent = inject("flyToExtent", null);
 
 const currentDomain = computed(() => domains[domain.value] ?? domains.d02);
 const wrfMeta = computed(() => props.parsedMeta || props.parsed?.meta || props.parsed?.meta_json || display.value?.meta_json || null);
+const resolutionProducts = computed(() => {
+  const products = wrfMeta.value?.resolution_products;
+  return products && typeof products === "object" ? products : {};
+});
+const resolutionOptions = computed(() => {
+  const entries = Object.entries(resolutionProducts.value);
+  if (!entries.length) return [{ value: "3km", label: "3km" }];
+  return entries.map(([value, item]) => ({
+    value,
+    label: item?.label || item?.resolution || value,
+  }));
+});
+const currentResolutionProduct = computed(() => {
+  const products = resolutionProducts.value;
+  return products[selectedResolution.value]
+    || products[wrfMeta.value?.default_resolution]
+    || products["3km"]
+    || Object.values(products)[0]
+    || null;
+});
+const currentWebpFiles = computed(() => {
+  const files = currentResolutionProduct.value?.webp_files;
+  if (Array.isArray(files) && files.length) return files;
+  return Array.isArray(wrfMeta.value?.webp_files) ? wrfMeta.value.webp_files : [];
+});
 const availableDates = computed(() => {
   const parsedDates = (wrfMeta.value?.times ?? [])
     .map((item) => String(item).slice(0, 10))
@@ -184,7 +215,7 @@ const dayTimes = computed(() => {
     .filter((item) => item.startsWith(selectedDate.value));
 });
 const parsedVariables = computed(() => {
-  const list = wrfMeta.value?.variables;
+  const list = currentResolutionProduct.value?.variables || wrfMeta.value?.variables;
   if (!Array.isArray(list) || list.length === 0) return [];
   return list
     .filter((item) => !hiddenVariables.has(item.name))
@@ -217,7 +248,7 @@ const extent = computed(() => {
   return currentDomain.value.extent;
 });
 const hasMixedDomains = computed(() => {
-  const files = wrfMeta.value?.webp_files;
+  const files = currentWebpFiles.value;
   if (!Array.isArray(files)) return false;
   const domains = new Set(
     files
@@ -247,7 +278,7 @@ const time = computed(() => {
 const imageUrl = computed(() => {
   const parsedUrl = parsedWebpUrl(variable.value);
   if (parsedUrl) return parsedUrl;
-  return toPublicUrl(display.value?.webp || display.value?.png);
+  return toPublicUrl(display.value?.webp);
 });
 const layerKey = computed(() => `${imageUrl.value}|${extent.value.join(",")}`);
 
@@ -257,25 +288,25 @@ function gradientFor(name) {
 }
 
 function ticksFor(name) {
-  return variables.find((item) => item.value === name)?.ticks ?? ["低", "中", "偏高", "高", "极高"];
+  return variables.find((item) => item.value === name)?.ticks ?? ["Low", "Medium", "High", "Very high", "Extreme"];
 }
 
 function parsedWebpUrl(variableName) {
-  const files = wrfMeta.value?.webp_files;
+  const files = currentWebpFiles.value;
   if (!Array.isArray(files)) return "";
   const target = String(variableName || "");
   const timePart = time.value;
   const picked = files.find((item) => {
     const name = String(item).replaceAll("\\", "/");
-    const base = name.split("/").pop()?.replace(/\.(png|webp)$/i, "") ?? "";
+    const base = name.split("/").pop()?.replace(/\.webp$/i, "") ?? "";
     return domainMatches(name) && base.startsWith(`${timePart}_`) && base.endsWith(`_${target}`);
   }) || files.find((item) => {
     const name = String(item).replaceAll("\\", "/");
-    const base = name.split("/").pop()?.replace(/\.(png|webp)$/i, "") ?? "";
+    const base = name.split("/").pop()?.replace(/\.webp$/i, "") ?? "";
     return domainMatches(name) && base.endsWith(`_${target}`);
   }) || files.find((item) => {
     const name = String(item).replaceAll("\\", "/");
-    const base = name.split("/").pop()?.replace(/\.(png|webp)$/i, "") ?? "";
+    const base = name.split("/").pop()?.replace(/\.webp$/i, "") ?? "";
     return base.endsWith(`_${target}`);
   }) || firstRenderableWebp(files) || files[0];
   return localDataUrl(picked);
@@ -318,7 +349,7 @@ function firstRenderableWebp(files) {
   const timePart = time.value;
   return files.find((item) => {
     const normalized = String(item).replaceAll("\\", "/");
-    const base = normalized.split("/").pop()?.replace(/\.(png|webp)$/i, "") ?? "";
+    const base = normalized.split("/").pop()?.replace(/\.webp$/i, "") ?? "";
     return domainMatches(normalized) && base.startsWith(`${timePart}_`) && base.endsWith(`_${name}`);
   });
 }
@@ -327,12 +358,13 @@ function formatTime(value) {
   return value.replace("_", " ").replaceAll("_", ":");
 }
 
-// 和 CMA 一致：把当前选中产品的信息上报给右侧气象信息栏，实现联动。
+// Emit WRF layer metadata to the right-side weather panel.
 function buildPanelInfo() {
   const meta = wrfMeta.value || {};
   const weather = meta.weather_info || {};
   const current = currentVariable.value || {};
-  const metaVar = (Array.isArray(meta.variables) ? meta.variables : [])
+  const productVariables = currentResolutionProduct.value?.variables || meta.variables;
+  const metaVar = (Array.isArray(productVariables) ? productVariables : [])
     .find((item) => item.name === variable.value) || {};
   const varInfo = (Array.isArray(meta.variable_information) ? meta.variable_information : [])
     .find((item) => item.name === variable.value) || {};
@@ -345,8 +377,8 @@ function buildPanelInfo() {
     time: formatTime(time.value),
     level: weather.level || "",
     range: weather.range || "",
-    resolution: weather.resolution || "",
-    grid: weather.grid || "",
+    resolution: currentResolutionProduct.value?.resolution || weather.resolution || "",
+    grid: currentResolutionProduct.value?.grid || weather.grid || "",
     unit: metaVar.units || current.unit || weather.unit || "",
     missing: weather.missing || "",
     status: weather.status || "",
@@ -363,13 +395,13 @@ function emitPanelInfo() {
   if (!wrfMeta.value) return;
   const info = buildPanelInfo();
   const extraRows = [
-    ["product", "数据产品", info.product],
-    ["coverage", "区域", info.coverage],
-    ["resolution", "空间分辨率", info.resolution],
-    ["variableCount", "可选要素数", info.variable_count],
-    ["min", "最小值", info.min],
-    ["mean", "平均值", info.mean],
-    ["max", "最大值", info.max],
+    ["product", "Product", info.product],
+    ["coverage", "Domain", info.coverage],
+    ["resolution", "Resolution", info.resolution],
+    ["variableCount", "Variable count", info.variable_count],
+    ["min", "Min", info.min],
+    ["mean", "Mean", info.mean],
+    ["max", "Max", info.max],
   ];
   const metaOut = {
     ...wrfMeta.value,
@@ -383,7 +415,7 @@ function emitPanelInfo() {
   emit("display-loaded", {
     meta: metaOut,
     weather_info: { ...info },
-    variables: wrfMeta.value?.variables || [],
+    variables: currentResolutionProduct.value?.variables || wrfMeta.value?.variables || [],
     times: wrfMeta.value?.times || [],
     file: info.file,
     variable: variable.value,
@@ -392,7 +424,6 @@ function emitPanelInfo() {
 
 let zoomedKey = "";
 function zoomToDomain() {
-  // 和 CMA 一致：等数据(wrfMeta)就绪后再飞，避免空数据时复位到默认范围。
   if (!wrfMeta.value) return;
   const ext = extent.value;
   if (!Array.isArray(ext) || ext.length !== 4) return;
@@ -424,10 +455,22 @@ watch(
   },
   { immediate: true },
 );
+watch(
+  () => [wrfMeta.value, resolutionOptions.value],
+  () => {
+    const values = resolutionOptions.value.map((item) => item.value);
+    const preferred = wrfMeta.value?.default_resolution || "3km";
+    if (!values.includes(selectedResolution.value)) {
+      selectedResolution.value = values.includes(preferred) ? preferred : values[0] || "3km";
+    }
+  },
+  { immediate: true },
+);
 watch(() => [wrfMeta.value, extent.value], zoomToDomain, { immediate: true });
-watch(() => [wrfMeta.value, variable.value, domain.value, time.value], emitPanelInfo, { immediate: true });
+watch(() => [wrfMeta.value, variable.value, domain.value, time.value, selectedResolution.value], emitPanelInfo, { immediate: true });
 
 onMounted(() => {
   loadWrfDisplay();
 });
 </script>
+
