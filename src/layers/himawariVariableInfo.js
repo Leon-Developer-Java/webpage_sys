@@ -59,15 +59,11 @@ export function resolveHimawariImageUrl({ product, display, fallback = "", apiBa
     product?.image,
     product?.url,
     product?.src,
-    product?.png_url,
-    product?.png,
     display?.webp_url,
     display?.image_url,
     display?.image,
     display?.url,
     display?.src,
-    display?.png_url,
-    display?.png,
     fallback,
   ];
 

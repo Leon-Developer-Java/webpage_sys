@@ -176,10 +176,10 @@
 </template>
 
 <script setup>
-import { computed, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { DataAnalysis, Delete, Upload, WarningFilled } from "@element-plus/icons-vue";
 import MetaPanel from "../components/MetaPanel.vue";
-import { uploadFileResumable, authedFetch } from "../api.js";
+import { getRawScenes, updateDisplayFromRaw, uploadFileResumable, uploadRawFiles, authedFetch } from "../api.js";
 
 const files = ref([]);
 const selected = ref(null);
@@ -193,16 +193,11 @@ const pendingUpload = ref([]);
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8002";
 
 // GFS 与 ECMWF 必须分开。不能再使用合并入口，否则 ECMWF 可能会被落入 GFS 目录。
-const TYPES = ["ERA5", "GFS", "ECMWF", "CMA", "雷达", "葵花", "WRF"];
+const TYPES = ["ERA5", "GFS", "ECMWF", "CMA", "雷达", "葵花", "FY-3", "WRF"];
 const STATUS = { pending: "待上传", uploading: "上传中", done: "完成", error: "失败" };
-const PARSE_STATUS = { pending: "待解析", parsing: "解析中", done: "已解析", error: "失败" };
+const PARSE_STATUS = { pending: "待解析", parsing: "解析中", done: "已解析", error: "不完整" };
 
-const parseQueue = ref([
-  { id: 101, name: "era5_t2m_20250610.nc", fmt: "NC", size: "1.28 GB", uploaded: "06-15 09:28", dataType: "ERA5", status: "pending", checked: false },
-  { id: 102, name: "radar_xh_20250611_1000.cinrad", fmt: "CINRAD", size: "2.14 MB", uploaded: "06-15 10:15", dataType: "雷达", status: "pending", checked: false },
-  { id: 103, name: "himawari_20250612_0000.hsd", fmt: "HSD", size: "380 MB", uploaded: "06-16 07:45", dataType: "葵花", status: "pending", checked: false },
-  { id: 104, name: "gfs.t00z.pgrb2.0p25.f012", fmt: "GRIB2", size: "524 MB", uploaded: "06-16 08:10", dataType: "GFS", status: "pending", checked: false },
-]);
+const parseQueue = ref([]);
 
 const checked = computed(() => files.value.filter(f => f.checked));
 const allChecked = computed(() => files.value.length > 0 && files.value.every(f => f.checked));
@@ -476,6 +471,8 @@ function normalizeDataTypeForBackend(dataType, fileName = "") {
   const upper = raw.toUpperCase();
   const name = String(fileName || "").toLowerCase();
 
+  if (raw === "葵花" || upper === "HIMAWARI") return "Himawari";
+  if (upper === "FY-3" || upper === "FY3" || name.includes("fy3") || name.includes("fy-3")) return "FY3";
   if (upper === "ECMWF" || upper === "EC" || upper === "IFS") return "ECMWF";
   if (upper === "GFS") return "GFS";
 
@@ -488,6 +485,38 @@ function normalizeDataTypeForBackend(dataType, fileName = "") {
   }
 
   return raw;
+}
+
+function isRawFirstType(dataType) {
+  return ["FY3", "Himawari"].includes(normalizeDataTypeForBackend(dataType));
+}
+
+function rawSceneToQueueItem(scene) {
+  const businessType = normalizeDataTypeForBackend(scene.business_type || "");
+  const status = scene.parsed ? "done" : (scene.complete ? "pending" : "error");
+  return {
+    id: `${businessType}:${scene.scene_id}`,
+    sceneId: scene.scene_id,
+    name: scene.scene_id,
+    fmt: businessType === "FY3" ? "HDF" : "HSD",
+    size: `${scene.file_count || 0} 个文件`,
+    uploaded: compactText(scene.raw_dir),
+    dataType: businessType,
+    status,
+    rawStatus: scene.status,
+    missing: scene.missing || [],
+    checked: false,
+  };
+}
+
+async function refreshRawScenes() {
+  const sceneGroups = await Promise.allSettled([getRawScenes("Himawari"), getRawScenes("FY3")]);
+  const rows = [];
+  sceneGroups.forEach(group => {
+    if (group.status !== "fulfilled") return;
+    (group.value.scenes || []).forEach(scene => rows.push(rawSceneToQueueItem(scene)));
+  });
+  parseQueue.value = rows.sort((a, b) => String(b.sceneId).localeCompare(String(a.sceneId)));
 }
 
 async function parseFileWithType(fileOrFiles, dataType) {
@@ -522,24 +551,60 @@ async function parseFileWithType(fileOrFiles, dataType) {
 async function run(f) {
   f.status = "uploading";
   f.percent = 0;
+  const uploadType = normalizeDataTypeForBackend(f.dataType, f.name);
+  const rawFirst = isRawFirstType(uploadType);
   f.steps = [
     { label: "上传", state: "上传中 0%", t: "", ok: false, running: true },
-    { label: "解析", state: "待解析", t: "", ok: false, running: false },
-    { label: "渲染 WEBP", state: "等待", t: "", ok: false, running: false },
+    { label: "解析", state: rawFirst ? "进入待解析队列" : "待解析", t: "", ok: false, running: false },
+    { label: "渲染 WEBP", state: rawFirst ? "等待 update" : "等待", t: "", ok: false, running: false },
     { label: "前端展示", state: "等待", t: "", ok: false, running: false },
   ];
 
   try {
-    const uploadType = normalizeDataTypeForBackend(f.dataType, f.name);
-    const uploadData = await uploadFileResumable(f.raw, uploadType, p => {
-      f.percent = p;
-      f.steps[0].state = `上传中 ${Math.floor(p)}%`;
-    });
+    const uploadData = rawFirst
+      ? await uploadRawFiles(f.raw, uploadType)
+      : await uploadFileResumable(f.raw, uploadType, p => {
+          f.percent = p;
+          f.steps[0].state = `上传中 ${Math.floor(p)}%`;
+        });
+    if (rawFirst) {
+      f.percent = 100;
+    }
 
     f.steps[0].ok = true;
     f.steps[0].running = false;
     f.steps[0].state = "成功";
     f.steps[0].t = now();
+
+    if (rawFirst) {
+      f.steps[1].ok = true;
+      f.steps[1].running = false;
+      f.steps[1].state = "已入队";
+      f.steps[1].t = now();
+      f.steps[2].state = "等待 update";
+      f.steps[3].state = "待解析完成";
+      f.meta = {
+        file: f.name,
+        element: uploadType,
+        time: "—",
+        level: "raw 原始数据",
+        range: "已保存到后端 raw 目录",
+        grid: "待解析",
+        missing: "待 update 检查",
+        unit: "—",
+        vars: "—",
+        steps: "—",
+        status: "raw 已保存，未生成 WebP",
+        quality: "待解析",
+        alert: uploadData.message || "raw 文件已保存，未触发解析",
+      };
+      f.uploadResult = uploadData;
+      f.status = "done";
+      selected.value = f.id;
+      await refreshRawScenes();
+      tab.value = "parse";
+      return;
+    }
 
     f.steps[1].running = true;
     f.steps[1].state = "解析中";
@@ -657,13 +722,26 @@ function deletePqChecked() {
   parseQueue.value = parseQueue.value.filter(f => !f.checked);
 }
 
-function parsePqChecked() {
-  parseQueue.value
-    .filter(f => f.checked && f.status === "pending")
-    .forEach(f => {
-      f.checked = false;
-      f.status = "parsing";
+async function parsePqChecked() {
+  const selectedRows = parseQueue.value.filter(f => f.checked && f.status === "pending");
+  if (!selectedRows.length) return;
+
+  const types = [...new Set(selectedRows.map(f => normalizeDataTypeForBackend(f.dataType)).filter(Boolean))];
+  selectedRows.forEach(f => {
+    f.checked = false;
+    f.status = "parsing";
+  });
+
+  try {
+    await Promise.all(types.map(type => updateDisplayFromRaw(type)));
+    await refreshRawScenes();
+  } catch (err) {
+    selectedRows.forEach(f => {
+      f.status = "error";
+      f.missing = [err?.message || "解析失败"];
     });
+    console.error("raw 解析失败：", err);
+  }
 }
 
 function onDrop(e) {
@@ -675,6 +753,10 @@ function onPick(e) {
   addFiles(e.target.files);
   e.target.value = "";
 }
+
+onMounted(() => {
+  refreshRawScenes().catch(err => console.error("raw 场景读取失败：", err));
+});
 </script>
 
 <style scoped>

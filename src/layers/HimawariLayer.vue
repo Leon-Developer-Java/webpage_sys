@@ -84,11 +84,10 @@ const imageSrc = computed(() => {
   if (!product) return props.src || "";
 
   const resKey = selectedResolution.value;
-  // 优先使用 resolution_assets 中对应分辨率的 png_url
   const assets = product.resolution_assets;
-  if (assets && assets[resKey] && assets[resKey].png_url) {
+  if (assets && assets[resKey] && assets[resKey].webp_url) {
     return resolveHimawariImageUrl({
-      product: { ...product, png_url: assets[resKey].png_url },
+      product: { ...product, webp_url: assets[resKey].webp_url },
       display: display.value,
       fallback: props.src,
       apiBase: API_BASE,

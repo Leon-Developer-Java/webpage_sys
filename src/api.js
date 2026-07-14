@@ -297,6 +297,45 @@ export async function parseFile(fileOrFiles) {
   return payload.data;
 }
 
+export async function uploadRawFiles(fileOrFiles, dataType) {
+  const body = new FormData();
+  const files = Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles];
+  if (files.length === 1) {
+    body.append("file", files[0]);
+  } else {
+    files.forEach(file => body.append("files", file));
+  }
+  body.append("business_type", dataType);
+  body.append("data_type", dataType);
+  const response = await authedFetch(`${API_BASE}/api/files/raw-upload`, { method: "POST", body });
+  const payload = await response.json();
+  if (!response.ok || payload.code !== 0) {
+    throw new Error(payload.detail || payload.message || "raw 上传失败");
+  }
+  return payload.data;
+}
+
+export async function getRawScenes(dataType) {
+  const response = await authedFetch(`${API_BASE}/api/display/${encodeURIComponent(dataType)}/raw-scenes`);
+  const payload = await response.json();
+  if (!response.ok || payload.code !== 0) {
+    throw new Error(payload.detail || payload.message || "raw 场景读取失败");
+  }
+  return payload.data;
+}
+
+export async function updateDisplayFromRaw(dataType, { force = false } = {}) {
+  const params = new URLSearchParams({ force: force ? "true" : "false" });
+  const response = await authedFetch(`${API_BASE}/api/display/${encodeURIComponent(dataType)}/update?${params}`, {
+    method: "POST",
+  });
+  const payload = await response.json();
+  if (!response.ok || payload.code !== 0) {
+    throw new Error(payload.detail || payload.message || "raw 解析失败");
+  }
+  return payload.data;
+}
+
 export async function getHimawariAutoStatus() {
   const response = await authedFetch(`${API_BASE}/api/himawari/auto-status`);
   const payload = await response.json();

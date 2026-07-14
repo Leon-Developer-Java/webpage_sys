@@ -122,7 +122,7 @@
           <span class="tc-time">{{ activeTimeLabel }}</span>
         </div>
         <HimawariTimeAxis
-          v-if="active === 'himawari' || active === 'cma'"
+          v-if="active === 'himawari' || active === 'fy3' || active === 'cma'"
           :key="timeAxisKey"
           :times="axisTimes"
           :active="animPos"
@@ -158,7 +158,7 @@
 <script setup>
 import { computed, inject, onBeforeUnmount, ref, watch } from "vue";
 import { ArrowLeft, ArrowRight, Check, CircleCheck, Close, Connection, DArrowLeft, DArrowRight, DataAnalysis, Document, FolderOpened, Grid, MapLocation, Monitor, Moon, Operation, Position, RefreshRight, Sunny, VideoPlay, VideoPause } from "@element-plus/icons-vue";
-import { parseFile } from "../api";
+import { parseFile, uploadRawFiles } from "../api";
 import ProjMap from "../components/ProjMap.vue";
 import MetaPanel from "../components/MetaPanel.vue";
 import TimeAxis from "../components/TimeAxis.vue";
@@ -168,6 +168,7 @@ import GribLayer from "../layers/GribLayer.vue";
 import CmaLayer from "../layers/CmaLayer.vue";
 import RadarLayer from "../layers/RadarWebpLayer.vue";
 import HimawariLayer from "../layers/HimawariLayer.vue";
+import FY3Layer from "../layers/FY3Layer.vue";
 import HimawariTimeAxis from "../layers/HimawariTimeAxis.vue";
 import WrfLayer from "../layers/WrfLayer.vue";
 
@@ -178,7 +179,8 @@ const sources = [
   {key: "ecmwf", btn: "ECMWF", comp: GribLayer, dataType: "ECMWF"},
   {key: "cma", btn: "CMA", comp: CmaLayer},
   {key: "radar", btn: "雷达", comp: RadarLayer},
-  {key: "himawari", btn: "葵花卫星", comp: HimawariLayer},
+  {key: "himawari", btn: "Himawari", comp: HimawariLayer},
+  {key: "fy3", btn: "FY-3", comp: FY3Layer},
   {key: "wrf", btn: "WRF", comp: WrfLayer},
   {key: "era5", btn: "ERA5", comp: Era5Layer}
 ];
@@ -186,6 +188,7 @@ const sources = [
 const infos = {
   radar: { file: "radar_xh_20250616_1000.cinrad", element: "组合反射率 DBZH、径向速度、谱宽", time: "2025-06-16 10:00", level: "0.5° 仰角", range: "73°E-135°E, 15°N-55°N", grid: "721 × 361", missing: "-9999", unit: "dBZ / m·s⁻¹", vars: "3", steps: "24" },
   himawari: { file: "himawari_20250616_1000.hsd", element: "B01-B16 全通道、真彩色合成", time: "2025-06-16 10:00", level: "全圆盘 / 区域", range: "80°E-160°E, 0°N-60°N", grid: "5500 × 5500", missing: "-9999", unit: "°C / %", vars: "16", steps: "25" },
+  fy3: { file: "FY3D_MERSI_GBAL_L1_20260701_0055_1000M_MS.HDF", element: "MERSI-II 25 波段", time: "2026-07-01 08:55", level: "极轨卫星观测", range: "按实际轨迹自动映射", grid: "随轨迹变化", missing: "NaN", unit: "% / K", vars: "25", steps: "12" },
   era5: { file: "era5_t2m_20250616.nc", element: "2m 温度、位势、风场", time: "2025-06-16 09:00", level: "2m / 1000-200hPa", range: "73°E-135°E, 15°N-55°N", grid: "248 × 161", missing: "NaN", unit: "°C", vars: "5", steps: "24" },
   grib: { file: "gfs.t00z.pgrb2.0p25.f006", element: "500hPa 位势高度、温度", time: "2025-06-16 08:00", level: "500hPa / 850hPa", range: "73°E-135°E, 15°N-55°N", grid: "249 × 161", missing: "9999", unit: "gpm", vars: "8", steps: "40" },
   cma: { file: "cma_meso_20250616.grib2", element: "2m 温度、降水", time: "2025-06-16 08:00", level: "地面 / 多层", range: "70°E-140°E, 10°N-60°N", grid: "1025 × 801", missing: "9999", unit: "°C / mm", vars: "6", steps: "24" },
@@ -197,7 +200,8 @@ const files = [
   {name: "era5_t2m_20250616.nc", time: "2025-06-16 09:00", size: "1.28 GB", key: "era5"},
   {name: "gfs.t00z.pgrb2.0p25.f006", time: "2025-06-16 08:00", size: "524 MB", key: "gfs"},
   {name: "ecmwf_realtime_20250616_00z_f000_f024.grib2", time: "2025-06-16 08:00", size: "480 MB", key: "ecmwf"},
-  {name: "himawari_20250616_1000.hsd", time: "2025-06-16 10:00", size: "380 MB", key: "himawari"}
+  {name: "himawari_20250616_1000.hsd", time: "2025-06-16 10:00", size: "380 MB", key: "himawari"},
+  {name: "FY3D_MERSI_GBAL_L1_20260701_0055_1000M_MS.HDF", time: "2026-07-01 08:55", size: "1.4 GB", key: "fy3"}
 ];
 
 const defaultProcessing = [
@@ -235,7 +239,7 @@ const parsed = ref(null);
 const parsedLayerKey = ref(null);
 const parseProcessing = ref(null);
 const layerDisplays = ref({});
-const layerResolutions = ref({cma: "native"});
+const layerResolutions = ref({cma: "native", fy3: "original", himawari: "original"});
 const himawariTimeline = ref([]);
 const playing = ref(false);
 const speed = ref(1);
@@ -1221,7 +1225,7 @@ const meta = computed(() => {
 });
 
 const processing = computed(() => {
-  if (parsed.value && parsedLayerKey.value === active.value && parseProcessing.value) {
+  if (parseProcessing.value) {
     return parseProcessing.value;
   }
 
@@ -1294,7 +1298,8 @@ const selectedHimawariSceneId = computed(() => {
 function layerProps(key) {
   if (key === "gfs") return {dataType: "GFS"};
   if (key === "ecmwf") return {dataType: "ECMWF"};
-  if (key === "himawari") return {sceneId: selectedHimawariSceneId.value};
+  if (key === "himawari") return {sceneId: selectedHimawariSceneId.value, resolution: layerResolutions.value.himawari || "original"};
+  if (key === "fy3") return {resolution: layerResolutions.value.fy3 || "original"};
   if (key === "cma") {
     return {
       resolution: layerResolutions.value.cma || "native",
@@ -1501,9 +1506,75 @@ function choose(e) {
   file.value = Array.from(e.target.files || []);
 }
 
+function rawBusinessType(files) {
+  const names = files.map(item => String(item?.name || ""));
+  const isFY3 = name => /^FY3[A-Z]_MERSI_GBAL_L1_\d{8}_\d{4}_(?:1000M_MS|GEO1K_MS)\.HDF$/i.test(name);
+  const isHimawari = name => /^HS_H\d{2}_\d{8}_\d{4}_B\d{2}_[A-Z0-9]+_R\d{2}_S\d{4}\.DAT(?:_\d+)?(?:\.bz2)?$/i.test(name);
+
+  if (names.length && names.every(isFY3)) return "FY3";
+  if (names.length && names.every(isHimawari)) return "Himawari";
+  if (names.some(isFY3) || names.some(isHimawari)) {
+    throw new Error("FY-3、Himawari 原始文件不能与其他类型混合上传，请分别提交。");
+  }
+  return "";
+}
+
+function rawQueueSummary(result) {
+  const scenes = Array.isArray(result?.scenes) ? result.scenes : [];
+  const ready = scenes.filter(scene => scene.complete).length;
+  const incomplete = scenes.filter(scene => !scene.complete);
+  if (!incomplete.length) return `已入队 ${scenes.length || 0} 个场景，等待在数据上传页执行 update。`;
+  const missing = incomplete.map(scene => `${scene.scene_id} 缺少 ${scene.missing.join("、")}`).join("；");
+  return `已入队 ${ready} 个完整场景；${missing}`;
+}
+
 async function parse() {
   const uploadFiles = Array.isArray(file.value) ? file.value : [file.value].filter(Boolean);
   if (!uploadFiles.length) return;
+
+  let rawType = "";
+  try {
+    rawType = rawBusinessType(uploadFiles);
+  } catch (err) {
+    parseProcessing.value = [
+      {step: "上传/读取", state: err?.message || "文件类型不一致", t: new Date().toLocaleTimeString(), ok: false},
+      {step: "解析", state: "未开始", t: "", ok: false},
+      {step: "渲染 WEBP", state: "未开始", t: "", ok: false},
+      {step: "前端展示", state: "未开始", t: "", ok: false},
+    ];
+    return;
+  }
+
+  if (rawType) {
+    parseProcessing.value = [
+      {step: "上传/读取", state: "上传原始数据中", t: "", ok: false, running: true},
+      {step: "解析", state: "等待 update", t: "", ok: false},
+      {step: "渲染 WEBP", state: "等待 update", t: "", ok: false},
+      {step: "前端展示", state: "等待解析完成", t: "", ok: false},
+    ];
+
+    try {
+      const result = await uploadRawFiles(uploadFiles, rawType);
+      const summary = rawQueueSummary(result);
+      parsed.value = null;
+      parsedLayerKey.value = null;
+      parseProcessing.value = [
+        {step: "上传/读取", state: `成功：${result.file_count || 0} 个原始文件`, t: new Date().toLocaleTimeString(), ok: true},
+        {step: "解析", state: summary, t: "", ok: true},
+        {step: "渲染 WEBP", state: "未生成，等待 update", t: "", ok: false},
+        {step: "前端展示", state: "未生成 WebP", t: "", ok: false},
+      ];
+    } catch (err) {
+      console.error("raw 上传失败：", err);
+      parseProcessing.value = [
+        {step: "上传/读取", state: err?.message || "上传失败", t: new Date().toLocaleTimeString(), ok: false},
+        {step: "解析", state: "未开始", t: "", ok: false},
+        {step: "渲染 WEBP", state: "未生成", t: "", ok: false},
+        {step: "前端展示", state: "未生成", t: "", ok: false},
+      ];
+    }
+    return;
+  }
 
   parseProcessing.value = [
     {step: "上传/读取", state: "本地文件", t: new Date().toLocaleTimeString(), ok: true},
