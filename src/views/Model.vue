@@ -36,7 +36,7 @@
       <template v-if="tool === 'model'">
         <div class="service-summary" :class="{ offline: !serviceOnline }">
           <i></i>
-          <span>{{ serviceOnline ? `模型服务在线 · ${health?.model_device || 'auto'}` : '模型服务未连接' }}</span>
+          <span>{{ serviceOnline ? '模型服务在线' : '模型服务未连接' }}</span>
           <button v-if="!serviceOnline" @click="loadModels">重试</button>
         </div>
         <p v-if="serviceError" class="error-text">{{ serviceError }}</p>
@@ -45,7 +45,7 @@
           <button
             v-for="item in models"
             :key="item.id"
-            :class="{ on: modelId === item.id, disabled: item.status !== 'available' }"
+            :class="{ on: modelId === item.id }"
             @click="selectModel(item)"
           >
             <span class="model-icon"><el-icon><Operation /></el-icon></span>
@@ -55,12 +55,16 @@
               <em v-if="item.architecture">{{ item.architecture }}</em>
             </span>
             <el-icon v-if="modelId === item.id" class="check"><Check /></el-icon>
-            <span v-else-if="item.status !== 'available'" class="soon-tag">待接入</span>
+            <span
+              v-else-if="item.status !== 'available'"
+              class="soon-tag"
+              :title="item.detail || '模型暂不可用'"
+            >暂不可用</span>
           </button>
         </div>
         <div class="model-note">
           <el-icon><InfoFilled /></el-icon>
-          <p>当前降水短临模型固定接收连续25帧NetCDF：前5帧作为输入，后20帧同时用于真实值对比。</p>
+          <p>选择模型后上传对应输入数据；模型运行依赖由部署阶段统一配置。</p>
         </div>
       </template>
 
@@ -72,11 +76,11 @@
         <label class="upload-zone" :class="{ disabled: isBusy }">
           <input type="file" accept=".nc" multiple hidden :disabled="isBusy" @change="chooseFiles" />
           <el-icon><UploadFilled /></el-icon>
-          <b>选择25帧雷达NetCDF</b>
-          <span>文件会按文件名时间排序，并检查是否连续间隔6分钟</span>
+          <b>{{ isIcing ? "选择24小时覆冰预报 NetCDF" : "选择25帧雷达 NetCDF" }}</b>
+          <span>{{ isIcing ? "需包含连续24小时的 t、d2m、u10、clwc、ciwc 气象场" : "文件会按文件名时间排序，并检查是否连续间隔6分钟" }}</span>
         </label>
         <div class="list-head">
-          <span>已选文件 · {{ files.length }}/25</span>
+            <span>已选文件 · {{ files.length }}/{{ isIcing ? 1 : 25 }}</span>
           <button v-if="files.length && !isBusy" @click="clearFiles">清空</button>
         </div>
         <div v-if="sequenceMessage" class="sequence-state" :class="{ ready: sequenceReady }">
@@ -102,7 +106,7 @@
           <el-icon v-if="!submitting"><VideoPlay /></el-icon>{{ runButtonText }}
         </el-button>
         <el-button v-if="canCancel" class="cancel-button" @click="cancelRun">取消任务</el-button>
-        <p class="hint">上传完成后任务进入单GPU队列；页面会自动轮询，完成后载入双屏结果。</p>
+        <p class="hint">{{ isIcing ? "上传完成后任务进入模型队列；页面会自动更新进度，完成后载入单屏覆冰点位结果。" : "上传完成后任务进入模型队列；页面会自动更新进度，完成后载入真实值与预测值双屏结果。" }}</p>
       </template>
 
       <template v-else-if="tool === 'proj'">
@@ -132,7 +136,8 @@
       <div class="result-layout">
         <section class="visual-workspace">
           <div class="maps">
-            <div class="cell">
+            <template v-if="!isIcing">
+              <div class="cell">
               <span class="cell-tag truth">真实值</span>
               <ProjMap
                 ref="truthMap"
@@ -149,7 +154,7 @@
               <div v-if="!activeFrame" class="map-empty"><el-icon><Picture /></el-icon><span>等待真实值结果</span></div>
               <div v-else class="pane-state"><i></i>{{ activeTimeFull }}</div>
             </div>
-            <div class="cell">
+              <div class="cell">
               <span class="cell-tag prediction">预测值</span>
               <ProjMap
                 ref="predictionMap"
@@ -165,10 +170,26 @@
               </ProjMap>
               <div v-if="!activeFrame" class="map-empty"><el-icon><Picture /></el-icon><span>等待预测值结果</span></div>
               <div v-else class="pane-state"><i></i>提前 {{ activeFrame.lead_minutes }} 分钟</div>
+              </div>
+            </template>
+            <div v-else class="cell icing-cell">
+              <span class="cell-tag prediction">覆冰预测</span>
+              <ProjMap
+                ref="icingMap"
+                :grid="showGrid"
+                :dark="mapDark"
+                :vector="showVector"
+                :basemap="basemap"
+                :projection="projection"
+              >
+                <IcingPointLayer :points="icingPoints" />
+              </ProjMap>
+              <div v-if="!activeFrame" class="map-empty"><el-icon><Picture /></el-icon><span>等待覆冰预测结果</span></div>
+              <div v-else class="pane-state"><i></i>{{ activeTimeFull }} · {{ icingPoints.length }} 个覆冰点</div>
             </div>
           </div>
 
-          <div class="radar-legend">
+          <div v-if="!isIcing" class="radar-legend">
             <span>组合反射率</span>
             <div class="legend-colors"></div>
             <div class="legend-labels"><i v-for="value in [0, 10, 20, 30, 40, 50, 60, 70]" :key="value">{{ value }}</i></div>
@@ -187,7 +208,7 @@
               <div class="tc-speed">
                 <button v-for="value in [0.5, 1, 2, 4]" :key="value" :class="{ on: speed === value }" @click="speed = value">{{ value }}x</button>
               </div>
-              <span class="tc-time">{{ activeFrame ? `${activeTimeFull} · +${activeFrame.lead_minutes} min` : '任务完成后可播放20帧预报' }}</span>
+              <span class="tc-time">{{ activeFrame ? (isIcing ? `${activeTimeFull} · 累计覆冰厚度` : `${activeTimeFull} · +${activeFrame.lead_minutes} min`) : (isIcing ? '任务完成后可播放24小时覆冰结果' : '任务完成后可播放20帧预报') }}</span>
             </div>
             <TimeAxis :times="axisTimes" :active="activeIndex" @update:active="setTimeIndex" :dark="dark" />
           </div>
@@ -195,10 +216,10 @@
 
         <aside class="metrics glass">
           <div class="metrics-head">
-            <div><span>预报评估</span><h3>结果信息</h3></div>
+            <div><span>{{ isIcing ? "覆冰预测" : "预报评估" }}</span><h3>结果信息</h3></div>
             <i :class="statusClass"></i>
           </div>
-          <template v-if="result">
+          <template v-if="result && !isIcing">
             <div class="valid-time">
               <span>当前时次</span><b>{{ activeTimeFull }}</b><small>第 {{ activeIndex + 1 }}/{{ frames.length }} 帧 · 提前 {{ activeFrame?.lead_minutes }} 分钟</small>
             </div>
@@ -228,10 +249,27 @@
               <p><span>结果网格</span><b>{{ result.shape?.join(' × ') }}</b></p>
             </div>
           </template>
+          <template v-else-if="result && isIcing">
+            <div class="valid-time">
+              <span>当前预报时次</span><b>{{ activeTimeFull }}</b><small>第 {{ activeIndex + 1 }}/{{ frames.length }} 小时 · {{ icingPoints.length }} 个覆冰点</small>
+            </div>
+            <h4>覆冰结果</h4>
+            <div class="summary-list">
+              <p><span>厚度口径</span><b>逐时累计</b></p>
+              <p><span>结果网格</span><b>{{ result.shape?.join(' × ') }}</b></p>
+              <p><span>最大累计厚度</span><b>{{ number(result.statistics?.max_cumulative_ice_thickness_mm) }} mm</b></p>
+            </div>
+            <h4>运行信息</h4>
+            <div class="run-info">
+              <p><span>模型</span><b>{{ result.architecture }}</b></p>
+              <p><span>版本</span><b>{{ result.model_version }}</b></p>
+              <p><span>输入时次</span><b>{{ frames.length }} 小时</b></p>
+            </div>
+          </template>
           <div v-else class="metrics-empty">
             <el-icon><DataAnalysis /></el-icon>
             <b>{{ isBusy ? taskStageText : '暂无预报结果' }}</b>
-            <span>{{ isBusy ? '任务完成后会自动加载结果与评估指标' : '选择模型和25帧数据后提交任务' }}</span>
+            <span>{{ isBusy ? '任务完成后会自动加载结果' : isIcing ? '选择1个24小时覆冰预报文件后提交任务' : '选择模型和25帧数据后提交任务' }}</span>
           </div>
         </aside>
       </div>
@@ -262,17 +300,18 @@ import {
   Position, Sunny, UploadFilled, VideoPause, VideoPlay,
 } from "@element-plus/icons-vue";
 import {
-  cancelModelRun, getDedicatedModels, getModelHealth, getModelMetrics, getModelRun,
+  cancelModelRun, getDedicatedModels, getModelHealth, getModelMetrics, getModelPoints, getModelRun,
   getModelRunResult, submitModelRun,
 } from "../api.js";
 import ProjMap from "../components/ProjMap.vue";
+import IcingPointLayer from "../components/IcingPointLayer.vue";
 import TimeAxis from "../components/TimeAxis.vue";
 import WebglLayer from "../components/WebglLayer.vue";
 
 const LAST_RUN_KEY = "weather-model-last-run";
 const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
 const fallbackModels = [
-  { id: "precipitation_nowcasting", name: "降水短临预报", description: "使用5帧组合反射率预报未来20帧", status: "available", architecture: "alphapre_phaseplus_amp_hier" },
+  { id: "precipitation_nowcasting", name: "降水短临预报", description: "使用5帧组合反射率预报未来20帧", status: "available", architecture: "motipre_phaseplus_amp_hier" },
   { id: "icing_prediction", name: "覆冰预测", description: "面向输电线路等场景的覆冰风险预测", status: "scaffold" },
 ];
 const projections = ["等经纬", "墨卡托", "正弦", "罗宾逊", "兰博托", "卫星正视", "北极", "南极"];
@@ -297,11 +336,13 @@ const syncView = ref(null);
 const viewEmitter = ref("");
 const truthMap = ref(null);
 const predictionMap = ref(null);
+const icingMap = ref(null);
 const submitting = ref(false);
 const uploadProgress = ref(0);
 const runStatus = ref(null);
 const result = ref(null);
 const metrics = ref(null);
+const icingPoints = ref([]);
 const activeIndex = ref(0);
 const playing = ref(false);
 const speed = ref(1);
@@ -310,6 +351,7 @@ let playbackTimer = null;
 let disposed = false;
 
 const activeModel = computed(() => models.value.find(item => item.id === modelId.value));
+const isIcing = computed(() => modelId.value === "icing_prediction");
 const dockTitle = computed(() => ({ model: "模型选择", file: "任务数据", proj: "投影方式", base: "底图图层" })[tool.value]);
 const frames = computed(() => Array.isArray(result.value?.frames) ? result.value.frames : []);
 const activeFrame = computed(() => frames.value[activeIndex.value] || null);
@@ -327,7 +369,7 @@ const canSubmit = computed(() => serviceOnline.value && activeModel.value?.statu
 const runButtonText = computed(() => submitting.value ? `正在上传 ${Math.round(uploadProgress.value)}%` : isBusy.value ? "任务执行中" : result.value ? "重新运行预报" : "提交并开始预报");
 const statusClass = computed(() => ({ online: serviceOnline.value, running: isBusy.value, success: !!result.value }));
 const taskStageText = computed(() => {
-  if (submitting.value) return "正在上传25帧数据";
+  if (submitting.value) return isIcing.value ? "正在上传覆冰预报数据" : "正在上传25帧数据";
   return ({ queued: "任务排队中", running: "模型推理中", cancelling: "正在取消", succeeded: "预报已完成", failed: "任务失败", cancelled: "任务已取消" })[runStatus.value?.status] || "等待提交";
 });
 const improvementText = computed(() => {
@@ -339,6 +381,10 @@ const improvementText = computed(() => {
 
 const sequenceCheck = computed(() => {
   if (!files.value.length) return { ready: false, message: "" };
+  if (isIcing.value) {
+    if (files.value.length !== 1) return { ready: false, message: "覆冰预测固定接收 1 个 NetCDF 文件" };
+    return { ready: true, message: "已选择 1 个 NetCDF；提交时将校验24小时变量、时间连续性和吉林省网格范围" };
+  }
   if (files.value.length !== 25) return { ready: false, message: `还需选择 ${Math.max(0, 25 - files.value.length)} 帧（固定流程要求恰好25帧）` };
   if (files.value.some(item => !item.stamp)) return { ready: false, message: "部分文件名缺少14位时间戳" };
   for (let index = 1; index < files.value.length; index += 1) {
@@ -357,8 +403,11 @@ function openTool(name) {
 }
 
 function selectModel(item) {
-  if (item.status !== "available") { ElMessage.info("该模型仍是预留骨架，暂不可运行。"); return; }
   modelId.value = item.id;
+  clearFiles();
+  result.value = null;
+  metrics.value = null;
+  icingPoints.value = [];
   tool.value = "file";
 }
 
@@ -386,10 +435,12 @@ function chooseFiles(event) {
     stamp: fileStamp(file.name),
     raw: file,
   }));
+  if (incoming.length) resetTaskProgress();
   const merged = new Map(files.value.map(file => [file.name, file]));
   incoming.forEach(file => merged.set(file.name, file));
   files.value = Array.from(merged.values()).sort((a, b) => (a.stamp || a.name).localeCompare(b.stamp || b.name));
-  if (files.value.length > 25) ElMessage.warning("当前超过25帧，请移除多余文件后再提交。");
+  const expectedCount = isIcing.value ? 1 : 25;
+  if (files.value.length > expectedCount) ElMessage.warning(`当前超过${expectedCount}个文件，请移除多余文件后再提交。`);
   event.target.value = "";
 }
 
@@ -398,8 +449,22 @@ function formatSize(bytes) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function removeFile(key) { files.value = files.value.filter(file => file.key !== key); }
-function clearFiles() { files.value = []; }
+function resetTaskProgress() {
+  stopPolling();
+  uploadProgress.value = 0;
+  runStatus.value = null;
+  localStorage.removeItem(LAST_RUN_KEY);
+}
+
+function removeFile(key) {
+  files.value = files.value.filter(file => file.key !== key);
+  resetTaskProgress();
+}
+
+function clearFiles() {
+  files.value = [];
+  resetTaskProgress();
+}
 
 async function loadModels() {
   serviceError.value = "";
@@ -408,7 +473,7 @@ async function loadModels() {
     models.value = registry.length ? registry : fallbackModels;
     health.value = status;
     serviceOnline.value = true;
-    if (!models.value.some(item => item.id === modelId.value && item.status === "available")) {
+    if (!models.value.some(item => item.id === modelId.value)) {
       modelId.value = models.value.find(item => item.status === "available")?.id || "";
     }
   } catch (error) {
@@ -426,6 +491,7 @@ async function submitRun() {
   runStatus.value = null;
   result.value = null;
   metrics.value = null;
+  icingPoints.value = [];
   activeIndex.value = 0;
   try {
     const task = await submitModelRun({
@@ -458,7 +524,7 @@ async function pollRun() {
     runStatus.value = await getModelRun(runId);
     if (runStatus.value.status === "succeeded") {
       await loadResult(runId);
-      ElMessage.success("预报完成，已载入真实值与预测值。")
+      ElMessage.success(isIcing.value ? "覆冰预报完成，已载入地图点位。" : "预报完成，已载入真实值与预测值。")
     } else if (!TERMINAL_STATUSES.has(runStatus.value.status)) {
       schedulePoll();
     } else if (runStatus.value.status === "failed") {
@@ -473,13 +539,29 @@ async function pollRun() {
 
 async function loadResult(runId) {
   result.value = await getModelRunResult(runId);
-  try { metrics.value = await getModelMetrics(result.value.metrics_url); }
-  catch (error) { metrics.value = null; ElMessage.warning(error.message || "逐时指标读取失败"); }
-  serviceOnline.value = true;
+  if (result.value.model_id === "icing_prediction") modelId.value = "icing_prediction";
   activeIndex.value = 0;
+  if (isIcing.value) {
+    metrics.value = null;
+    await loadIcingPoints();
+  } else {
+    try { metrics.value = await getModelMetrics(result.value.metrics_url); }
+    catch (error) { metrics.value = null; ElMessage.warning(error.message || "逐时指标读取失败"); }
+  }
+  serviceOnline.value = true;
   await nextTick();
-  truthMap.value?.flyTo(result.value.extent);
-  predictionMap.value?.flyTo(result.value.extent);
+  if (isIcing.value) icingMap.value?.flyTo(result.value.extent);
+  else {
+    truthMap.value?.flyTo(result.value.extent);
+    predictionMap.value?.flyTo(result.value.extent);
+  }
+}
+
+async function loadIcingPoints() {
+  const pointsUrl = activeFrame.value?.points_url;
+  if (!pointsUrl) { icingPoints.value = []; return; }
+  try { icingPoints.value = await getModelPoints(pointsUrl); }
+  catch (error) { icingPoints.value = []; ElMessage.warning(error.message || "覆冰点位读取失败"); }
 }
 
 async function cancelRun() {
@@ -496,6 +578,7 @@ async function restoreLastRun() {
   if (!runId) return;
   try {
     runStatus.value = await getModelRun(runId);
+    if (runStatus.value.model_id) modelId.value = runStatus.value.model_id;
     if (runStatus.value.status === "succeeded") await loadResult(runId);
     else if (!TERMINAL_STATUSES.has(runStatus.value.status)) schedulePoll();
   } catch { localStorage.removeItem(LAST_RUN_KEY); }
@@ -526,6 +609,7 @@ function percent(value) { const n = Number(value); return Number.isFinite(n) ? `
 
 watch([playing, speed], startPlayback);
 watch(frames, value => { if (!value.length) playing.value = false; setTimeIndex(activeIndex.value); });
+watch(activeIndex, () => { if (isIcing.value && result.value) loadIcingPoints(); });
 watch(linked, value => { if (!value) { syncView.value = null; viewEmitter.value = ""; } });
 watch(dark, value => { if (!showVector.value) mapDark.value = value; });
 
@@ -561,14 +645,13 @@ onBeforeUnmount(() => { disposed = true; stopPolling(); clearInterval(playbackTi
 .picker button { display: flex; align-items: center; justify-content: space-between; padding: 11px 13px; border: 1px solid var(--border); border-radius: 11px; background: var(--field); color: var(--text); font: inherit; font-size: 13px; cursor: pointer; transition: .15s; }
 .picker button:hover { border-color: var(--accent); }
 .picker button.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
-.picker button.disabled { opacity: .55; }
 .model-picker button { position: relative; justify-content: flex-start; gap: 10px; min-height: 72px; text-align: left; }
 .model-icon { flex-shrink: 0; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; color: var(--accent); background: var(--accent-soft); }
 .model-copy { min-width: 0; display: flex; flex: 1; flex-direction: column; gap: 3px; }
 .model-copy b { color: var(--text); font-size: 13px; }
 .model-copy small { color: var(--muted); font-size: 10px; line-height: 1.4; }
 .model-copy em { overflow: hidden; color: var(--accent); font-size: 9px; font-style: normal; text-overflow: ellipsis; }
-.soon-tag { flex-shrink: 0; color: var(--muted); font-size: 9px; }
+.soon-tag { flex-shrink: 0; max-width: 64px; overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .check { color: var(--accent); }
 .model-note { display: flex; align-items: flex-start; gap: 8px; padding: 10px 11px; border: 1px solid var(--border); border-radius: 10px; background: var(--field); color: var(--muted); }
 .model-note .el-icon { flex-shrink: 0; margin-top: 2px; color: var(--accent); }
@@ -610,6 +693,7 @@ onBeforeUnmount(() => { disposed = true; stopPolling(); clearInterval(playbackTi
 .visual-workspace { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
 .maps { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .cell { position: relative; min-width: 0; min-height: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; }
+.icing-cell { grid-column: 1 / -1; }
 .cell :deep(.projmap) { position: absolute; inset: 0; }
 .cell-tag { position: absolute; top: 9px; right: 9px; z-index: 6; padding: 5px 11px; border: 1px solid rgba(255,255,255,.16); border-radius: 8px; background: rgba(16,24,38,.75); backdrop-filter: blur(10px); color: #eaf1fb; font-size: 11px; font-weight: 700; pointer-events: none; }
 .cell-tag.truth { box-shadow: inset 3px 0 #22c55e; }

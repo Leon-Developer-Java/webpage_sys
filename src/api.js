@@ -162,6 +162,7 @@ export async function getModelRunResult(runId) {
       ...frame,
       truth_url: modelAssetUrl(frame.truth_url),
       prediction_url: modelAssetUrl(frame.prediction_url),
+      points_url: modelAssetUrl(frame.points_url),
     })),
   };
 }
@@ -171,6 +172,13 @@ export async function getModelMetrics(url) {
   const payload = await response.json();
   if (!response.ok) throw new Error(apiError(payload, "预报指标读取失败"));
   return payload;
+}
+
+export async function getModelPoints(url) {
+  const response = await authedFetch(modelAssetUrl(url));
+  const payload = await response.json();
+  if (!response.ok) throw new Error(apiError(payload, "覆冰点位读取失败"));
+  return Array.isArray(payload) ? payload : [];
 }
 
 export async function cancelModelRun(runId) {
