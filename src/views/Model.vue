@@ -84,6 +84,12 @@
             <span>{{ mode.description }}</span>
           </button>
         </div>
+        <div v-if="runParameters.length" class="run-config">
+          <div class="config-head"><span>运行配置</span><small>由模型版本固定</small></div>
+          <p v-for="item in runParameters" :key="item.key" :title="item.description">
+            <span>{{ item.label }}</span><b>{{ item.value }}{{ item.unit ? ` ${item.unit}` : '' }}</b>
+          </p>
+        </div>
         <label class="upload-zone" :class="{ disabled: isBusy }">
           <input type="file" accept=".nc" multiple hidden :disabled="isBusy" @change="chooseFiles" />
           <el-icon><UploadFilled /></el-icon>
@@ -111,12 +117,14 @@
           <div><span>{{ taskStageText }}</span><b>{{ Math.round(taskProgress) }}%</b></div>
           <el-progress :percentage="Math.round(taskProgress)" :show-text="false" :stroke-width="6" />
           <small v-if="runStatus?.run_id">任务 {{ shortRunId }}</small>
+          <small v-if="runStatus?.error_stage" class="error-stage">失败阶段：{{ errorStageText }}</small>
           <p v-if="runStatus?.error">{{ runStatus.error }}</p>
         </div>
         <el-button type="primary" class="run-button" :loading="submitting" :disabled="!canSubmit" @click="submitRun">
           <el-icon v-if="!submitting"><VideoPlay /></el-icon>{{ runButtonText }}
         </el-button>
         <el-button v-if="canCancel" class="cancel-button" @click="cancelRun">取消任务</el-button>
+        <el-button v-if="runStatus?.status === 'failed' && files.length" class="cancel-button" @click="clearFiles">重新选择数据</el-button>
         <p class="hint">{{ runModeHint }}</p>
       </template>
 
@@ -251,87 +259,119 @@
             <i :class="statusClass"></i>
           </div>
           <template v-if="result && !isIcing && !isEvaluationResult">
-            <div class="valid-time">
-              <span>当前预报时间</span><b>{{ activeTimeFull }}</b><small>提前 {{ activeFrame?.lead_minutes }} 分钟 · 第 {{ activeIndex + 1 }}/{{ frames.length }} 帧</small>
-            </div>
-            <div class="forecast-headline" :class="activeSummary?.severity || 'normal'">
-              <span>本时次预报</span>
-              <b>{{ activeSummary?.headline || '预报结果已生成' }}</b>
-            </div>
-            <h4>结果解读</h4>
-            <div class="business-list">
-              <div v-for="item in activeSummary?.items || []" :key="item.key">
-                <span>{{ item.label }}</span>
-                <b>{{ item.value }}</b>
-                <small :class="item.trend">{{ item.detail }}</small>
+            <section class="result-section">
+              <h4><i>1</i>数据概况</h4>
+              <div class="overview-list">
+                <p><span>预报要素</span><b>{{ fieldInfo.name_zh }}</b><small>{{ fieldInfo.unit }}</small></p>
+                <p><span>预报范围</span><b>{{ compactTimeRange }}</b></p>
+                <p><span>空间范围</span><b>{{ spatialDescription }}</b></p>
+                <p><span>模型版本</span><b>{{ result.model_version }}</b></p>
               </div>
-            </div>
-            <h4>关注提示</h4>
-            <div class="notice-list">
-              <p v-for="notice in activeSummary?.notices || ['请结合最新观测持续关注预报变化。']" :key="notice">{{ notice }}</p>
-              <p class="muted">预报时效越长，不确定性通常越高。</p>
-            </div>
-            <details class="technical-details">
-              <summary>任务详情</summary>
+            </section>
+
+            <section class="result-section">
+              <h4><i>2</i>当前要素</h4>
+              <div class="valid-time">
+                <span>当前预报时间</span><b>{{ activeTimeFull }}</b><small>提前 {{ activeFrame?.lead_minutes }} 分钟 · 第 {{ activeIndex + 1 }}/{{ frames.length }} 帧</small>
+              </div>
+              <div class="business-list">
+                <div v-for="item in activeSummary?.items || []" :key="item.key">
+                  <span>{{ item.label }}</span><b>{{ item.value }}</b><small :class="item.trend">{{ item.detail }}</small>
+                </div>
+              </div>
+              <h5>{{ result.presentation?.chart_title || '未来两小时回波趋势' }}</h5>
+              <ModelTrendChart :series="chartSeries" :frames="frames" :active="activeIndex" />
+            </section>
+
+            <section class="result-section">
+              <h4><i>3</i>解释说明</h4>
+              <div class="forecast-headline" :class="activeSummary?.severity || 'normal'">
+                <span>本时次预报结论</span><b>{{ activeSummary?.headline || '预报结果已生成' }}</b>
+              </div>
+              <p class="field-explain">{{ fieldInfo.description }}</p>
+              <div class="notice-list">
+                <p v-for="notice in activeSummary?.notices || ['请结合最新观测持续关注预报变化。']" :key="notice">{{ notice }}</p>
+                <p class="muted">预报时效越长，不确定性通常越高。</p>
+              </div>
+            </section>
+
+            <section class="result-section">
+              <h4><i>4</i>数据质量与来源</h4>
+              <div class="quality-tags">
+                <span :class="qualityClass(quality.time_continuity)">时间连续</span>
+                <span :class="qualityClass(quality.spatial_consistency)">空间一致</span>
+                <span :class="qualityClass(quality.variable_consistency)">变量一致</span>
+              </div>
               <div class="run-info">
-                <p><span>模型</span><b>{{ result.architecture }}</b></p>
-                <p><span>版本</span><b>{{ result.model_version }}</b></p>
-                <p><span>起报时间</span><b>{{ forecastStartTime }}</b></p>
-                <p><span>推理耗时</span><b>{{ number(result.inference_seconds) }} s</b></p>
+                <p><span>数据来源</span><b>{{ provenance.source || '用户上传数据' }}</b></p>
+                <p><span>原始字段</span><b :title="fieldInfo.raw_name">{{ fieldInfo.raw_name }}</b></p>
+                <p><span>输入时间</span><b>{{ inputTimeRange }}</b></p>
+                <p><span>空间坐标</span><b>{{ spatialExtentText }}</b></p>
+                <p><span>提交时间</span><b>{{ formatRunTime(provenance.submitted_at) }}</b></p>
+                <p><span>完成时间</span><b>{{ formatRunTime(provenance.finished_at) }}</b></p>
+                <p><span>推理耗时</span><b>{{ number(provenance.inference_seconds ?? result.inference_seconds) }} s</b></p>
               </div>
-            </details>
+            </section>
           </template>
           <template v-else-if="result && !isIcing && isEvaluationResult">
-            <div class="valid-time">
-              <span>当前时次</span><b>{{ activeTimeFull }}</b><small>第 {{ activeIndex + 1 }}/{{ frames.length }} 帧 · 提前 {{ activeFrame?.lead_minutes }} 分钟</small>
-            </div>
-            <h4>当前帧指标</h4>
-            <div class="metric-grid">
-              <div><span>MAE</span><b>{{ number(activeLead?.model_mae) }}</b><small>dBZ</small></div>
-              <div><span>RMSE</span><b>{{ number(activeLead?.model_rmse) }}</b><small>dBZ</small></div>
-              <div><span>Bias</span><b>{{ signed(activeLead?.model_bias) }}</b><small>dBZ</small></div>
-              <div><span>CSI 20</span><b>{{ percent(activeLead?.model_csi_20dbz) }}</b><small>命中评分</small></div>
-              <div><span>POD 20</span><b>{{ percent(activeLead?.model_pod_20dbz) }}</b><small>命中率</small></div>
-              <div><span>FAR 20</span><b>{{ percent(activeLead?.model_far_20dbz) }}</b><small>空报率</small></div>
-            </div>
-            <h4>20帧平均</h4>
-            <div class="summary-list">
-              <p><span>平均 MAE</span><b>{{ number(modelSummary.mae_mean) }} dBZ</b></p>
-              <p><span>平均 RMSE</span><b>{{ number(modelSummary.rmse_mean) }} dBZ</b></p>
-              <p><span>CSI ≥ 20 dBZ</span><b>{{ percent(modelSummary.csi_20dbz_mean) }}</b></p>
-              <p><span>CSI ≥ 30 dBZ</span><b>{{ percent(modelSummary.csi_30dbz_mean) }}</b></p>
-              <p><span>较持续性基线 MAE</span><b class="good">{{ improvementText }}</b></p>
-            </div>
-            <h4>运行信息</h4>
-            <div class="run-info">
-              <p><span>模型</span><b>{{ result.architecture }}</b></p>
-              <p><span>版本</span><b>{{ result.model_version }}</b></p>
-              <p><span>设备</span><b>{{ result.device }}</b></p>
-              <p><span>推理耗时</span><b>{{ number(result.inference_seconds) }} s</b></p>
-              <p><span>结果网格</span><b>{{ result.shape?.join(' × ') }}</b></p>
-            </div>
+            <section class="result-section">
+              <h4><i>1</i>数据概况</h4>
+              <div class="overview-list">
+                <p><span>评估要素</span><b>{{ fieldInfo.name_zh }}</b><small>{{ fieldInfo.unit }}</small></p>
+                <p><span>评估窗口</span><b>{{ compactTimeRange }}</b></p>
+                <p><span>空间范围</span><b>{{ spatialDescription }}</b></p>
+                <p><span>数据帧数</span><b>{{ quality.file_count || 25 }} 帧</b></p>
+              </div>
+            </section>
+
+            <section class="result-section">
+              <h4><i>2</i>当前要素</h4>
+              <div class="valid-time"><span>当前评估时次</span><b>{{ activeTimeFull }}</b><small>提前 {{ activeFrame?.lead_minutes }} 分钟 · 第 {{ activeIndex + 1 }}/{{ frames.length }} 帧</small></div>
+              <div class="metric-grid">
+                <div title="预测值与真实值偏差的绝对值平均，越小越好"><span>平均绝对误差</span><b>{{ number(activeLead?.model_mae) }}</b><small>MAE · dBZ</small></div>
+                <div title="对较大误差更敏感，越小越好"><span>均方根误差</span><b>{{ number(activeLead?.model_rmse) }}</b><small>RMSE · dBZ</small></div>
+                <div title="正值代表整体偏强，负值代表整体偏弱"><span>系统偏差</span><b>{{ signed(activeLead?.model_bias) }}</b><small>Bias · dBZ</small></div>
+                <div title="20 dBZ回波的综合命中评分，越大越好"><span>命中评分</span><b>{{ percent(activeLead?.model_csi_20dbz) }}</b><small>CSI · 20 dBZ</small></div>
+              </div>
+              <h5>{{ result.presentation?.chart_title || '误差随预报时效变化' }}</h5>
+              <ModelTrendChart :series="chartSeries" :frames="frames" :active="activeIndex" />
+            </section>
+
+            <section class="result-section">
+              <h4><i>3</i>解释说明</h4>
+              <div class="evaluation-conclusion"><b>{{ evaluationConclusion }}</b><span>MAE/RMSE越小越好，CSI越大越好；Bias用于判断整体偏强或偏弱。</span></div>
+              <div class="summary-list">
+                <p><span>20帧平均 MAE</span><b>{{ number(modelSummary.mae_mean) }} dBZ</b></p>
+                <p><span>20帧平均 RMSE</span><b>{{ number(modelSummary.rmse_mean) }} dBZ</b></p>
+                <p><span>20 dBZ 平均 CSI</span><b>{{ percent(modelSummary.csi_20dbz_mean) }}</b></p>
+                <p><span>较持续性基线改善</span><b class="good">{{ improvementText }}</b></p>
+              </div>
+            </section>
+
+            <section class="result-section">
+              <h4><i>4</i>数据质量与来源</h4>
+              <div class="quality-tags"><span :class="qualityClass(quality.time_continuity)">时间连续</span><span :class="qualityClass(quality.spatial_consistency)">空间一致</span><span :class="qualityClass(quality.variable_consistency)">变量一致</span></div>
+              <div class="run-info">
+                <p><span>数据来源</span><b>{{ provenance.source || '用户上传数据' }}</b></p>
+                <p><span>原始字段</span><b :title="fieldInfo.raw_name">{{ fieldInfo.raw_name }}</b></p>
+                <p><span>输入时间</span><b>{{ inputTimeRange }}</b></p>
+                <p><span>空间坐标</span><b>{{ spatialExtentText }}</b></p>
+                <p><span>模型版本</span><b>{{ result.model_version }}</b></p>
+                <p><span>完成时间</span><b>{{ formatRunTime(provenance.finished_at) }}</b></p>
+                <p><span>推理耗时</span><b>{{ number(provenance.inference_seconds ?? result.inference_seconds) }} s</b></p>
+              </div>
+            </section>
           </template>
           <template v-else-if="result && isIcing">
-            <div class="valid-time">
-              <span>当前预报时次</span><b>{{ activeTimeFull }}</b><small>第 {{ activeIndex + 1 }}/{{ frames.length }} 小时 · {{ icingPoints.length }} 个覆冰点</small>
-            </div>
-            <h4>覆冰结果</h4>
-            <div class="summary-list">
-              <p><span>厚度口径</span><b>逐时累计</b></p>
-              <p><span>结果网格</span><b>{{ result.shape?.join(' × ') }}</b></p>
-              <p><span>最大累计厚度</span><b>{{ number(result.statistics?.max_cumulative_ice_thickness_mm) }} mm</b></p>
-            </div>
-            <h4>运行信息</h4>
-            <div class="run-info">
-              <p><span>模型</span><b>{{ result.architecture }}</b></p>
-              <p><span>版本</span><b>{{ result.model_version }}</b></p>
-              <p><span>输入时次</span><b>{{ frames.length }} 小时</b></p>
-            </div>
+            <section class="result-section"><h4><i>1</i>数据概况</h4><div class="overview-list"><p><span>预报要素</span><b>{{ fieldInfo.name_zh }}</b><small>{{ fieldInfo.unit }}</small></p><p><span>预报范围</span><b>{{ compactTimeRange }}</b></p><p><span>空间范围</span><b>{{ spatialDescription }}</b></p></div></section>
+            <section class="result-section"><h4><i>2</i>当前要素</h4><div class="valid-time"><span>当前预报时次</span><b>{{ activeTimeFull }}</b><small>第 {{ activeIndex + 1 }}/{{ frames.length }} 小时 · {{ icingPoints.length }} 个覆冰点</small></div><div class="summary-list"><p><span>厚度口径</span><b>逐时累计</b></p><p><span>最大累计厚度</span><b>{{ number(result.statistics?.max_cumulative_ice_thickness_mm) }} mm</b></p></div></section>
+            <section class="result-section"><h4><i>3</i>解释说明</h4><p class="field-explain">{{ fieldInfo.description }}</p></section>
+            <section class="result-section"><h4><i>4</i>数据质量与来源</h4><div class="quality-tags"><span :class="qualityClass(quality.time_continuity)">时间连续</span><span :class="qualityClass(quality.variable_consistency)">变量完整</span></div><div class="run-info"><p><span>数据来源</span><b>{{ provenance.source }}</b></p><p><span>原始字段</span><b>{{ fieldInfo.raw_name }}</b></p><p><span>空间坐标</span><b>{{ spatialExtentText }}</b></p><p><span>模型版本</span><b>{{ result.model_version }}</b></p></div></section>
           </template>
           <div v-else class="metrics-empty">
             <el-icon><DataAnalysis /></el-icon>
             <b>{{ isBusy ? taskStageText : '暂无预报结果' }}</b>
-            <span>{{ isBusy ? '任务完成后会自动加载结果' : isIcing ? '选择1个24小时覆冰预报文件后提交任务' : '选择模型和25帧数据后提交任务' }}</span>
+            <span>{{ isBusy ? '任务完成后会自动加载结果' : isIcing ? '选择1个24小时覆冰预报文件后提交任务' : `选择模型和${requiredFileCount}帧数据后提交任务` }}</span>
           </div>
         </aside>
       </div>
@@ -368,6 +408,7 @@ import {
 import ProjMap from "../components/ProjMap.vue";
 import IcingPointLayer from "../components/IcingPointLayer.vue";
 import ForecastTimeline from "../components/ForecastTimeline.vue";
+import ModelTrendChart from "../components/ModelTrendChart.vue";
 import WebglLayer from "../components/WebglLayer.vue";
 
 const LAST_RUN_KEY = "weather-model-last-run";
@@ -379,10 +420,16 @@ const fallbackModels = [
       forecast: { label: "业务预报", description: "上传5帧历史观测，生成未来20帧预报。", file_count: 5, default: true },
       evaluation: { label: "模型评估", description: "上传25帧数据，查看真实值对比和专业指标。", file_count: 25 },
     },
+    parameters: [
+      { key: "frames_in", label: "历史输入", value: 5, unit: "帧", description: "模型固定输入长度" },
+      { key: "frames_out", label: "预报长度", value: 20, unit: "帧", description: "未来两小时共20个时次" },
+      { key: "step_minutes", label: "时间间隔", value: 6, unit: "分钟", description: "相邻时次间隔" },
+    ],
   },
   {
     id: "icing_prediction", name: "覆冰预测", description: "面向输电线路等场景的覆冰风险预测", status: "available",
     run_modes: { forecast: { label: "业务预报", description: "运行24小时覆冰预测。", file_count: 1, default: true } },
+    parameters: [{ key: "time_steps", label: "预报长度", value: 24, unit: "小时", description: "固定逐小时预报" }],
   },
 ];
 const projections = ["等经纬", "墨卡托", "正弦", "罗宾逊", "兰博托", "卫星正视", "北极", "南极"];
@@ -430,6 +477,7 @@ const availableRunModes = computed(() => {
   return Object.entries(modes).map(([id, value]) => ({ id, ...value }));
 });
 const activeRunMode = computed(() => availableRunModes.value.find(item => item.id === runMode.value) || availableRunModes.value[0]);
+const runParameters = computed(() => Array.isArray(activeModel.value?.parameters) ? activeModel.value.parameters : []);
 const requiredFileCount = computed(() => Number(activeRunMode.value?.file_count || (isIcing.value ? 1 : 5)));
 const displayRunMode = computed(() => {
   const value = result.value?.run_mode;
@@ -444,6 +492,27 @@ const activeFrame = computed(() => frames.value[activeIndex.value] || null);
 const activeTimeFull = computed(() => activeFrame.value?.valid_time || "--");
 const activeSummary = computed(() => activeFrame.value?.summary || null);
 const forecastStartTime = computed(() => result.value?.forecast_start_time || result.value?.input_times?.at?.(-1) || "");
+const fieldInfo = computed(() => result.value?.field_info || {
+  name_zh: isIcing.value ? "累计覆冰厚度" : "组合反射率",
+  raw_name: result.value?.input_variable || "--",
+  unit: result.value?.unit || "--",
+  description: isIcing.value ? "表示从首个时次开始累计的覆冰厚度。" : "表示雷达回波强弱，数值越大通常代表降水回波越强。",
+});
+const timeRange = computed(() => result.value?.time_range || {});
+const quality = computed(() => result.value?.quality || {});
+const provenance = computed(() => result.value?.provenance || {});
+const chartSeries = computed(() => {
+  if (Array.isArray(result.value?.chart_series) && result.value.chart_series.length) return result.value.chart_series;
+  if (!isEvaluationResult.value || !metrics.value?.per_lead) return [];
+  return [
+    { key: "mae", label: "平均绝对误差", unit: "dBZ", color: "#3b82f6", values: metrics.value.per_lead.map(item => item.model_mae) },
+    { key: "rmse", label: "均方根误差", unit: "dBZ", color: "#f59e0b", values: metrics.value.per_lead.map(item => item.model_rmse) },
+  ];
+});
+const compactTimeRange = computed(() => `${compactDate(timeRange.value.forecast_start)} — ${compactDate(timeRange.value.forecast_end)}`);
+const inputTimeRange = computed(() => `${compactDate(timeRange.value.input_start)} — ${compactDate(timeRange.value.input_end)}`);
+const spatialDescription = computed(() => result.value?.spatial_range?.description || "结果覆盖区域");
+const spatialExtentText = computed(() => formatExtent(result.value?.spatial_range?.extent || result.value?.extent));
 const uploadTitle = computed(() => {
   if (isIcing.value) return "选择24小时覆冰预报 NetCDF";
   return runMode.value === "evaluation" ? "选择25帧连续雷达 NetCDF" : "选择5帧历史雷达 NetCDF";
@@ -471,17 +540,24 @@ const inferenceDone = computed(() => ["succeeded", "failed", "cancelled"].includ
 const taskProgress = computed(() => submitting.value ? uploadProgress.value : Number(runStatus.value?.progress || 0));
 const shortRunId = computed(() => runStatus.value?.run_id ? `${runStatus.value.run_id.slice(0, 12)}…` : "");
 const canSubmit = computed(() => serviceOnline.value && activeModel.value?.status === "available" && sequenceReady.value && !isBusy.value);
-const runButtonText = computed(() => submitting.value ? `正在上传 ${Math.round(uploadProgress.value)}%` : isBusy.value ? "任务执行中" : result.value ? "重新运行预报" : "提交并开始预报");
+const runButtonText = computed(() => submitting.value ? `正在上传 ${Math.round(uploadProgress.value)}%` : isBusy.value ? "任务执行中" : runStatus.value?.status === "failed" ? "使用当前数据重新运行" : result.value ? "重新运行预报" : "提交并开始预报");
 const statusClass = computed(() => ({ online: serviceOnline.value, running: isBusy.value, success: !!result.value }));
 const taskStageText = computed(() => {
-  if (submitting.value) return isIcing.value ? "正在上传覆冰预报数据" : "正在上传25帧数据";
+  if (submitting.value) return isIcing.value ? "正在上传覆冰预报数据" : `正在上传${requiredFileCount.value}帧数据`;
   return ({ queued: "任务排队中", running: "模型推理中", cancelling: "正在取消", succeeded: "预报已完成", failed: "任务失败", cancelled: "任务已取消" })[runStatus.value?.status] || "等待提交";
 });
+const errorStageText = computed(() => ({ model_execution: "模型推理或结果生成" })[runStatus.value?.error_stage] || "任务执行");
 const improvementText = computed(() => {
   const model = Number(modelSummary.value.mae_mean);
   const baseline = Number(persistenceSummary.value.mae_mean);
   if (!Number.isFinite(model) || !Number.isFinite(baseline) || baseline === 0) return "--";
   return `${((baseline - model) / baseline * 100).toFixed(1)}%`;
+});
+const evaluationConclusion = computed(() => {
+  const model = Number(modelSummary.value.mae_mean);
+  const baseline = Number(persistenceSummary.value.mae_mean);
+  if (!Number.isFinite(model) || !Number.isFinite(baseline)) return "评估结果已生成，请结合各时效指标判断模型表现。";
+  return model < baseline ? `模型平均误差低于持续性基线，整体改善 ${improvementText.value}。` : "当前模型平均误差未优于持续性基线，建议检查较长预报时效。";
 });
 
 const sequenceCheck = computed(() => {
@@ -731,6 +807,24 @@ function toggleVector() {
 function number(value) { const n = Number(value); return Number.isFinite(n) ? n.toFixed(2) : "--"; }
 function signed(value) { const n = Number(value); return Number.isFinite(n) ? `${n >= 0 ? "+" : ""}${n.toFixed(2)}` : "--"; }
 function percent(value) { const n = Number(value); return Number.isFinite(n) ? `${(n * 100).toFixed(1)}%` : "--"; }
+function compactDate(value) {
+  const text = String(value || "").replace("T", " ");
+  if (!text) return "--";
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/);
+  return match ? `${match[2]}-${match[3]} ${match[4]}:${match[5]}` : text;
+}
+function formatExtent(value) {
+  if (!Array.isArray(value) || value.length < 4) return "--";
+  return `${Number(value[0]).toFixed(2)}°E–${Number(value[2]).toFixed(2)}°E，${Number(value[1]).toFixed(2)}°N–${Number(value[3]).toFixed(2)}°N`;
+}
+function formatRunTime(value) {
+  if (!value) return "--";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return compactDate(value);
+  const pad = numberValue => String(numberValue).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+function qualityClass(value) { return value === "passed" ? "ok" : value ? "warn" : "unknown"; }
 
 watch([playing, speed], startPlayback);
 watch(frames, value => { if (!value.length) playing.value = false; setTimeIndex(activeIndex.value); });
@@ -792,6 +886,13 @@ onBeforeUnmount(() => { disposed = true; stopPolling(); clearInterval(playbackTi
 .mode-select b { font-size: 11px; }
 .mode-select button.on b { color: var(--accent); }
 .mode-select span { color: var(--muted); font-size: 9px; line-height: 1.4; }
+.run-config { display: grid; gap: 2px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--field); }
+.config-head { display: flex; justify-content: space-between; margin-bottom: 3px; font-size: 9px; }
+.config-head span { color: var(--text); font-weight: 700; }
+.config-head small { color: var(--muted); font-size: 8px; }
+.run-config p { display: flex; justify-content: space-between; gap: 8px; margin: 0; padding: 4px 0; border-top: 1px dashed var(--border); font-size: 9px; }
+.run-config p span { color: var(--muted); }
+.run-config p b { font-weight: 600; }
 .upload-zone { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 18px 12px; border: 1px dashed var(--border); border-radius: 12px; background: var(--field); text-align: center; cursor: pointer; transition: .15s; }
 .upload-zone:hover { border-color: var(--accent); }
 .upload-zone.disabled { cursor: not-allowed; opacity: .55; }
@@ -816,6 +917,7 @@ onBeforeUnmount(() => { disposed = true; stopPolling(); clearInterval(playbackTi
 .task-card { display: grid; gap: 7px; padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--field); }
 .task-card > div { display: flex; justify-content: space-between; font-size: 10px; }
 .task-card small { color: var(--muted); font-size: 9px; }
+.task-card small.error-stage { color: #f59e0b; }
 .task-card p { margin: 0; color: #ef4444; font-size: 10px; line-height: 1.4; }
 .run-button, .cancel-button { width: 100%; margin-left: 0 !important; }
 
@@ -854,7 +956,7 @@ onBeforeUnmount(() => { disposed = true; stopPolling(); clearInterval(playbackTi
 .tc-speed button.on { color: #fff; background: var(--accent); }
 .tc-time { margin-left: auto; color: var(--text); font-size: 10px; font-variant-numeric: tabular-nums; }
 
-.metrics { flex-shrink: 0; width: 250px; padding: 15px; overflow-y: auto; scrollbar-width: none; }
+.metrics { flex-shrink: 0; width: 300px; padding: 15px; overflow-y: auto; scrollbar-width: none; }
 .metrics::-webkit-scrollbar { display: none; }
 .metrics-head { display: flex; align-items: flex-start; justify-content: space-between; padding-bottom: 11px; border-bottom: 1px solid var(--border); }
 .metrics-head span { color: var(--accent); font-size: 9px; font-weight: 700; letter-spacing: 1px; }
@@ -866,7 +968,15 @@ onBeforeUnmount(() => { disposed = true; stopPolling(); clearInterval(playbackTi
 .valid-time { display: flex; flex-direction: column; gap: 3px; margin: 11px 0; padding: 10px; border-radius: 10px; background: var(--accent-soft); }
 .valid-time span, .valid-time small { color: var(--muted); font-size: 9px; }
 .valid-time b { color: var(--accent); font-size: 12px; }
-.metrics h4 { margin: 13px 0 7px; color: var(--muted); font-size: 9px; font-weight: 700; letter-spacing: .7px; text-transform: uppercase; }
+.metrics h4 { display: flex; align-items: center; gap: 6px; margin: 13px 0 7px; color: var(--muted); font-size: 9px; font-weight: 700; letter-spacing: .7px; }
+.metrics h4 i { display: grid; place-items: center; width: 17px; height: 17px; border-radius: 6px; background: var(--accent-soft); color: var(--accent); font-style: normal; font-size: 8px; }
+.metrics h5 { margin: 11px 0 6px; color: var(--muted); font-size: 9px; font-weight: 600; }
+.result-section + .result-section { margin-top: 14px; padding-top: 1px; border-top: 1px solid var(--border); }
+.overview-list { display: grid; gap: 5px; }
+.overview-list p { display: grid; grid-template-columns: 72px minmax(0, 1fr) auto; align-items: center; gap: 5px; margin: 0; padding: 7px 8px; border-radius: 8px; background: var(--field); font-size: 9px; }
+.overview-list span { color: var(--muted); }
+.overview-list b { overflow: hidden; font-weight: 600; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.overview-list small { color: var(--muted); font-size: 8px; }
 .metric-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
 .metric-grid > div { display: grid; grid-template-columns: 1fr auto; align-items: end; gap: 2px; padding: 8px; border: 1px solid var(--border); border-radius: 9px; background: var(--field); }
 .metric-grid span { color: var(--muted); font-size: 8px; }
@@ -888,12 +998,20 @@ onBeforeUnmount(() => { disposed = true; stopPolling(); clearInterval(playbackTi
 .notice-list { display: grid; gap: 6px; }
 .notice-list p { margin: 0; padding: 8px 9px; border-radius: 8px; background: color-mix(in srgb, var(--accent) 9%, transparent); font-size: 9px; line-height: 1.55; }
 .notice-list p.muted { color: var(--muted); background: var(--field); }
+.field-explain { margin: 0 0 7px; padding: 9px; border-radius: 8px; background: var(--field); color: var(--muted); font-size: 9px; line-height: 1.6; }
+.quality-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 6px; }
+.quality-tags span { padding: 4px 7px; border-radius: 999px; background: var(--field); color: var(--muted); font-size: 8px; }
+.quality-tags span.ok { color: #16a34a; background: color-mix(in srgb, #22c55e 12%, transparent); }
+.quality-tags span.warn { color: #d97706; background: color-mix(in srgb, #f59e0b 12%, transparent); }
+.evaluation-conclusion { display: flex; flex-direction: column; gap: 6px; padding: 10px; border-left: 3px solid var(--accent); border-radius: 8px; background: var(--field); }
+.evaluation-conclusion b { font-size: 10px; line-height: 1.5; }
+.evaluation-conclusion span { color: var(--muted); font-size: 8px; line-height: 1.5; }
 .technical-details { margin-top: 13px; border-top: 1px solid var(--border); }
 .technical-details summary { padding: 10px 0 3px; color: var(--muted); font-size: 9px; cursor: pointer; }
 .summary-list, .run-info { display: grid; gap: 1px; }
 .summary-list p, .run-info p { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin: 0; padding: 6px 0; border-bottom: 1px dashed var(--border); font-size: 9px; }
 .summary-list span, .run-info span { color: var(--muted); }
-.summary-list b, .run-info b { max-width: 135px; overflow: hidden; font-size: 9px; font-weight: 600; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.summary-list b, .run-info b { max-width: 180px; overflow: hidden; font-size: 9px; font-weight: 600; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
 .summary-list .good { color: #16a34a; }
 .metrics-empty { display: flex; flex-direction: column; align-items: center; gap: 7px; margin-top: 60px; color: var(--muted); text-align: center; }
 .metrics-empty .el-icon { color: var(--accent); font-size: 34px; }
@@ -917,13 +1035,15 @@ onBeforeUnmount(() => { disposed = true; stopPolling(); clearInterval(playbackTi
 .service-state { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 9px; white-space: nowrap; }
 
 @media (max-width: 1250px) {
-  .metrics { width: 215px; }
+  .metrics { width: 260px; }
   .dock { width: 260px; }
   .workflow-title { min-width: 0; }
   .workflow-title small, .service-state { display: none; }
 }
 @media (max-width: 980px) {
-  .metrics { display: none; }
+  .result-layout { flex-direction: column; overflow-y: auto; }
+  .visual-workspace { flex: 0 0 58%; min-height: 430px; }
+  .metrics { display: block; width: 100%; max-height: 310px; }
   .dock { width: 235px; }
   .steps em { margin: 0 3px; }
 }
