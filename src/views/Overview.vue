@@ -254,11 +254,22 @@ const switching = ref(false);
 const paneLabels = ref({});
 const selectedPane = ref(-1);
 const paneSources = ref({});
+const paneDisplays = ref({});
 let paneDownAt = null;
 let switchingTarget = { pane: 0, key: "" };
 const latestView = {};
 let animTimer = null;
 let switchingTimer = null;
+const PLAYBACK_BASE_INTERVAL_MS = 900;
+const PLAYBACK_MIN_INTERVAL_MS = 120;
+const CMA_PLAYBACK_MIN_INTERVAL_MS = 200;
+const RADAR_PLAYBACK_BASE_INTERVAL_MS = 1200;
+const RADAR_PLAYBACK_MIN_INTERVAL_MS = 250;
+
+function playbackIntervalMs(baseInterval = PLAYBACK_BASE_INTERVAL_MS, minInterval = PLAYBACK_MIN_INTERVAL_MS) {
+  const multiplier = Math.max(0.1, Number(speed.value) || 1);
+  return Math.max(minInterval, baseInterval / multiplier);
+}
 
 const selectedFileLabel = computed(() => {
   const files = Array.isArray(file.value) ? file.value : [];
@@ -273,7 +284,7 @@ function onPaneDown(e) {
 
 function onPaneClick(i, e) {
   if (layout.value === "1") return;
-  if (e.target.closest(".lc-tab")) return;
+  if (e.target.closest(".layer-card")) return;
   if (paneDownAt && Math.hypot(e.clientX - paneDownAt[0], e.clientY - paneDownAt[1]) > 5) return;
   selectedPane.value = selectedPane.value === i ? -1 : i;
 }
@@ -306,6 +317,8 @@ function updatePaneLabel(paneIndex, key, payload) {
 
 function onLayerDisplayLoaded(paneIndex, key, payload) {
   if (!payload) return;
+  updatePaneLabel(paneIndex, key, payload);
+  paneDisplays.value = { ...paneDisplays.value, [paneIndex]: payload };
 
   const fileName =
     resolveOverviewFileName(payload) ||
@@ -366,6 +379,18 @@ function onLayerVariableChange(paneIndex, key, payload) {
   if (!payload) return;
 
   updatePaneLabel(paneIndex, key, payload);
+  paneDisplays.value = {
+    ...paneDisplays.value,
+    [paneIndex]: {
+      ...(paneDisplays.value[paneIndex] || {}),
+      meta: {
+        ...(paneDisplays.value[paneIndex]?.meta || {}),
+        weather_info: payload,
+        ...payload,
+      },
+      weather_info: payload,
+    },
+  };
 
   if (paneIndex !== 0) return;
 
@@ -1179,6 +1204,12 @@ function normalizeParsedMeta(result) {
 }
 
 const meta = computed(() => {
+  if (layout.value !== "1" && selectedPane.value >= 0) {
+    const paneDisplay = paneDisplays.value[selectedPane.value];
+    const paneMeta = paneDisplay?.meta || paneDisplay?.weather_info || null;
+    if (paneMeta) return paneMeta;
+  }
+
   const display = layerDisplays.value[active.value];
   const rawDisplayMeta =
     display?.meta ||
@@ -1456,6 +1487,7 @@ function cycleLayout() {
   paneLabels.value = {};
   selectedPane.value = -1;
   paneSources.value = {};
+  paneDisplays.value = {};
 }
 
 function openTool(name) {
@@ -1473,6 +1505,7 @@ function selectSource(key) {
     if (current === key) return;
     paneSources.value = { ...paneSources.value, [pane]: key };
     paneLabels.value = { ...paneLabels.value, [pane]: "" };
+    paneDisplays.value = { ...paneDisplays.value, [pane]: null };
     switching.value = true;
     clearTimeout(switchingTimer);
     switchingTimer = setTimeout(() => { switching.value = false; }, 10000);
@@ -1491,6 +1524,7 @@ function selectSource(key) {
   parseProcessing.value = null;
   paneLabels.value = {};
   paneSources.value = {};
+  paneDisplays.value = {};
 }
 
 function pickFile(i) {
