@@ -186,10 +186,11 @@ export async function cancelModelRun(runId) {
 }
 
 // 大文件上传使用 XHR 获取真实上传进度；任务入队后由状态接口继续异步轮询。
-export async function submitModelRun({ modelId, files, startTimestamp, onUploadProgress = () => {} }) {
+export async function submitModelRun({ modelId, runMode = "forecast", files, startTimestamp, onUploadProgress = () => {} }) {
   await ensureFreshToken();
   const body = new FormData();
   body.append("model_id", modelId);
+  body.append("run_mode", runMode);
   if (startTimestamp) body.append("start_timestamp", startTimestamp);
   Array.from(files || []).forEach(file => body.append("files", file, file.name));
 
