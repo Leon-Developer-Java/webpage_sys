@@ -1,12 +1,13 @@
 <template>
   <div :class="['app', dark ? 'dark' : 'light']">
-    <header v-if="route.path !== '/login'" class="topbar glass">
+    <header v-if="!standalonePage" class="topbar glass">
       <div class="brand">
         <el-icon><Cloudy /></el-icon>
         <b>智慧气象</b>
       </div>
       <nav v-if="user">
         <router-link to="/">数据总览</router-link>
+        <router-link to="/era5-history">ERA5 历史</router-link>
         <router-link v-if="user.role >= 2" to="/upload">数据上传</router-link>
         <router-link v-if="user.role >= 2" to="/agent">智能体</router-link>
         <router-link v-if="user.role >= 2" to="/model">专用模型调用</router-link>
@@ -53,6 +54,7 @@ import { Bell, Cloudy, Moon, Sunny } from "@element-plus/icons-vue";
 import { changePassword, getUser, logout } from "./api";
 
 const route = useRoute();
+const standalonePage = computed(() => route.path === "/login");
 const user = computed(() => (route.path, getUser()));
 const pwdVisible = ref(false);
 const pwdBusy = ref(false);

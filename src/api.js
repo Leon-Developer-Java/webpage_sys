@@ -6,6 +6,7 @@ const UPLOAD_BASE = import.meta.env.VITE_UPLOAD_BASE ?? "http://127.0.0.1:8003";
 const AGENT_BASE = import.meta.env.VITE_AGENT_BASE ?? "http://127.0.0.1:8004";
 const AUTH_BASE = import.meta.env.VITE_AUTH_BASE ?? "http://127.0.0.1:8005";
 const MODEL_BASE = import.meta.env.VITE_MODEL_BASE ?? "http://127.0.0.1:8006";
+const ERA5_HISTORY_BASE = import.meta.env.VITE_ERA5_HISTORY_API_BASE ?? "http://127.0.0.1:8010";
 const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB
 
 export function getToken() {
@@ -116,6 +117,38 @@ function apiError(payload, fallback = "请求失败") {
   if (typeof detail?.message === "string") return detail.message;
   if (typeof payload?.message === "string" && payload.message !== "success") return payload.message;
   return fallback;
+}
+
+async function era5HistoryRequest(path, options = {}) {
+  const response = await fetch(`${ERA5_HISTORY_BASE}${path}`, {
+    ...options,
+    headers: { Accept: "application/json", ...(options.headers || {}) },
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload?.code !== 0) {
+    const error = new Error(apiError(payload, `ERA5 历史服务请求失败（HTTP ${response.status}）`));
+    error.status = response.status;
+    throw error;
+  }
+  return payload.data;
+}
+
+export function era5HistoryAssetUrl(path) {
+  const value = String(path || "");
+  if (!value || /^(https?:|data:|blob:)/i.test(value)) return value;
+  return new URL(value, `${ERA5_HISTORY_BASE.replace(/\/$/, "")}/`).toString();
+}
+
+export async function getEra5HistoryStatus({ fresh = false } = {}) {
+  return era5HistoryRequest(`/api/era5/history/status${fresh ? `?t=${Date.now()}` : ""}`);
+}
+
+export async function getEra5HistoryDisplay({ fresh = false } = {}) {
+  return era5HistoryRequest(`/api/era5/history/display${fresh ? `?t=${Date.now()}` : ""}`);
+}
+
+export async function triggerEra5HistoryUpdate() {
+  return era5HistoryRequest("/api/era5/history/run", { method: "POST" });
 }
 
 async function modelRequest(path, options = {}) {
