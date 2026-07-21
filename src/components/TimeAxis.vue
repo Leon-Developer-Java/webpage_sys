@@ -5,7 +5,13 @@
       <div class="thumb" :style="{ left: fillPct }"></div>
     </div>
     <div class="labels">
-      <span v-for="tick in visibleTicks" :key="`${tick.index}-${tick.label}`" @click.stop="emit('update:active', tick.index)">{{ tick.label }}</span>
+      <span
+        v-for="tick in visibleTicks"
+        :key="`${tick.index}-${tick.label}`"
+        :class="{ first: tick.index === 0, last: tick.index === times.length - 1 }"
+        :style="{ left: tickPct(tick.index) }"
+        @click.stop="emit('update:active', tick.index)"
+      >{{ tick.label }}</span>
     </div>
   </div>
 </template>
@@ -31,6 +37,10 @@ function seek(e) {
   const rect = trackEl.value.getBoundingClientRect();
   const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
   emit("update:active", Math.round(ratio * (props.times.length - 1)));
+}
+
+function tickPct(index) {
+  return `${Math.min(Math.max(index / Math.max(props.times.length - 1, 1), 0), 1) * 100}%`;
 }
 </script>
 
@@ -77,7 +87,9 @@ function seek(e) {
   pointer-events: none;
 }
 
-.labels { display: flex; justify-content: space-between; }
-.labels span { font-size: 11px; color: var(--muted); cursor: pointer; transition: 0.12s; }
+.labels { position: relative; height: 16px; }
+.labels span { position: absolute; transform: translateX(-50%); font-size: 11px; color: var(--muted); cursor: pointer; transition: 0.12s; }
+.labels span.first { transform: none; }
+.labels span.last { transform: translateX(-100%); }
 .labels span:hover { color: var(--text); }
 </style>

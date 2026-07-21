@@ -152,7 +152,15 @@ export async function triggerEra5HistoryUpdate() {
 }
 
 async function modelRequest(path, options = {}) {
-  const response = await authedFetch(`${MODEL_BASE}${path}`, options);
+  let response;
+  try {
+    response = await authedFetch(`${MODEL_BASE}${path}`, options);
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new Error("无法连接模型服务，请确认 backend_model 已启动并监听 8006 端口。");
+    }
+    throw error;
+  }
   let payload = null;
   try {
     payload = await response.json();
@@ -191,11 +199,13 @@ export async function getModelRunResult(runId) {
     ...result,
     metrics_url: modelAssetUrl(result?.metrics_url),
     lead_metrics_url: modelAssetUrl(result?.lead_metrics_url),
+    icing_forecast_url: modelAssetUrl(result?.icing_forecast_url),
     frames: (result?.frames ?? []).map(frame => ({
       ...frame,
       truth_url: modelAssetUrl(frame.truth_url),
       prediction_url: modelAssetUrl(frame.prediction_url),
-      points_url: modelAssetUrl(frame.points_url),
+      raster_url: modelAssetUrl(frame.raster_url),
+      grid_url: modelAssetUrl(frame.grid_url),
     })),
   };
 }
@@ -207,15 +217,19 @@ export async function getModelMetrics(url) {
   return payload;
 }
 
-export async function getModelPoints(url) {
+export async function cancelModelRun(runId) {
+  return modelRequest(`/api/model-runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" });
+}
+
+export async function getIcingGrid(url) {
   const response = await authedFetch(modelAssetUrl(url));
   const payload = await response.json();
-  if (!response.ok) throw new Error(apiError(payload, "覆冰点位读取失败"));
+  if (!response.ok) throw new Error(apiError(payload, "覆冰网格查询数据读取失败"));
   return Array.isArray(payload) ? payload : [];
 }
 
-export async function cancelModelRun(runId) {
-  return modelRequest(`/api/model-runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" });
+export async function submitGfsIcingRun() {
+  return modelRequest("/api/model-runs/icing-gfs", { method: "POST" });
 }
 
 // 大文件上传使用 XHR 获取真实上传进度；任务入队后由状态接口继续异步轮询。

@@ -90,28 +90,40 @@
             <span>{{ item.label }}</span><b>{{ item.value }}{{ item.unit ? ` ${item.unit}` : '' }}</b>
           </p>
         </div>
-        <label class="upload-zone" :class="{ disabled: isBusy }">
-          <input type="file" accept=".nc" multiple hidden :disabled="isBusy" @change="chooseFiles" />
+        <div v-if="isIcing" class="icing-source">
+          <button :class="{ on: icingSource === 'gfs' }" :disabled="isBusy" @click="setIcingSource('gfs')">
+            <b>自动获取 GFS</b><span>每6小时更新一次，生成未来24小时预报</span>
+          </button>
+          <button :class="{ on: icingSource === 'upload' }" :disabled="isBusy" @click="setIcingSource('upload')">
+            <b>上传天气场</b><span>上传合并文件或任意长度的连续 GFS 文件序列</span>
+          </button>
+        </div>
+        <label v-if="!isIcing || icingSource === 'upload'" class="upload-zone" :class="{ disabled: isBusy }">
+          <input type="file" :accept="isIcing ? '.nc,.grib,.grib2,.grb,.grb2' : '.nc'" multiple hidden :disabled="isBusy" @change="chooseFiles" />
           <el-icon><UploadFilled /></el-icon>
           <b>{{ uploadTitle }}</b>
           <span>{{ uploadDescription }}</span>
         </label>
-        <div class="list-head">
-            <span>已选文件 · {{ files.length }}/{{ requiredFileCount }}</span>
+        <div v-else class="gfs-auto-source">
+          <el-icon><CircleCheck /></el-icon>
+          <div><b>GFS 自动数据源已启用</b><span>每6小时下载 NOAA GFS 区域预报；新周期继承上一状态，缺失时自动回算。</span></div>
+        </div>
+        <div v-if="!isIcing || icingSource === 'upload'" class="list-head">
+          <span>已选文件 · {{ isIcing ? `${files.length}（1个合并文件或连续 GFS 序列）` : `${files.length}/${requiredFileCount}` }}</span>
           <button v-if="files.length && !isBusy" @click="clearFiles">清空</button>
         </div>
         <div v-if="sequenceMessage" class="sequence-state" :class="{ ready: sequenceReady }">
           <el-icon><CircleCheck v-if="sequenceReady" /><InfoFilled v-else /></el-icon>
           <span>{{ sequenceMessage }}</span>
         </div>
-        <ul v-if="files.length" class="files">
+        <ul v-if="(!isIcing || icingSource === 'upload') && files.length" class="files">
           <li v-for="(file, index) in files" :key="file.key">
             <i class="dot"></i>
             <div><b>{{ index + 1 }}. {{ file.name }}</b><span>{{ file.size }}</span></div>
             <button v-if="!isBusy" title="移除" @click="removeFile(file.key)"><Close /></button>
           </li>
         </ul>
-        <div v-else class="empty-files">尚未选择输入数据</div>
+        <div v-else-if="!isIcing || icingSource === 'upload'" class="empty-files">尚未选择输入数据</div>
 
         <div v-if="isBusy || runStatus" class="task-card">
           <div><span>{{ taskStageText }}</span><b>{{ Math.round(taskProgress) }}%</b></div>
@@ -216,10 +228,11 @@
                 :basemap="basemap"
                 :projection="projection"
               >
-                <IcingPointLayer :points="icingPoints" />
+                <WebglLayer v-if="activeFrame?.raster_url" :key="activeFrame.raster_url" :src="activeFrame.raster_url" :extent="result.extent" />
+                <IcingPointLayer v-if="activeFrame?.grid_url" :points="icingGrid" />
               </ProjMap>
               <div v-if="!activeFrame" class="map-empty"><el-icon><Picture /></el-icon><span>等待覆冰预测结果</span></div>
-              <div v-else class="pane-state"><i></i>{{ activeTimeFull }} · {{ icingPoints.length }} 个覆冰点</div>
+              <div v-else class="pane-state"><i></i>{{ activeTimeFull }} · {{ activeFrame.active_grid_cells || 0 }} 个覆冰网格<template v-if="activeFrame?.melting_grid_cells"> · {{ activeFrame.melting_grid_cells }} 个消融网格</template></div>
             </div>
           </div>
 
@@ -228,6 +241,12 @@
             <div class="legend-colors"></div>
             <div class="legend-labels"><i v-for="value in [0, 10, 20, 30, 40, 50, 60, 70]" :key="value">{{ value }}</i></div>
             <b>dBZ</b>
+          </div>
+          <div v-else-if="result?.colorbar" class="radar-legend icing-legend">
+            <span>净冰厚</span>
+            <div class="legend-colors" :style="{ background: icingLegendGradient }"></div>
+            <div class="legend-labels"><i v-for="value in icingLegendTicks" :key="value">{{ value }}</i></div>
+            <b>{{ result.colorbar.unit || 'mm' }}</b>
           </div>
 
           <div class="timebar glass" :class="{ disabled: !frames.length }">
@@ -242,7 +261,7 @@
               <div class="tc-speed">
                 <button v-for="value in [0.5, 1, 2, 4]" :key="value" :class="{ on: speed === value }" @click="speed = value">{{ value }}x</button>
               </div>
-              <span class="tc-time">{{ activeFrame ? `${activeTimeFull} · 提前 ${activeFrame.lead_minutes ?? activeIndex + 1}${isIcing ? '小时' : '分钟'}` : '任务完成后可播放未来预报' }}</span>
+              <span class="tc-time">{{ activeFrame ? (isIcing ? `${activeTimeFull} · 净覆冰厚度` : `${activeTimeFull} · 提前 ${activeFrame.lead_minutes ?? activeIndex + 1}分钟`) : (isIcing ? '任务完成后可播放24小时覆冰结果' : '任务完成后可播放未来预报') }}</span>
             </div>
             <ForecastTimeline
               :frames="frames"
@@ -364,14 +383,14 @@
           </template>
           <template v-else-if="result && isIcing">
             <section class="result-section"><h4><i>1</i>数据概况</h4><div class="overview-list"><p><span>预报要素</span><b>{{ fieldInfo.name_zh }}</b><small>{{ fieldInfo.unit }}</small></p><p><span>预报范围</span><b>{{ compactTimeRange }}</b></p><p><span>空间范围</span><b>{{ spatialDescription }}</b></p></div></section>
-            <section class="result-section"><h4><i>2</i>当前要素</h4><div class="valid-time"><span>当前预报时次</span><b>{{ activeTimeFull }}</b><small>第 {{ activeIndex + 1 }}/{{ frames.length }} 小时 · {{ icingPoints.length }} 个覆冰点</small></div><div class="summary-list"><p><span>厚度口径</span><b>逐时累计</b></p><p><span>最大累计厚度</span><b>{{ number(result.statistics?.max_cumulative_ice_thickness_mm) }} mm</b></p></div></section>
+            <section class="result-section"><h4><i>2</i>当前要素</h4><div class="valid-time"><span>当前预报时次</span><b>{{ activeTimeFull }}</b><small>第 {{ activeIndex + 1 }}/{{ frames.length }} 小时 · {{ activeFrame?.active_grid_cells || 0 }} 个覆冰网格<template v-if="activeFrame?.melting_grid_cells"> · {{ activeFrame.melting_grid_cells }} 个消融网格</template></small></div><div class="summary-list"><p><span>厚度口径</span><b>从初始时刻起算的净冰厚</b></p><p><span>当前最大净冰厚</span><b>{{ number(activeFrame?.max_net_ice_thickness_mm) }} mm</b></p><p><span>轻/中/重/严重</span><b>{{ activeLevelCounts[1] || 0 }} / {{ activeLevelCounts[2] || 0 }} / {{ activeLevelCounts[3] || 0 }} / {{ activeLevelCounts[4] || 0 }}</b></p></div></section>
             <section class="result-section"><h4><i>3</i>解释说明</h4><p class="field-explain">{{ fieldInfo.description }}</p></section>
-            <section class="result-section"><h4><i>4</i>数据质量与来源</h4><div class="quality-tags"><span :class="qualityClass(quality.time_continuity)">时间连续</span><span :class="qualityClass(quality.variable_consistency)">变量完整</span></div><div class="run-info"><p><span>数据来源</span><b>{{ provenance.source }}</b></p><p><span>原始字段</span><b>{{ fieldInfo.raw_name }}</b></p><p><span>空间坐标</span><b>{{ spatialExtentText }}</b></p><p><span>模型版本</span><b>{{ result.model_version }}</b></p></div></section>
+            <section class="result-section"><h4><i>4</i>数据质量与来源</h4><div class="quality-tags"><span :class="qualityClass(quality.time_continuity)">时间连续</span><span :class="qualityClass(quality.variable_consistency)">变量完整</span></div><div class="run-info"><p><span>数据来源</span><b>{{ provenance.source || '用户上传数据' }}</b></p><p><span>初始状态</span><b>{{ icingInitializationText }}</b></p><p><span>空间坐标</span><b>{{ spatialExtentText }}</b></p><p><span>模型版本</span><b>{{ result.model_version }}</b></p></div></section>
           </template>
           <div v-else class="metrics-empty">
             <el-icon><DataAnalysis /></el-icon>
             <b>{{ isBusy ? taskStageText : '暂无预报结果' }}</b>
-            <span>{{ isBusy ? '任务完成后会自动加载结果' : isIcing ? '选择1个24小时覆冰预报文件后提交任务' : `选择模型和${requiredFileCount}帧数据后提交任务` }}</span>
+            <span>{{ isBusy ? '任务完成后会自动加载结果' : isIcing ? '自动下载最新 GFS 预报，或上传合并文件、连续 GFS 文件序列后提交任务' : `选择模型和${requiredFileCount}帧数据后提交任务` }}</span>
           </div>
         </aside>
       </div>
@@ -402,8 +421,8 @@ import {
   Position, Sunny, UploadFilled, VideoPause, VideoPlay,
 } from "@element-plus/icons-vue";
 import {
-  cancelModelRun, getDedicatedModels, getModelHealth, getModelMetrics, getModelPoints, getModelRun,
-  getModelRunResult, submitModelRun,
+  cancelModelRun, getDedicatedModels, getIcingGrid, getModelHealth, getModelMetrics, getModelRun,
+  getModelRunResult, submitGfsIcingRun, submitModelRun,
 } from "../api.js";
 import ProjMap from "../components/ProjMap.vue";
 import IcingPointLayer from "../components/IcingPointLayer.vue";
@@ -461,7 +480,8 @@ const uploadProgress = ref(0);
 const runStatus = ref(null);
 const result = ref(null);
 const metrics = ref(null);
-const icingPoints = ref([]);
+const icingGrid = ref([]);
+const icingSource = ref("gfs");
 const activeIndex = ref(0);
 const playing = ref(false);
 const speed = ref(1);
@@ -486,17 +506,13 @@ const displayRunMode = computed(() => {
 });
 const isEvaluationResult = computed(() => !isIcing.value && displayRunMode.value === "evaluation");
 const currentModeLabel = computed(() => availableRunModes.value.find(item => item.id === displayRunMode.value)?.label || (isEvaluationResult.value ? "模型评估" : "业务预报"));
-const dockTitle = computed(() => ({ model: "模型选择", file: "任务数据", proj: "投影方式", base: "底图图层" })[tool.value]);
-const frames = computed(() => Array.isArray(result.value?.frames) ? result.value.frames : []);
-const activeFrame = computed(() => frames.value[activeIndex.value] || null);
-const activeTimeFull = computed(() => activeFrame.value?.valid_time || "--");
 const activeSummary = computed(() => activeFrame.value?.summary || null);
 const forecastStartTime = computed(() => result.value?.forecast_start_time || result.value?.input_times?.at?.(-1) || "");
 const fieldInfo = computed(() => result.value?.field_info || {
-  name_zh: isIcing.value ? "累计覆冰厚度" : "组合反射率",
+  name_zh: isIcing.value ? "净覆冰厚度" : "组合反射率",
   raw_name: result.value?.input_variable || "--",
   unit: result.value?.unit || "--",
-  description: isIcing.value ? "表示从首个时次开始累计的覆冰厚度。" : "表示雷达回波强弱，数值越大通常代表降水回波越强。",
+  description: isIcing.value ? "表示覆冰增长扣除消融后的时刻冰厚。" : "表示雷达回波强弱，数值越大通常代表降水回波越强。",
 });
 const timeRange = computed(() => result.value?.time_range || {});
 const quality = computed(() => result.value?.quality || {});
@@ -514,36 +530,64 @@ const inputTimeRange = computed(() => `${compactDate(timeRange.value.input_start
 const spatialDescription = computed(() => result.value?.spatial_range?.description || "结果覆盖区域");
 const spatialExtentText = computed(() => formatExtent(result.value?.spatial_range?.extent || result.value?.extent));
 const uploadTitle = computed(() => {
-  if (isIcing.value) return "选择24小时覆冰预报 NetCDF";
+  if (isIcing.value) return "选择 GFS GRIB2、完整 ERA5 或兼容 NetCDF";
   return runMode.value === "evaluation" ? "选择25帧连续雷达 NetCDF" : "选择5帧历史雷达 NetCDF";
 });
 const uploadDescription = computed(() => {
-  if (isIcing.value) return "需包含连续24小时的 t、d2m、u10、clwc、ciwc 气象场";
+  if (isIcing.value) return "ERA5 需含 t2m/d2m/u10/v10/tp 的连续逐小时 NetCDF；GFS 可上传1个合并文件或至少2个连续 GRIB2，首个时次作初始场";
   return runMode.value === "evaluation"
     ? "前5帧用于推理，后20帧作为真实值；文件需连续间隔6分钟"
     : "仅上传最近5帧历史观测；系统将推算未来20个预报时次";
 });
 const runModeHint = computed(() => {
-  if (isIcing.value) return "任务完成后载入单屏覆冰点位结果。";
+  if (isIcing.value) return icingSource.value === "gfs"
+    ? "自动任务每6小时更新一次；页面会展示下载、状态回算、预测和渲染进度，完成后载入单屏连续覆冰场。"
+    : "上传完成后任务进入模型队列；页面会自动更新整理、预测和渲染进度，完成后载入单屏连续覆冰场。";
   return runMode.value === "evaluation"
     ? "评估模式会生成真实值对比及专业指标，仅用于模型验收。"
     : "业务预报不需要未来真实值，完成后直接展示未来20帧结果。";
 });
 const resultPanelKicker = computed(() => isIcing.value ? "覆冰预测" : isEvaluationResult.value ? "模型评估" : "未来预报");
 const resultPanelTitle = computed(() => isEvaluationResult.value ? "评估结果" : "结果解读");
+const icingLegendGradient = computed(() => {
+  const colors = result.value?.colorbar?.colors;
+  return Array.isArray(colors) && colors.length ? `linear-gradient(90deg, ${colors.join(",")})` : "linear-gradient(90deg,#2563eb,#06b6d4,#22c55e,#facc15,#f97316,#dc2626)";
+});
+const icingLegendTicks = computed(() => {
+  const ticks = result.value?.colorbar?.ticks;
+  return Array.isArray(ticks) && ticks.length ? ticks : [0, 1, 2, 3, 4, 5];
+});
+const dockTitle = computed(() => ({ model: "模型选择", file: "任务数据", proj: "投影方式", base: "底图图层" })[tool.value]);
+const frames = computed(() => Array.isArray(result.value?.frames) ? result.value.frames : []);
+const activeFrame = computed(() => frames.value[activeIndex.value] || null);
+const activeLevelCounts = computed(() => activeFrame.value?.level_counts || {});
+const axisTimes = computed(() => frames.value.map(frame => isIcing.value ? icingClock(frame.valid_time) : String(frame.valid_time || "").slice(11, 16)));
+const activeTimeFull = computed(() => {
+  if (!activeFrame.value) return "--";
+  return isIcing.value ? `${icingDateTime(activeFrame.value.valid_time)}（北京时间）` : activeFrame.value.valid_time;
+});
 const modelSummary = computed(() => metrics.value?.summary?.model || result.value?.metrics_summary?.model || {});
 const persistenceSummary = computed(() => metrics.value?.summary?.persistence || result.value?.metrics_summary?.persistence || {});
 const activeLead = computed(() => metrics.value?.per_lead?.[activeIndex.value] || {});
+const icingInitializationText = computed(() => ({
+  carried: "继承上一 GFS 周期状态",
+  backfilled: "历史 GFS 回算初始化",
+  cold_start: "冷启动（0 mm）",
+})[result.value?.initialization_mode] || (result.value?.initial_condition ? "上传窗口 0 mm 情景" : "--"));
 const isBusy = computed(() => submitting.value || ["queued", "running", "cancelling"].includes(runStatus.value?.status));
 const canCancel = computed(() => ["queued", "running", "cancelling"].includes(runStatus.value?.status));
 const inferenceDone = computed(() => ["succeeded", "failed", "cancelled"].includes(runStatus.value?.status));
 const taskProgress = computed(() => submitting.value ? uploadProgress.value : Number(runStatus.value?.progress || 0));
 const shortRunId = computed(() => runStatus.value?.run_id ? `${runStatus.value.run_id.slice(0, 12)}…` : "");
 const canSubmit = computed(() => serviceOnline.value && activeModel.value?.status === "available" && sequenceReady.value && !isBusy.value);
-const runButtonText = computed(() => submitting.value ? `正在上传 ${Math.round(uploadProgress.value)}%` : isBusy.value ? "任务执行中" : runStatus.value?.status === "failed" ? "使用当前数据重新运行" : result.value ? "重新运行预报" : "提交并开始预报");
+const runButtonText = computed(() => submitting.value
+  ? (isIcing.value && icingSource.value === "gfs" ? "正在提交 GFS 预报" : `正在上传 ${Math.round(uploadProgress.value)}%`)
+  : isBusy.value ? "任务执行中" : runStatus.value?.status === "failed" ? "使用当前数据重新运行" : result.value ? "重新运行预报" : "提交并开始预报");
 const statusClass = computed(() => ({ online: serviceOnline.value, running: isBusy.value, success: !!result.value }));
 const taskStageText = computed(() => {
-  if (submitting.value) return isIcing.value ? "正在上传覆冰预报数据" : `正在上传${requiredFileCount.value}帧数据`;
+  if (submitting.value) return isIcing.value && icingSource.value === "gfs" ? "正在创建 GFS 下载任务" : isIcing.value ? "正在上传覆冰预报数据" : `正在上传${requiredFileCount.value}帧数据`;
+  const stageText = { download: "正在下载 GFS", prepare: "正在整理输入场", backfill: "正在回算初始覆冰状态", predict: "正在生成覆冰预测场", render: "正在渲染地图栅格" }[runStatus.value?.stage];
+  if (stageText) return runStatus.value?.status === "failed" ? `任务失败：${stageText.slice(2)}` : stageText;
   return ({ queued: "任务排队中", running: "模型推理中", cancelling: "正在取消", succeeded: "预报已完成", failed: "任务失败", cancelled: "任务已取消" })[runStatus.value?.status] || "等待提交";
 });
 const errorStageText = computed(() => ({ model_execution: "模型推理或结果生成" })[runStatus.value?.error_stage] || "任务执行");
@@ -561,10 +605,32 @@ const evaluationConclusion = computed(() => {
 });
 
 const sequenceCheck = computed(() => {
+  if (isIcing.value && icingSource.value === "gfs") {
+    return { ready: true, message: "将使用最新可用 GFS 时次，自动下载区域预报并生成未来24小时动态覆冰结果" };
+  }
   if (!files.value.length) return { ready: false, message: "" };
   if (isIcing.value) {
-    if (files.value.length !== 1) return { ready: false, message: "覆冰预测固定接收 1 个 NetCDF 文件" };
-    return { ready: true, message: "已选择 1 个 NetCDF；提交时将校验24小时变量、时间连续性和吉林省网格范围" };
+    const isGrib = file => /\.(grib|grib2|grb|grb2)$/i.test(file.name);
+    if (files.value.some(file => !isGrib(file.raw)) && files.value.length !== 1) {
+      return { ready: false, message: "NetCDF 覆冰输入只能上传 1 个文件；多文件模式仅用于 GFS GRIB2。" };
+    }
+    if (files.value.length === 1 && isGrib(files.value[0].raw)) {
+      return { ready: true, message: "已选择合并的 GFS GRIB2；提交时将校验至少两个连续预报时次及必要气象变量，首个时次只作初始场。" };
+    }
+    if (files.value.length >= 2 && files.value.every(file => isGrib(file.raw))) {
+      const hours = files.value.map(file => gfsForecastHour(file.name)).sort((a, b) => a - b);
+      if (hours.some(hour => !Number.isFinite(hour))) {
+        return { ready: false, message: "每个 GFS 文件名都必须包含 f000 形式的三位预报小时。" };
+      }
+      if (hours.every((hour, index) => index === 0 || hour === hours[index - 1] + 1)) {
+        const first = `f${String(hours[0]).padStart(3, "0")}`;
+        const last = `f${String(hours[hours.length - 1]).padStart(3, "0")}`;
+        return { ready: true, message: `已选择连续 ${first}–${last} GFS 文件序列；${first} 只作初始场，将计算并播放后续 ${files.value.length - 1} 个时次。` };
+      }
+      return { ready: false, message: "多个 GFS 文件必须构成连续且不重复的预报小时序列，例如 f000–f024 或 f002–f026。" };
+    }
+    if (files.value.length === 1) return { ready: true, message: "已选择 1 个 NetCDF；完整 ERA5 需含 t2m/d2m/u10/v10/tp，提交时将校验连续时次、单位和吉林省网格范围" };
+    return { ready: false, message: "覆冰预测请选择1个合并文件，或至少2个连续 GFS GRIB2 文件。" };
   }
   if (files.value.length !== requiredFileCount.value) return { ready: false, message: `还需选择 ${Math.max(0, requiredFileCount.value - files.value.length)} 帧（当前模式要求恰好${requiredFileCount.value}帧）` };
   if (files.value.some(item => !item.stamp)) return { ready: false, message: "部分文件名缺少14位时间戳" };
@@ -592,7 +658,7 @@ function selectModel(item) {
   clearFiles();
   result.value = null;
   metrics.value = null;
-  icingPoints.value = [];
+  icingGrid.value = [];
   tool.value = "file";
 }
 
@@ -602,13 +668,29 @@ function selectRunMode(value) {
   clearFiles();
   result.value = null;
   metrics.value = null;
-  icingPoints.value = [];
+  icingGrid.value = [];
+  activeIndex.value = 0;
+  playing.value = false;
+}
+
+function setIcingSource(source) {
+  if (isBusy.value || icingSource.value === source) return;
+  icingSource.value = source;
+  clearFiles();
+  result.value = null;
+  metrics.value = null;
+  icingGrid.value = [];
   activeIndex.value = 0;
   playing.value = false;
 }
 
 function fileStamp(name) {
   return String(name || "").match(/_(\d{14})_/)?.[1] || "";
+}
+
+function gfsForecastHour(name) {
+  const match = String(name || "").match(/(?:^|[^A-Za-z0-9])f(\d{3})(?:$|[^A-Za-z0-9])/i);
+  return match ? Number(match[1]) : NaN;
 }
 
 function stampMillis(stamp) {
@@ -620,11 +702,34 @@ function formatStamp(stamp) {
   return `${stamp.slice(0, 4)}-${stamp.slice(4, 6)}-${stamp.slice(6, 8)} ${stamp.slice(8, 10)}:${stamp.slice(10, 12)}`;
 }
 
+function icingDate(value) {
+  const text = String(value || "");
+  return new Date(text.endsWith("Z") ? text : `${text}Z`);
+}
+
+function icingClock(value) {
+  const date = icingDate(value);
+  return Number.isNaN(date.getTime()) ? String(value || "").slice(11, 16) : new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false,
+  }).format(date);
+}
+
+function icingDateTime(value) {
+  const date = icingDate(value);
+  if (Number.isNaN(date.getTime())) return String(value || "--");
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
+  }).format(date).replaceAll("/", "-");
+}
+
 function chooseFiles(event) {
   const selected = Array.from(event.target.files || []);
-  const invalid = selected.filter(file => !file.name.toLowerCase().endsWith(".nc"));
-  if (invalid.length) ElMessage.warning(`已忽略 ${invalid.length} 个非NetCDF文件。`);
-  const incoming = selected.filter(file => file.name.toLowerCase().endsWith(".nc")).map(file => ({
+  const supported = file => isIcing.value
+    ? /\.(nc|grib|grib2|grb|grb2)$/i.test(file.name)
+    : file.name.toLowerCase().endsWith(".nc");
+  const invalid = selected.filter(file => !supported(file));
+  if (invalid.length) ElMessage.warning(isIcing.value ? `已忽略 ${invalid.length} 个非 NetCDF/GRIB2 文件。` : `已忽略 ${invalid.length} 个非NetCDF文件。`);
+  const incoming = selected.filter(supported).map(file => ({
     key: `${file.name}-${file.size}-${file.lastModified}`,
     name: file.name,
     size: formatSize(file.size),
@@ -635,8 +740,9 @@ function chooseFiles(event) {
   const merged = new Map(files.value.map(file => [file.name, file]));
   incoming.forEach(file => merged.set(file.name, file));
   files.value = Array.from(merged.values()).sort((a, b) => (a.stamp || a.name).localeCompare(b.stamp || b.name));
-  const expectedCount = requiredFileCount.value;
-  if (files.value.length > expectedCount) ElMessage.warning(`当前超过${expectedCount}个文件，请移除多余文件后再提交。`);
+  if (!isIcing.value && files.value.length > requiredFileCount.value) {
+    ElMessage.warning(`当前超过${requiredFileCount.value}个文件，请移除多余文件后再提交。`);
+  }
   event.target.value = "";
 }
 
@@ -687,19 +793,21 @@ async function submitRun() {
   runStatus.value = null;
   result.value = null;
   metrics.value = null;
-  icingPoints.value = [];
+  icingGrid.value = [];
   activeIndex.value = 0;
   try {
-    const task = await submitModelRun({
-      modelId: modelId.value,
-      runMode: runMode.value,
-      files: files.value.map(item => item.raw),
-      startTimestamp: files.value[0].stamp,
-      onUploadProgress: value => { uploadProgress.value = value; },
-    });
+    const task = isIcing.value && icingSource.value === "gfs"
+      ? await submitGfsIcingRun()
+      : await submitModelRun({
+        modelId: modelId.value,
+        runMode: runMode.value,
+        files: files.value.map(item => item.raw),
+        startTimestamp: files.value[0]?.stamp,
+        onUploadProgress: value => { uploadProgress.value = value; },
+      });
     runStatus.value = task;
     localStorage.setItem(LAST_RUN_KEY, task.run_id);
-    ElMessage.success("文件上传完成，任务已进入模型队列。");
+    ElMessage.success(isIcing.value && icingSource.value === "gfs" ? "GFS 下载和覆冰计算任务已进入队列。" : "文件上传完成，任务已进入模型队列。");
     schedulePoll(0);
   } catch (error) {
     ElMessage.error(error.message || "模型任务提交失败");
@@ -721,7 +829,7 @@ async function pollRun() {
     runStatus.value = await getModelRun(runId);
     if (runStatus.value.status === "succeeded") {
       await loadResult(runId);
-      ElMessage.success(isIcing.value ? "覆冰预报完成，已载入地图点位。" : isEvaluationResult.value ? "模型评估完成，已载入对比结果。" : "业务预报完成，已载入未来结果。")
+      ElMessage.success(isIcing.value ? "覆冰预报完成，已载入连续预测场。" : isEvaluationResult.value ? "模型评估完成，已载入对比结果。" : "业务预报完成，已载入未来结果。")
     } else if (!TERMINAL_STATUSES.has(runStatus.value.status)) {
       schedulePoll();
     } else if (runStatus.value.status === "failed") {
@@ -741,7 +849,7 @@ async function loadResult(runId) {
   activeIndex.value = 0;
   if (isIcing.value) {
     metrics.value = null;
-    await loadIcingPoints();
+    await loadIcingGrid();
   } else if (isEvaluationResult.value && result.value.metrics_url) {
     try { metrics.value = await getModelMetrics(result.value.metrics_url); }
     catch (error) { metrics.value = null; ElMessage.warning(error.message || "逐时指标读取失败"); }
@@ -757,11 +865,17 @@ async function loadResult(runId) {
   }
 }
 
-async function loadIcingPoints() {
-  const pointsUrl = activeFrame.value?.points_url;
-  if (!pointsUrl) { icingPoints.value = []; return; }
-  try { icingPoints.value = await getModelPoints(pointsUrl); }
-  catch (error) { icingPoints.value = []; ElMessage.warning(error.message || "覆冰点位读取失败"); }
+async function loadIcingGrid() {
+  const gridUrl = activeFrame.value?.grid_url;
+  if (!gridUrl) { icingGrid.value = []; return; }
+  icingGrid.value = [];
+  try {
+    const points = await getIcingGrid(gridUrl);
+    if (activeFrame.value?.grid_url === gridUrl) icingGrid.value = points;
+  } catch (error) {
+    if (activeFrame.value?.grid_url === gridUrl) icingGrid.value = [];
+    ElMessage.warning(error.message || "覆冰网格查询数据读取失败");
+  }
 }
 
 async function cancelRun() {
@@ -828,7 +942,7 @@ function qualityClass(value) { return value === "passed" ? "ok" : value ? "warn"
 
 watch([playing, speed], startPlayback);
 watch(frames, value => { if (!value.length) playing.value = false; setTimeIndex(activeIndex.value); });
-watch(activeIndex, () => { if (isIcing.value && result.value) loadIcingPoints(); });
+watch(activeIndex, () => { if (isIcing.value && result.value) loadIcingGrid(); });
 watch(linked, value => { if (!value) { syncView.value = null; viewEmitter.value = ""; } });
 watch(dark, value => { if (!showVector.value) mapDark.value = value; });
 
@@ -893,6 +1007,18 @@ onBeforeUnmount(() => { disposed = true; stopPolling(); clearInterval(playbackTi
 .run-config p { display: flex; justify-content: space-between; gap: 8px; margin: 0; padding: 4px 0; border-top: 1px dashed var(--border); font-size: 9px; }
 .run-config p span { color: var(--muted); }
 .run-config p b { font-weight: 600; }
+.icing-source { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.icing-source button { display: grid; gap: 4px; min-height: 65px; padding: 9px; border: 1px solid var(--border); border-radius: 10px; background: var(--field); color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.icing-source button:hover { border-color: var(--accent); }
+.icing-source button.on { border-color: var(--accent); background: var(--accent-soft); }
+.icing-source button:disabled { cursor: not-allowed; opacity: .6; }
+.icing-source b { font-size: 10px; }
+.icing-source span { color: var(--muted); font-size: 9px; line-height: 1.35; }
+.gfs-auto-source { display: flex; align-items: flex-start; gap: 8px; padding: 11px; border: 1px solid color-mix(in srgb, #22c55e 35%, var(--border)); border-radius: 10px; background: color-mix(in srgb, #22c55e 8%, var(--field)); }
+.gfs-auto-source .el-icon { flex-shrink: 0; margin-top: 1px; color: #16a34a; }
+.gfs-auto-source div { display: grid; gap: 3px; }
+.gfs-auto-source b { color: var(--text); font-size: 10px; }
+.gfs-auto-source span { color: var(--muted); font-size: 9px; line-height: 1.4; }
 .upload-zone { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 18px 12px; border: 1px dashed var(--border); border-radius: 12px; background: var(--field); text-align: center; cursor: pointer; transition: .15s; }
 .upload-zone:hover { border-color: var(--accent); }
 .upload-zone.disabled { cursor: not-allowed; opacity: .55; }
