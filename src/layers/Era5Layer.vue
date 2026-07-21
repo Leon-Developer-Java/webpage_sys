@@ -1,4 +1,13 @@
 <template>
+  <Era5WindParticleLayer
+    v-if="windVariableSelected && windFrame"
+    :field="windFrame"
+    :visible="!windError"
+    :max-display-speed="windDisplayRange.max"
+    :speed-colors="windPalette"
+    @ready="onWindRendererReady"
+    @error="onWindRendererError"
+  />
   <WebglLayer v-if="!gridLayer && imageSrc" :src="imageSrc" :extent="imageExtent" />
   <LayerCard
     :badge="label"
@@ -24,6 +33,8 @@
       </select>
     </label>
     <p v-if="frameSummary" class="lc-note">{{ frameSummary }}</p>
+    <p v-if="windVariableSelected && windLoading && !windFrame" class="lc-note">10 m wind particles loading...</p>
+    <p v-else-if="windVariableSelected && windError" class="lc-note lc-wind-error">10 m wind particles unavailable</p>
   </LayerCard>
 </template>
 
@@ -31,7 +42,14 @@
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import LayerCard from "../components/LayerCard.vue";
 import WebglLayer from "../components/WebglLayer.vue";
+import Era5WindParticleLayer from "./Era5WindParticleLayer.vue";
 import { authedFetch } from "../api";
+import { createEra5WindFrameSession } from "../utils/era5WindFrameSession.js";
+import {
+  era5WindDisplayRange,
+  era5WindPalette,
+  shouldDisplayEra5WindParticles,
+} from "../utils/era5WindFieldCache.js";
 
 const props = defineProps({
   src: String,
@@ -59,9 +77,15 @@ const selectedResolution = ref("native");
 const loading = ref(false);
 const error = ref("");
 const framePayload = ref(null);
+const windFrame = ref(null);
+const windLoading = ref(false);
+const windError = ref("");
+const windSession = createEra5WindFrameSession();
 
 let syncingSelection = false;
 let loadToken = 0;
+let displayLoadToken = 0;
+let windUiRequestId = 0;
 let lastExtentKey = "";
 const PRELOAD_RADIUS = 2;
 const MAX_PRELOADED_IMAGES = 7;
@@ -84,6 +108,20 @@ const imageSrc = computed(() => props.src || toPublicUrl(display.value?.webp || 
 const imageExtent = computed(() => props.extent || meta.value?.extent || meta.value?.bbox || [-180, -90, 180, 90]);
 const resolvedFile = computed(() => fileName(meta.value?.source_file) || fileName(display.value?.meta_file) || props.file || "");
 const currentTime = computed(() => currentLayer.value?.times?.[frameIndex.value] || meta.value?.times?.[frameIndex.value] || "");
+const windDescriptor = computed(() => display.value?.wind_field || meta.value?.wind_field || null);
+const windVariableSelected = computed(() =>
+  shouldDisplayEra5WindParticles(selectedVariable.value, windDescriptor.value),
+);
+const windDisplayRange = computed(() => era5WindDisplayRange(windDescriptor.value));
+const windPalette = computed(() => era5WindPalette(windDescriptor.value));
+const windFrameIndex = computed(() => {
+  const count = Array.isArray(windDescriptor.value?.frames)
+    ? windDescriptor.value.frames.length
+    : 0;
+  if (!count) return 0;
+  const requested = Math.floor(Number(props.timeIndex) || 0);
+  return Math.min(Math.max(requested, 0), count - 1);
+});
 const frameSummary = computed(() => {
   const parts = [
     currentLayer.value?.resolution && currentLayer.value.resolution !== "native" ? currentLayer.value.resolution : "",
@@ -128,8 +166,9 @@ const legendTitle = computed(() => {
 
 const ticks = computed(() => {
   const stats = currentStats();
-  const min = Number(stats.min);
-  const max = Number(stats.max);
+  const layerRange = currentLayer.value?.display_range;
+  const min = Number(layerRange?.min ?? stats.min);
+  const max = Number(layerRange?.max ?? stats.max);
   if (!Number.isFinite(min) || !Number.isFinite(max)) return ["低", "", "", "", "高"];
   if (Math.abs(max - min) < 0.000001) return [formatTick(min), "", "", "", formatTick(max)];
   return Array.from({ length: 5 }, (_, index) => formatTick(min + ((max - min) * index) / 4));
@@ -174,8 +213,9 @@ const ERA5_VARIABLE_NAMES = {
   t2m: "2米气温",
   tp: "总降水量",
   sp: "地面气压",
-  u10: "10米U风",
-  v10: "10米V风",
+  u10: "10米东西向风分量",
+  v10: "10米南北向风分量",
+  ws10: "10米风速",
   ssrd: "地表太阳短波辐射",
   d2m: "2米露点温度",
   msl: "海平面气压",
@@ -193,6 +233,7 @@ const ERA5_VARIABLE_DESCRIPTIONS = {
   sp: "地表气压，表示地表附近大气对单位面积产生的压力。",
   u10: "10米高度的东西向风分量，正值表示向东，负值表示向西。",
   v10: "10米高度的南北向风分量，正值表示向北，负值表示向南。",
+  ws10: "由10米高度的东西向和南北向风分量合成的风速大小，数值从0开始。",
   ssrd: "到达地表的太阳短波辐射能量，可反映地表获得的太阳辐射强度。",
   d2m: "距地面约2米高度的露点温度，用于反映近地面空气湿度状况。",
   msl: "折算到海平面的气压，常用于分析天气系统和气压场。",
@@ -478,12 +519,120 @@ async function paintImageLayer(payload) {
   });
 }
 
+function windCacheScope(descriptor) {
+  const metaValue = meta.value || {};
+  const datasetId = String(
+    metaValue.dataset_id
+      || display.value?.dataset_id
+      || parsedKey.value
+      || "",
+  ).trim();
+  const namespace = datasetId
+    || String(display.value?.meta_file || resolvedFile.value || "ERA5");
+  const generatedAt = String(
+    metaValue.extra?.generated_at
+      || metaValue.generated_at
+      || display.value?.generated_at
+      || "",
+  ).trim();
+  const frames = Array.isArray(descriptor?.frames) ? descriptor.frames : [];
+  const firstFrame = frames[0] || {};
+  const lastFrame = frames[frames.length - 1] || {};
+  const fallbackRevision = [
+    namespace,
+    "refresh-" + String(refreshKey.value),
+    String(descriptor?.schema_version || "1.0"),
+    String(frames.length),
+    String(firstFrame.time || ""),
+    String(lastFrame.time || ""),
+    String(firstFrame.component_byte_length || ""),
+  ].join("|");
+  return {
+    namespace,
+    revision: generatedAt || fallbackRevision,
+  };
+}
+
+function cancelWindParticleFrame({ releaseCurrent = true } = {}) {
+  windUiRequestId += 1;
+  windSession.cancel({ releaseCurrent });
+  windLoading.value = false;
+  if (releaseCurrent) windFrame.value = null;
+}
+
+async function loadWindParticleFrame() {
+  const descriptor = windDescriptor.value;
+  const requestId = ++windUiRequestId;
+  let shouldEmit = false;
+  windError.value = "";
+  if (!windVariableSelected.value) {
+    windSession.cancel({ releaseCurrent: true });
+    windFrame.value = null;
+    windLoading.value = false;
+    return;
+  }
+  if (!descriptor || descriptor.available !== true || !descriptor.frames?.length) {
+    windSession.cancel({ releaseCurrent: true });
+    windFrame.value = null;
+    windLoading.value = false;
+    return;
+  }
+
+  windLoading.value = true;
+  const scope = windCacheScope(descriptor);
+  try {
+    const result = await windSession.load(
+      descriptor,
+      windFrameIndex.value,
+      {
+        apiBase: API_BASE,
+        namespace: scope.namespace,
+        revision: scope.revision,
+        fetcher: authedFetch,
+      },
+    );
+    if (requestId !== windUiRequestId || result.status !== "ready") return;
+    windFrame.value = result.field;
+    windError.value = "";
+    shouldEmit = true;
+  } catch (err) {
+    if (requestId !== windUiRequestId) return;
+    windFrame.value = null;
+    windError.value = err?.message || "ERA5 wind particle data load failed";
+    console.warn(err);
+    shouldEmit = true;
+  } finally {
+    if (requestId === windUiRequestId) {
+      windLoading.value = false;
+      if (shouldEmit) emitLayerMeta();
+    }
+  }
+}
+
+function onWindRendererReady() {
+  if (!windFrame.value) return;
+  windError.value = "";
+}
+
+function onWindRendererError(err) {
+  windError.value = err?.message || "ERA5 wind particle renderer failed";
+}
+
 function emitLayerMeta() {
   const layer = currentLayer.value;
   if (!layer) return;
   const times = layer.times || meta.value?.times || [];
   const imageUrls = layerImageUrls(layer);
   const panelInfo = buildPanelInfo(layer, imageUrls);
+  const windParticle = {
+    available: !!windFrame.value,
+    selected: windVariableSelected.value,
+    descriptor_available: windDescriptor.value?.available === true,
+    loading: windLoading.value,
+    error: windError.value || null,
+    frame_index: windFrame.value?.frameIndex ?? windFrameIndex.value,
+    time: windFrame.value?.time || null,
+  };
   const payload = {
     layer: "ERA5",
     variable: selectedVariable.value,
@@ -508,6 +657,7 @@ function emitLayerMeta() {
     image_url: panelInfo.image_url,
     webp_url: panelInfo.webp_url,
     frame_count: Math.max(imageUrls.length || 0, times.length || 0),
+    wind_particle: windParticle,
   };
   emit("variable-change", payload);
   emit("display-loaded", {
@@ -541,6 +691,7 @@ function emitLayerMeta() {
     file: resolvedFile.value,
     variable: selectedVariable.value,
     resolution: selectedResolution.value,
+    wind_particle: windParticle,
   });
 }
 
@@ -591,6 +742,7 @@ function syncSelectedVariable(value) {
 }
 
 async function loadDisplay(variableName = selectedVariable.value) {
+  const requestId = ++displayLoadToken;
   loading.value = true;
   error.value = "";
   releaseFrameCache();
@@ -603,6 +755,7 @@ async function loadDisplay(variableName = selectedVariable.value) {
     if (!response.ok || payload.code !== 0) {
       throw new Error(payload.detail || payload.message || "ERA5 data load failed");
     }
+    if (requestId !== displayLoadToken) return;
     display.value = normalizeDisplay(payload.data);
     variables.value = display.value.variables || [];
     let nextVariable = variableName || display.value.default_variable || meta.value?.default_variable || variables.value[0]?.name || "";
@@ -614,23 +767,28 @@ async function loadDisplay(variableName = selectedVariable.value) {
     syncSelectedVariable(nextVariable);
     selectedResolution.value = "native";
     await nextTick();
+    void loadWindParticleFrame();
     await loadFrame();
+    if (requestId !== displayLoadToken) return;
     emitLayerMeta();
   } catch (err) {
+    if (requestId !== displayLoadToken) return;
     gridLayer.value = null;
     framePayload.value = null;
     variables.value = [];
+    cancelWindParticleFrame({ releaseCurrent: true });
+    windError.value = "";
     removeImageryLayer();
     error.value = "ERA5 数据未加载";
     console.error(err);
   } finally {
-    loading.value = false;
+    if (requestId === displayLoadToken) loading.value = false;
   }
 }
 
 onMounted(loadDisplay);
 watch(refreshKey, () => loadDisplay(""));
-watch(parsedKey, value => {
+watch(() => props.parsed, value => {
   if (value) loadDisplay("");
 });
 watch(selectedVariable, async value => {
@@ -638,6 +796,7 @@ watch(selectedVariable, async value => {
     releaseFrameCache();
     selectedResolution.value = resolutionOptions.value[0]?.key || "native";
     emitLayerMeta();
+    void loadWindParticleFrame();
     await loadFrame();
   }
 });
@@ -651,9 +810,17 @@ watch(selectedResolution, async () => {
   emitLayerMeta();
   await loadFrame();
 });
-watch(() => props.timeIndex, () => loadFrame());
+watch(() => props.timeIndex, () => {
+  loadFrame();
+  loadWindParticleFrame();
+});
 watch(() => props.src, emitLayerMeta);
 onBeforeUnmount(() => {
+  displayLoadToken += 1;
+  loadToken += 1;
+  windUiRequestId += 1;
+  windSession.dispose();
+  windFrame.value = null;
   releaseFrameCache();
   removeImageryLayer();
 });
@@ -669,5 +836,9 @@ onBeforeUnmount(() => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.lc-wind-error {
+  color: #d97706;
 }
 </style>
