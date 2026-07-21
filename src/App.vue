@@ -84,9 +84,14 @@ async function submitPassword() {
   }
 }
 
-const dark = ref(true);
+const dark = ref(localStorage.getItem("zhihui-theme") !== "light");
 const webgl = !!document.createElement("canvas").getContext("webgl2");
 provide("theme", dark);
 provide("webgl", webgl);
-watch(dark, v => document.documentElement.classList.toggle("light", !v), { immediate: true });
+watch(dark, value => {
+  document.documentElement.classList.toggle("dark", value);
+  document.documentElement.classList.toggle("light", !value);
+  document.documentElement.style.colorScheme = value ? "dark" : "light";
+  localStorage.setItem("zhihui-theme", value ? "dark" : "light");
+}, { immediate: true });
 </script>

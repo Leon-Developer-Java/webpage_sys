@@ -1,5 +1,7 @@
 :root {
-  font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  --el-font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  --bg: #070b13;
   --accent: #4ea1ff;
   --accent-soft: rgba(78, 161, 255, 0.18);
   --ok: #34d399;
@@ -13,6 +15,7 @@
 }
 
 :root.light {
+  --bg: #cbdcf0;
   --accent: #1f8bff;
   --accent-soft: rgba(31, 139, 255, 0.14);
   --ok: #10b981;
@@ -26,7 +29,7 @@
 }
 * { box-sizing: border-box; }
 html, body, #app { width: 100%; height: 100%; margin: 0; }
-body { overflow: hidden; }
+body { overflow: hidden; background: var(--bg); color: var(--text); }
 
 .app {
   display: flex;
@@ -175,14 +178,31 @@ html.light .el-dropdown__popper.el-popper {
 .layer-legend ul { display: flex; justify-content: space-between; margin: 0; padding: 0; list-style: none; font-size: 10px; font-variant-numeric: tabular-nums; }
 .layer-legend ul li { flex: 1; text-align: center; min-width: 0; }
 
-/* ── Element Plus 下拉弹层（teleport 到 body，需全局覆盖）──────────────── */
-.el-select-dropdown.el-popper {
+/* ── Element Plus 浮层（teleport 到 body，需在 .app 外统一覆盖）────────── */
+.el-select__popper.el-popper,
+.el-picker__popper.el-popper,
+.el-cascader__dropdown.el-popper {
+  --el-bg-color-overlay: var(--glass-2);
+  --el-fill-color-light: var(--field);
+  --el-fill-color-lighter: var(--field);
+  --el-text-color-primary: var(--text);
+  --el-text-color-regular: var(--text);
+  --el-text-color-secondary: var(--muted);
+  --el-border-color-light: var(--border);
+  --el-border-color-lighter: var(--border);
   background: var(--glass-2) !important;
   backdrop-filter: blur(20px) saturate(160%);
   -webkit-backdrop-filter: blur(20px) saturate(160%);
   border: 1px solid var(--border) !important;
   border-radius: 12px !important;
   box-shadow: var(--shadow) !important;
+}
+
+.el-select__popper.el-popper .el-popper__arrow::before,
+.el-picker__popper.el-popper .el-popper__arrow::before,
+.el-cascader__dropdown.el-popper .el-popper__arrow::before {
+  background: var(--glass-2) !important;
+  border-color: var(--border) !important;
 }
 
 .el-select-dropdown__list {
@@ -211,6 +231,37 @@ html.light .el-dropdown__popper.el-popper {
 .el-select-dropdown__item.is-selected.is-hovering {
   background: var(--accent-soft) !important;
 }
+
+.el-overlay {
+  --el-bg-color-overlay: var(--glass-2);
+}
+
+.el-dialog,
+.el-message-box {
+  --el-bg-color: var(--glass-2);
+  --el-bg-color-overlay: var(--glass-2);
+  --el-text-color-primary: var(--text);
+  --el-text-color-regular: var(--text);
+  --el-text-color-secondary: var(--muted);
+  --el-border-color: var(--border);
+  --el-border-color-light: var(--border);
+  background: var(--glass-2) !important;
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(22px) saturate(150%);
+}
+
+.el-message {
+  --el-message-bg-color: var(--glass-2);
+  --el-message-border-color: var(--border);
+  --el-message-text-color: var(--text);
+  backdrop-filter: blur(18px) saturate(150%);
+}
+
+.el-dialog__title,
+.el-message-box__title,
+.el-message-box__message,
+.el-message-box__content { color: var(--text); }
 
 /* ── LayerCard 控件行（各 layer 的 select 行，scoped 无法穿透 slot）── */
 .lc-row {

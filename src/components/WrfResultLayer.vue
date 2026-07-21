@@ -50,6 +50,7 @@ const display = ref(null);
 const selectedDomain = ref("");
 const selectedVariable = ref("");
 const error = ref("");
+let loadGeneration = 0;
 
 const meta = computed(() => display.value?.meta_json || null);
 const domains = computed(() => Array.isArray(meta.value?.domains) ? meta.value.domains : []);
@@ -87,9 +88,12 @@ function formatResolution(value) {
 }
 
 async function load() {
+  const generation = ++loadGeneration;
   error.value = "";
   try {
-    display.value = await getWrfDisplay(props.taskId);
+    const value = await getWrfDisplay(props.taskId);
+    if (generation !== loadGeneration) return;
+    display.value = value;
     if (!display.value?.meta_json) {
       error.value = "暂无成功的 WRF 任务";
       return;
@@ -104,6 +108,7 @@ async function load() {
     });
     flyToExtent?.(extent.value);
   } catch (cause) {
+    if (generation !== loadGeneration) return;
     error.value = cause.message || "WRF 结果读取失败";
   }
 }

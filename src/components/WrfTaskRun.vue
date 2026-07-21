@@ -36,8 +36,13 @@
           </div>
         </section>
         <section class="terminal-card">
-          <div class="terminal-head"><div><i></i><span>service.log</span></div><small>自动刷新</small></div>
-          <pre>{{ logs || '等待任务日志…' }}</pre>
+          <div class="terminal-head">
+            <div><i></i><span>service.log</span></div>
+            <button type="button" :class="{ paused: !followingLatest }" @click="scrollToLatest(true)">
+              {{ followingLatest ? '跟随最新' : pendingLogUpdate ? '有新日志 · 回到底部' : '已暂停 · 回到底部' }}
+            </button>
+          </div>
+          <pre ref="logPanel" @scroll="handleLogScroll">{{ logs || '等待任务日志…' }}</pre>
         </section>
       </div>
     </template>
@@ -45,9 +50,12 @@
 </template>
 
 <script setup>
-import { computed } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 const props = defineProps({ task: Object, logs: { type: String, default: "" } });
 const emit = defineEmits(["cancel", "retry", "retry-outputs", "render-partial", "result", "back"]);
+const logPanel = ref(null);
+const followingLatest = ref(true);
+const pendingLogUpdate = ref(false);
 const transferSummary = computed(() => {
   const transfer = props.task?.runtime?.hpc_transfer;
   if (!transfer?.mode || transfer.mode === "pending" || transfer.state === "idle") return "";
@@ -73,12 +81,33 @@ function statusLabel(value) { return ({ queued: "排队中", prefetching: "准�
 function stageLabel(value) { return ({ queued: "等待并行执行名额", retrying_outputs: "等待恢复结果下载", retrying_partial_render: "等待部分结果渲染", checking_remote_outputs: "确认远端 WRF 结果", selecting_cycle: "选择 GFS 00Z 周期", waiting_for_gfs_cache: "等待超算 GFS 数据", checking_hpc_gfs: "校验超算 GFS 数据池", waiting_for_hpc_gfs: "等待超算 GFS 补齐", remote_gfs_ready: "超算 GFS 已就绪", preparing_hpc: "提交任务配置", running: "WPS / WRF 运行中", cancel_pending: "正在取消远端进程", cancelled: "任务已取消", downloading_outputs: "拉取 wrfout 结果", rendering: "生成 WebP", done: "任务完成" })[value] || value || "等待开始"; }
 function stageClass(min) { return { done: Number(props.task?.progress || 0) >= min, active: Number(props.task?.progress || 0) >= min && Number(props.task?.progress || 0) < (stages.find(item => item.min > min)?.min || 101) }; }
 function formatTime(value) { return String(value || "—").replace("T", " ").replace("Z", " UTC"); }
+function scrollToLatest(resume = false) {
+  if (resume) {
+    followingLatest.value = true;
+    pendingLogUpdate.value = false;
+  }
+  nextTick(() => {
+    const element = logPanel.value;
+    if (element && followingLatest.value) element.scrollTop = element.scrollHeight;
+  });
+}
+function handleLogScroll() {
+  const element = logPanel.value;
+  if (!element) return;
+  followingLatest.value = element.scrollHeight - element.scrollTop - element.clientHeight < 36;
+  if (followingLatest.value) pendingLogUpdate.value = false;
+}
+watch(() => props.logs, () => {
+  if (followingLatest.value) scrollToLatest();
+  else pendingLogUpdate.value = true;
+}, { immediate: true });
+watch(() => props.task?.id, () => scrollToLatest(true));
 </script>
 
 <style scoped>
-.task-run { min-height: 100%; padding: 20px; color: var(--text); }.run-head { display: flex; align-items: center; justify-content: space-between; padding-bottom: 16px; border-bottom: 1px solid var(--border); }.run-head span:first-child { color: var(--accent); font-size: 10px; font-weight: 800; letter-spacing: 1.4px; }.run-head h2 { margin: 4px 0 0; font: 17px "SFMono-Regular", Consolas, monospace; }.status { padding: 5px 10px; border-radius: 12px; color: #60a5fa; background: #3b82f620; font-size: 10px; }.status.succeeded { color: #22c55e; background: #22c55e20; }.status.failed, .status.cancelled { color: #f87171; background: #ef444420; }
+.task-run { min-height: 100%; padding: 20px; color: var(--text); font-size: 13px; }.run-head { display: flex; align-items: center; justify-content: space-between; padding-bottom: 16px; border-bottom: 1px solid var(--border); }.run-head span:first-child { color: var(--accent); font-size: 11px; font-weight: 800; letter-spacing: 1.4px; }.run-head h2 { margin: 4px 0 0; font: 17px "SFMono-Regular", Consolas, monospace; }.status { padding: 5px 10px; border-radius: 12px; color: #60a5fa; background: #3b82f620; font-size: 11px; }.status.succeeded { color: #22c55e; background: #22c55e20; }.status.failed, .status.cancelled { color: #f87171; background: #ef444420; }
 .run-empty { min-height: 520px; display: grid; place-items: center; color: var(--muted); }.progress-card, .summary-card, .terminal-card { border: 1px solid var(--border); border-radius: 13px; background: var(--field); }.progress-card { margin: 16px 0; padding: 16px; }.progress-card > div:first-child { display: flex; justify-content: space-between; margin-bottom: 9px; }.progress-card span { color: var(--muted); font-size: 11px; }.progress-card b { color: var(--accent); font-size: 19px; }.stage-flow { display: grid; grid-template-columns: repeat(6, 1fr); gap: 7px; margin-top: 14px; }.stage-flow span { display: flex; align-items: center; gap: 6px; }.stage-flow i { width: 7px; height: 7px; border-radius: 50%; background: #475569; }.stage-flow span.done { color: var(--text); }.stage-flow span.done i { background: #22c55e; }.stage-flow span.active i { background: var(--accent); box-shadow: 0 0 8px var(--accent); }.status.partial_success { color: #f59e0b; background: #f59e0b20; }
-.run-grid { display: grid; grid-template-columns: minmax(300px, .7fr) minmax(440px, 1.3fr); gap: 14px; }.summary-card { padding: 15px; }.summary-card h3 { margin: 0 0 12px; font-size: 13px; }dl { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 0; }dl div { padding: 9px; border-radius: 8px; background: var(--glass); }dt { color: var(--muted); font-size: 9px; }dd { margin: 4px 0 0; font-size: 10px; line-height: 1.5; }.error { padding: 9px; border-radius: 8px; color: #f87171; background: #ef444418; font-size: 10px; }.actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 7px; margin-top: 14px; }
-.terminal-card { min-height: 410px; overflow: hidden; background: #050914; }.terminal-head { display: flex; justify-content: space-between; padding: 9px 12px; border-bottom: 1px solid #1e293b; color: #94a3b8; font-size: 10px; }.terminal-head div { display: flex; align-items: center; gap: 7px; }.terminal-head i { width: 7px; height: 7px; border-radius: 50%; background: #22c55e; }.terminal-card pre { max-height: 470px; margin: 0; padding: 14px; overflow: auto; color: #cbd5e1; font: 10px/1.6 "SFMono-Regular", Consolas, monospace; white-space: pre-wrap; word-break: break-all; }
+.run-grid { display: grid; grid-template-columns: minmax(300px, .7fr) minmax(440px, 1.3fr); gap: 14px; }.summary-card { padding: 15px; }.summary-card h3 { margin: 0 0 12px; font-size: 14px; }dl { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 0; }dl div { padding: 9px; border-radius: 8px; background: var(--glass); }dt { color: var(--muted); font-size: 11px; }dd { margin: 4px 0 0; font-size: 12px; line-height: 1.5; }.error { padding: 9px; border-radius: 8px; color: #f87171; background: #ef444418; font-size: 11px; }.actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 7px; margin-top: 14px; }
+.terminal-card { min-height: 410px; overflow: hidden; background: #050914; }.terminal-head { display: flex; justify-content: space-between; padding: 9px 12px; border-bottom: 1px solid #1e293b; color: #94a3b8; font-size: 11px; }.terminal-head div { display: flex; align-items: center; gap: 7px; }.terminal-head i { width: 7px; height: 7px; border-radius: 50%; background: #22c55e; }.terminal-head button { padding: 0; border: 0; background: transparent; color: #94a3b8; font: inherit; cursor: pointer; }.terminal-head button:hover { color: var(--accent); }.terminal-head button.paused { color: #f59e0b; }.terminal-card pre { max-height: 470px; margin: 0; padding: 14px; overflow: auto; color: #cbd5e1; font: 11px/1.6 "SFMono-Regular", Consolas, monospace; white-space: pre-wrap; word-break: break-all; }
 @media (max-width: 980px) { .run-grid { grid-template-columns: 1fr; }.stage-flow { grid-template-columns: repeat(3, 1fr); } }
 </style>

@@ -277,13 +277,13 @@ onMounted(() => setTimeout(fitActiveDomain, 80));
 .domain-overlay.drawing { pointer-events: all; cursor: crosshair; }
 .domain-shape { fill: transparent; stroke-width: 2; stroke-dasharray: 7 5; vector-effect: non-scaling-stroke; pointer-events: none; }
 .domain-shape.active { fill: color-mix(in srgb, var(--accent) 9%, transparent); stroke-width: 3; stroke-dasharray: none; pointer-events: all; cursor: move; }
-.domain-overlay text { font: 700 12px "SFMono-Regular", Consolas, monospace; paint-order: stroke; stroke: #07101e; stroke-width: 4px; pointer-events: none; }
+.domain-overlay text { font: 700 12px "SFMono-Regular", Consolas, monospace; paint-order: stroke; stroke: var(--bg); stroke-width: 4px; pointer-events: none; }
 .domain-tools { position: absolute; top: 12px; left: 12px; right: 12px; display: flex; align-items: center; gap: 8px; pointer-events: auto; }
 .domain-tabs { display: flex; gap: 5px; padding: 4px; border: 1px solid var(--border); border-radius: 10px; background: var(--glass); backdrop-filter: blur(12px); }
 .domain-tabs button, .draw-button { height: 30px; padding: 0 10px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--muted); font: inherit; font-size: 11px; font-weight: 700; cursor: pointer; }
 .domain-tabs button.active { border-color: var(--domain-color); color: var(--domain-color); background: color-mix(in srgb, var(--domain-color) 14%, transparent); }
 .draw-button { border-color: var(--border); background: var(--glass); }
 .draw-button.active { border-color: var(--accent); color: var(--accent); }
-.domain-tools > span { padding: 6px 9px; border-radius: 7px; background: #07101ecc; color: #cbd5e1; font-size: 10px; }
+.domain-tools > span { padding: 6px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--glass-2); color: var(--text); font-size: 11px; backdrop-filter: blur(12px); }
 @media (max-width: 720px) { .domain-tools { align-items: flex-start; flex-wrap: wrap; }.domain-tools > span { width: 100%; } }
 </style>

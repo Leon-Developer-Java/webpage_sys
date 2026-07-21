@@ -183,6 +183,10 @@ const visualInfo = ref(null);
 const visualPlaying = ref(false);
 let refreshTimer = null;
 let playbackTimer = null;
+let refreshInFlight = false;
+let lastRemoteRefreshAt = 0;
+const REMOTE_REFRESH_INTERVAL = 20000;
+const MAX_LOG_CHARS = 300000;
 
 const serviceOnline = computed(() => health.value?.status === "online" && !serviceError.value);
 const selectedTask = computed(() => tasks.value.find(task => task.id === selectedTaskId.value) || null);
@@ -260,22 +264,34 @@ function setVisualTime(value) { visualTimeIndex.value = Math.max(0, Math.min(Num
 function stopPlayback() { visualPlaying.value = false; clearInterval(playbackTimer); playbackTimer = null; }
 function togglePlayback() { if (visualPlaying.value) { stopPlayback(); return; } if (visualTimes.value.length < 2) return; visualPlaying.value = true; playbackTimer = setInterval(() => setVisualTime(visualTimeIndex.value + 1 >= visualTimes.value.length ? 0 : visualTimeIndex.value + 1), 900); }
 
-async function refreshAll(showMessage = false, includeRemote = hpcAuthenticated.value) {
-  try { health.value = await getWrfHealth(); serviceError.value = ""; } catch (error) { if (!health.value) health.value = { status: "offline", hpc: { status: "unavailable" } }; serviceError.value = error.message; if (showMessage) ElMessage.error(error.message); }
-  if (includeRemote) {
-    try { dataStatus.value = await getWrfDataStatus(); } catch (error) { dataStatus.value = { status: "error", message: error.message, pool_items: [] }; }
-  } else {
-    dataStatus.value = { status: "locked", message: "等待超算认证", pool_items: [] };
-  }
+async function refreshAll(showMessage = false, includeRemote = hpcAuthenticated.value, forceRemote = false) {
+  if (refreshInFlight) return;
+  refreshInFlight = true;
   try {
-    tasks.value = await listWrfTasks();
-    if (workspaceView.value === "result" && !tasks.value.some(task => task.id === resultTaskId.value && isDisplayable(task))) resultTaskId.value = successfulTasks.value[0]?.id || "";
-    if (workspaceView.value === "run" && selectedTaskId.value) await refreshLogs();
-  } catch (error) { if (showMessage) ElMessage.error(error.message); }
+    try { health.value = await getWrfHealth(); serviceError.value = ""; } catch (error) { if (!health.value) health.value = { status: "offline", hpc: { status: "unavailable" } }; serviceError.value = error.message; if (showMessage) ElMessage.error(error.message); }
+    const remoteDue = includeRemote && (forceRemote || !lastRemoteRefreshAt || Date.now() - lastRemoteRefreshAt >= REMOTE_REFRESH_INTERVAL);
+    if (remoteDue) {
+      try { dataStatus.value = await getWrfDataStatus(); lastRemoteRefreshAt = Date.now(); } catch (error) { dataStatus.value = { status: "error", message: error.message, pool_items: [] }; }
+    } else if (!includeRemote) {
+      dataStatus.value = { status: "locked", message: "等待超算认证", pool_items: [] };
+    }
+    try {
+      tasks.value = await listWrfTasks();
+      if (workspaceView.value === "result" && !tasks.value.some(task => task.id === resultTaskId.value && isDisplayable(task))) resultTaskId.value = successfulTasks.value[0]?.id || "";
+      if (workspaceView.value === "run" && selectedTaskId.value) await refreshLogs();
+    } catch (error) { if (showMessage) ElMessage.error(error.message); }
+  } finally {
+    refreshInFlight = false;
+  }
 }
 async function refreshLogs() {
   if (!selectedTaskId.value) return;
-  try { const chunk = await getWrfTaskLogs(selectedTaskId.value, logOffset.value); logs.value += chunk.text || ""; logOffset.value = chunk.offset || logOffset.value; } catch { /* 主轮询会继续重试 */ }
+  try {
+    const chunk = await getWrfTaskLogs(selectedTaskId.value, logOffset.value);
+    logs.value += chunk.text || "";
+    if (logs.value.length > MAX_LOG_CHARS) logs.value = `… 已省略较早日志 …\n${logs.value.slice(-MAX_LOG_CHARS)}`;
+    logOffset.value = chunk.offset || logOffset.value;
+  } catch { /* 主轮询会继续重试 */ }
 }
 async function ensureHpcReady(confirmButtonText, forcePrompt = false) {
   const hpc = health.value?.hpc || {};
@@ -311,10 +327,10 @@ async function authenticateAndSync(forcePrompt = false) {
   try {
     const result = await syncLatestWrfGfs();
     ElMessage.success(syncActionMessage(result));
-    await refreshAll(false, true);
+    await refreshAll(false, true, true);
   } catch (error) {
     ElMessage.error(error.message);
-    await refreshAll(false, true);
+    await refreshAll(false, true, true);
   } finally {
     gfsActionBusy.value = false;
   }
@@ -376,7 +392,7 @@ async function syncLatestRemoteGfs() {
     await ensureHpcReady("认证并同步");
     const result = await syncLatestWrfGfs();
     ElMessage.success(syncActionMessage(result));
-    await refreshAll(false, true);
+    await refreshAll(false, true, true);
   }
   catch (error) { ElMessage.error(error.message); }
   finally { gfsActionBusy.value = false; }
@@ -394,7 +410,7 @@ async function confirmCleanupCycle(cycle) {
     gfsActionBusy.value = true;
     await cleanupWrfGfs([path]);
     ElMessage.success(`已清理 ${path}`);
-    await refreshAll(false, true);
+    await refreshAll(false, true, true);
   } catch (error) {
     if (error !== "cancel" && error !== "close") ElMessage.error(error.message);
   } finally {
@@ -414,7 +430,7 @@ onBeforeUnmount(() => { clearInterval(refreshTimer); stopPlayback(); });
 </script>
 
 <style scoped>
-.wrf-studio { height: calc(100vh - 70px); display: flex; gap: 10px; padding: 0 8px 8px; overflow: hidden; background: var(--bg); color: var(--text); }.glass { border: 1px solid var(--border); background: var(--glass); backdrop-filter: blur(14px); box-shadow: var(--shadow); }
+.wrf-studio { height: calc(100vh - 70px); display: flex; gap: 10px; padding: 0 8px 8px; overflow: hidden; background: var(--bg); color: var(--text); font-size: 13px; }.glass { border: 1px solid var(--border); background: var(--glass); backdrop-filter: blur(14px); box-shadow: var(--shadow); }
 .tool-rail { flex-shrink: 0; width: 70px; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 8px 5px; border-radius: 14px; }.tool-rail button { width: 56px; min-height: 58px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; border: 0; border-radius: 11px; background: transparent; color: var(--muted); font: inherit; font-size: 10px; cursor: pointer; }.tool-rail button .el-icon, .tool-rail button b { font-size: 17px; }.tool-rail button.on { color: #fff; background: var(--accent); box-shadow: 0 8px 20px #3b82f630; }
 .tool-dock { flex-shrink: 0; width: 282px; padding: 16px; overflow-y: auto; border-radius: 14px; scrollbar-width: none; }.tool-dock header, .side-card header, .workspace-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }.tool-dock header { padding-bottom: 13px; border-bottom: 1px solid var(--border); }.tool-dock header span, .side-card header span, .workspace-head > div > span { color: var(--accent); font-size: 9px; font-weight: 800; letter-spacing: 1.2px; }.tool-dock h3, .side-card h3 { margin: 3px 0 0; font-size: 16px; }.tool-dock header > .el-icon { color: var(--muted); cursor: pointer; }.dock-hint { color: var(--muted); font-size: 10px; line-height: 1.55; }.service-summary { display: flex; align-items: center; gap: 7px; margin-top: 13px; padding: 9px; border-radius: 9px; color: #22c55e; background: #22c55e12; font-size: 10px; }.service-summary.offline { color: #f87171; background: #ef444414; }.service-summary i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 8px currentColor; }.service-summary span { flex: 1; }.service-summary button { border: 0; background: none; color: inherit; cursor: pointer; }.service-error { color: #f87171; font-size: 10px; word-break: break-word; }
 .source-list, .picker { display: grid; gap: 8px; }.source-list > button { position: relative; display: flex; align-items: center; gap: 9px; min-height: 78px; padding: 11px; border: 1px solid var(--border); border-radius: 11px; background: var(--field); color: var(--text); text-align: left; }.source-list > button.selected { border-color: var(--accent); background: var(--accent-soft); }.source-list > button.disabled { opacity: .55; }.source-icon { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 9px; color: var(--accent); background: var(--accent-soft); }.source-copy { min-width: 0; display: grid; flex: 1; gap: 2px; }.source-copy b { font-size: 12px; }.source-copy small { color: var(--muted); font-size: 9px; line-height: 1.4; }.source-copy em { color: var(--accent); font-size: 8px; font-style: normal; }.source-state { position: absolute; top: 7px; right: 8px; color: var(--muted); font-size: 8px; }.source-state.available { color: #22c55e; }.source-note { display: flex; gap: 7px; margin-top: 10px; padding: 9px; border: 1px solid var(--border); border-radius: 9px; color: var(--muted); }.source-note .el-icon { flex-shrink: 0; color: var(--accent); }.source-note p { margin: 0; font-size: 9px; line-height: 1.5; }
@@ -426,4 +442,19 @@ onBeforeUnmount(() => { clearInterval(refreshTimer); stopPlayback(); });
 @media (max-width: 1250px) { .right-sidebar { width: 245px; }.tool-dock { width: 250px; }.workflow em { width: 12px; } }
 @media (max-width: 980px) { .tool-dock { position: absolute; top: 70px; bottom: 8px; left: 88px; z-index: 20; }.right-sidebar { width: 225px; }.workflow { display: none; } }
 @media (max-width: 760px) { .wrf-studio { height: auto; min-height: calc(100vh - 70px); overflow: visible; }.tool-rail { position: sticky; top: 70px; height: calc(100vh - 78px); }.studio-main, .content-row { min-height: 900px; }.content-row { flex-direction: column; }.right-sidebar { width: 100%; overflow: visible; }.center-workspace { min-height: 620px; }.status-footer { position: sticky; bottom: 0; }.timebar { flex-wrap: wrap; }.timebar time { min-width: 0; } }
+
+/* WRF 工作台的信息密度较高，但交互文字不应低于 11px。 */
+.tool-rail button, .dock-hint, .service-summary, .service-error,
+.source-copy small, .source-note p, .picker button, .map-theme,
+.result-toolbar, .provider-head, .pool-provider article b,
+.task-items article b, .side-empty, .cleanup-warning, .side-action,
+.footer-title b, .footer-service { font-size: 11px; }
+.source-copy b, .side-card header h3 { font-size: 13px; }
+.source-copy em, .source-state, .pool-provider article span,
+.pool-provider article p, .pool-provider article small,
+.task-items article p, .task-items article small, .mini-status,
+.delete-task, .cycle-cleanup, .pool-provider article em { font-size: 10px; }
+.tool-dock header span, .side-card header span, .workspace-head > div > span,
+.result-toolbar b, .timebar time, .timebar > span, .workflow span,
+.footer-title small { font-size: 10px; }
 </style>
