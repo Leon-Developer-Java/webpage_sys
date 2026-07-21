@@ -30,7 +30,6 @@ import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import LayerCard from "../components/LayerCard.vue";
 import WebglLayer from "../components/WebglLayer.vue";
 import { authedFetch } from "../api";
-import { fy3ProductName, resolveFY3ImageUrl } from "./fy3ImageUrl";
 
 const props = defineProps({
   src: String,
@@ -38,6 +37,7 @@ const props = defineProps({
   file: String,
   extent: { type: Array, default: null },
   refreshKey: { type: Number, default: 0 },
+  sceneId: { type: String, default: "" },
   timeIndex: { type: Number, default: 0 },
   variantIndex: { type: Number, default: 0 },
   resolution: { type: String, default: "original" },
@@ -86,16 +86,24 @@ const resolutionOptions = computed(() => {
   return Array.isArray(opts) && opts.length ? opts : [];
 });
 
+const effectiveResolution = computed(() => {
+  const requested = selectedResolution.value || "original";
+  const available = currentFrame.value?.available_resolutions;
+  if (!Array.isArray(available) || !available.length || available.includes(requested)) return requested;
+  return "original";
+});
+
 function currentProductImageUrl() {
   const product = selectedProduct.value;
   if (!product) return props.src || "";
 
-  const resKey = selectedResolution.value;
+  const resKey = effectiveResolution.value;
   const assets = product.resolution_assets;
   if (assets && assets[resKey] && assets[resKey].webp_url) {
     return resolveFY3ImageUrl({
       product: { ...product, webp_url: assets[resKey].webp_url },
       currentFrame: currentFrame.value,
+      resolution: resKey,
       fallback: props.src,
       apiBase: API_BASE,
     });
@@ -103,6 +111,7 @@ function currentProductImageUrl() {
   return resolveFY3ImageUrl({
     product,
     currentFrame: currentFrame.value,
+    resolution: resKey,
     fallback: props.src,
     apiBase: API_BASE,
   });
@@ -123,7 +132,34 @@ const gradient = "linear-gradient(to right, #0f172a, #2563eb, #22c55e, #facc15, 
 const ticks = computed(() => productTicks(selectedProduct.value));
 
 function productName(item) {
-  return fy3ProductName(item);
+  return item?.name || item?.key || "";
+}
+
+function resolveFY3ImageUrl({ product, currentFrame, resolution = "original", fallback = "", apiBase = "" }) {
+  const key = productName(product);
+  const frameUrl = currentFrame?.webp_url || currentFrame?.image_url;
+
+  if (key && frameUrl) {
+    const suffix = resolution && resolution !== "original"
+      ? `/diff/${resolution}/latlon/${key}.webp$1`
+      : `/latlon/${key}.webp$1`;
+    const replaced = String(frameUrl).replace(/\/(?:diff\/[^/]+\/)?latlon\/[^/]+?\.webp(\?.*)?$/i, suffix);
+    if (replaced !== frameUrl) return toPublicWebpUrl(replaced, apiBase);
+    return toPublicWebpUrl(frameUrl, apiBase);
+  }
+
+  if (!key) return toPublicWebpUrl(frameUrl || fallback, apiBase);
+  return toPublicWebpUrl(product?.webp_url || product?.image_url || frameUrl || fallback, apiBase);
+}
+
+function toPublicWebpUrl(value, apiBase) {
+  const text = String(value || "").trim();
+  if (!text || !/\.webp(\?.*)?$/i.test(text)) return "";
+  if (/^(data:|blob:|https?:\/\/)/i.test(text)) return text;
+  const base = String(apiBase || "").replace(/\/$/, "");
+  if (text.startsWith("/")) return `${base}${text}`;
+  if (/^(data|static|assets)\//i.test(text)) return `${base}/${text}`;
+  return text;
 }
 
 function productLabel(item) {
@@ -142,6 +178,7 @@ function currentProductFrameUrl() {
   return resolveFY3ImageUrl({
     product: selectedProduct.value,
     currentFrame: currentFrame.value,
+    resolution: effectiveResolution.value,
     fallback: props.src,
     apiBase: API_BASE,
   });
@@ -152,6 +189,9 @@ function buildVariableInfo() {
   const frame = currentFrame.value || {};
   const meta = display.value?.meta_json || {};
   if (!item) return null;
+  const quality = frame.quality || meta.quality || {};
+  const warnings = Array.isArray(quality.warnings) ? quality.warnings.filter(Boolean) : [];
+  const validRatio = Number(quality.valid_pixel_ratio);
 
   const bandKey = productName(item); // "B01", "B02", ...
   const bandNum = parseInt(bandKey.replace("B", ""), 10);
@@ -175,9 +215,10 @@ function buildVariableInfo() {
     level: item.level || "卫星观测",
     range: formatExtent(frame.extent || meta.extent || imageExtent.value),
     grid: formatGrid(item.grid || meta.grid),
-    missing: item.missing ?? "—",
+    missing: warnings.length ? warnings.join("；") : (item.missing ?? "—"),
     unit: item.display_unit || item.unit || "",
-    status: "解析完成",
+    status: frame.status === "no_coverage" || meta.status === "no_coverage" ? "无区域覆盖" : "解析完成",
+    quality: Number.isFinite(validRatio) ? `${(validRatio * 100).toFixed(2)}% 有效像素` : "—",
     type: item.category || item.type || "卫星波段",
     wavelength: bandInfo.wavelength || "",
     description: zhDesc,
@@ -363,7 +404,9 @@ function flyToData() {
 
 async function loadDisplay() {
   try {
-    const response = await authedFetch(`${API_BASE}/api/display/FY3?limit=144`);
+    const params = new URLSearchParams({limit: "144"});
+    if (props.sceneId) params.set("scene_id", props.sceneId);
+    const response = await authedFetch(`${API_BASE}/api/display/FY3?${params}`);
     const payload = await response.json();
     if (!response.ok || payload.code !== 0) {
       throw new Error(payload.detail || payload.message || "FY-3 数据读取失败");
@@ -380,11 +423,15 @@ async function loadDisplay() {
 }
 
 onMounted(() => {
+  selectedResolution.value = props.resolution || "original";
   loadDisplay();
   timer = window.setInterval(loadDisplay, 30000);
 });
 
-watch(() => props.refreshKey, loadDisplay);
+watch(() => [props.refreshKey, props.sceneId], loadDisplay);
+watch(() => props.resolution, (value) => {
+  if (value && value !== selectedResolution.value) selectedResolution.value = value;
+});
 watch(() => [display.value, imageExtent.value], flyToData, { immediate: true });
 watch(() => [selectedProductKey.value, props.timeIndex], emitSelectedVariableInfo);
 watch(selectedResolution, (val) => emit("resolution-change", val));

@@ -2,6 +2,10 @@ export function buildVisibleTicks(times = [], options = {}) {
   const items = Array.isArray(times) ? times : [];
   const mode = options.mode || "sampled";
 
+  if (mode === "all") {
+    return items.map((label, index) => ({ label, index }));
+  }
+
   if (mode === "hourly") {
     const hourlyTicks = items
       .map((label, index) => ({ label, index }))

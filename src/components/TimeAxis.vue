@@ -1,5 +1,5 @@
 <template>
-  <div class="time-axis">
+  <div class="time-axis" :class="{ compact: compactLabels }">
     <div class="track" ref="trackEl" @click="seek">
       <div class="fill" :style="{ width: fillPct }"></div>
       <div class="thumb" :style="{ left: fillPct }"></div>
@@ -10,8 +10,9 @@
         :key="`${tick.index}-${tick.label}`"
         :class="{ first: tick.index === 0, last: tick.index === times.length - 1 }"
         :style="{ left: tickPct(tick.index) }"
+        :title="tick.label"
         @click.stop="emit('update:active', tick.index)"
-      >{{ tick.label }}</span>
+      >{{ compactLabels ? compactTickLabel(tick.label) : tick.label }}</span>
     </div>
   </div>
 </template>
@@ -24,6 +25,7 @@ const props = defineProps({
   times: { type: Array, default: () => [] },
   active: { type: Number, default: 0 },
   tickMode: { type: String, default: "sampled" },
+  compactLabels: Boolean,
   dark: Boolean
 });
 const emit = defineEmits(["update:active"]);
@@ -41,6 +43,12 @@ function seek(e) {
 
 function tickPct(index) {
   return `${Math.min(Math.max(index / Math.max(props.times.length - 1, 1), 0), 1) * 100}%`;
+}
+
+function compactTickLabel(label) {
+  const text = String(label || "").trim();
+  const match = text.match(/(\d{2}):(\d{2})$/);
+  return match ? `${match[1]}:${match[2]}` : text;
 }
 </script>
 
@@ -92,4 +100,5 @@ function tickPct(index) {
 .labels span.first { transform: none; }
 .labels span.last { transform: translateX(-100%); }
 .labels span:hover { color: var(--text); }
+.compact .labels span { font-size: 10px; }
 </style>

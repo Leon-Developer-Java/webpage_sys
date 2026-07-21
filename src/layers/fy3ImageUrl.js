@@ -2,12 +2,15 @@ export function fy3ProductName(item) {
   return item?.name || item?.key || "";
 }
 
-export function resolveFY3ImageUrl({ product, currentFrame, fallback = "", apiBase = "" }) {
+export function resolveFY3ImageUrl({ product, currentFrame, resolution = "original", fallback = "", apiBase = "" }) {
   const key = fy3ProductName(product);
   const frameUrl = currentFrame?.webp_url || currentFrame?.image_url;
 
   if (key && frameUrl) {
-    const replaced = String(frameUrl).replace(/\/latlon\/[^/]+?\.webp(\?.*)?$/i, `/latlon/${key}.webp$1`);
+    const suffix = resolution && resolution !== "original"
+      ? `/diff/${resolution}/latlon/${key}.webp$1`
+      : `/latlon/${key}.webp$1`;
+    const replaced = String(frameUrl).replace(/\/(?:diff\/[^/]+\/)?latlon\/[^/]+?\.webp(\?.*)?$/i, suffix);
     if (replaced !== frameUrl) return toPublicUrl(replaced, apiBase);
     return toPublicUrl(frameUrl, apiBase);
   }

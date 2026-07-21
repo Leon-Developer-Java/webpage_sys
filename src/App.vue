@@ -11,6 +11,7 @@
         <router-link v-if="user.role >= 2" to="/upload">数据上传</router-link>
         <router-link v-if="user.role >= 2" to="/agent">智能体</router-link>
         <router-link v-if="user.role >= 2" to="/model">专用模型调用</router-link>
+        <router-link v-if="user.role >= 2" to="/wrf">WRF 工作台</router-link>
       </nav>
       <div class="top-actions">
         <span class="status"><i></i>{{ webgl ? "运行正常" : "WebGL2 不可用" }}</span>

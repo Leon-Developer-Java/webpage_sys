@@ -38,16 +38,17 @@
 import { inject, ref } from "vue";
 import { Aim, FullScreen, Minus, Plus } from "@element-plus/icons-vue";
 
-defineProps({
+const props = defineProps({
   badge:       { type: String, default: "" },
   file:        { type: String, default: "" },
   legendTitle: { type: String, default: "" },
   gradient:    { type: String, default: "" },
   ticks:       { type: Array,  default: () => [] },
   showLegend:  { type: Boolean, default: true },
+  initialCollapsed: { type: Boolean, default: true },
 });
 
-const collapsed = ref(true);
+const collapsed = ref(props.initialCollapsed);
 const controls = inject("mapControls", null);
 </script>
 

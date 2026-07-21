@@ -7,6 +7,7 @@ const AGENT_BASE = import.meta.env.VITE_AGENT_BASE ?? "http://127.0.0.1:8004";
 const AUTH_BASE = import.meta.env.VITE_AUTH_BASE ?? "http://127.0.0.1:8005";
 const MODEL_BASE = import.meta.env.VITE_MODEL_BASE ?? "http://127.0.0.1:8006";
 const ERA5_HISTORY_BASE = import.meta.env.VITE_ERA5_HISTORY_API_BASE ?? "http://127.0.0.1:8010";
+const WRF_BASE = import.meta.env.VITE_WRF_BASE ?? "http://127.0.0.1:8007";
 const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB
 
 export function getToken() {
@@ -117,6 +118,149 @@ function apiError(payload, fallback = "请求失败") {
   if (typeof detail?.message === "string") return detail.message;
   if (typeof payload?.message === "string" && payload.message !== "success") return payload.message;
   return fallback;
+}
+
+async function wrfRequest(path, options = {}) {
+  const method = String(options.method || "GET").toUpperCase();
+  const attempts = method === "GET" ? 2 : 1;
+  let response = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      response = await authedFetch(`${WRF_BASE}${path}`, options);
+      break;
+    } catch (cause) {
+      if (attempt + 1 < attempts) {
+        await new Promise(resolve => globalThis.setTimeout(resolve, 350));
+        continue;
+      }
+      const endpoint = WRF_BASE || globalThis.location?.origin || "http://127.0.0.1:8007";
+      throw new Error(`WRF 服务暂时不可达（${endpoint}），服务可能正在重启或连接暂时中断`, { cause });
+    }
+  }
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new Error(`WRF 服务返回了无法解析的响应（HTTP ${response.status}）`);
+  }
+  if (!response.ok || payload?.code !== 0) {
+    throw new Error(apiError(payload, `WRF 服务请求失败（HTTP ${response.status}）`));
+  }
+  return payload.data;
+}
+
+export function wrfAssetUrl(path) {
+  const value = String(path || "");
+  if (!value || /^(data:|blob:)/i.test(value)) return value;
+  const base = WRF_BASE || globalThis.location?.origin || "http://127.0.0.1:8007";
+  const absolute = /^https?:/i.test(value) ? value : new URL(value, `${base.replace(/\/$/, "")}/`).toString();
+  return withToken(absolute);
+}
+
+export function getWrfHealth() {
+  return wrfRequest("/api/health");
+}
+
+export function getWrfOptions() {
+  return wrfRequest("/api/wrf/options");
+}
+
+export function authenticateWrfHpc(password) {
+  return wrfRequest("/api/wrf/hpc/auth", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password }),
+  });
+}
+
+export function getWrfDataStatus() {
+  return wrfRequest("/api/wrf/data-status");
+}
+
+export function triggerWrfGfsDownload(cycle) {
+  return wrfRequest("/api/wrf/gfs/trigger", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ cycle }),
+  });
+}
+
+export function syncLatestWrfGfs() {
+  return wrfRequest("/api/wrf/gfs/sync-latest", { method: "POST" });
+}
+
+export function cleanupWrfGfs(paths) {
+  return wrfRequest("/api/wrf/gfs/cleanup", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ paths, confirm: true }),
+  });
+}
+
+export function createWrfRecommendation(input) {
+  return wrfRequest("/api/wrf/recommendations", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
+export function getWrfRecommendation(jobId) {
+  return wrfRequest(`/api/wrf/recommendations/${encodeURIComponent(jobId)}`);
+}
+
+export function createWrfTask(input) {
+  return wrfRequest("/api/wrf/tasks", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function listWrfTasks(limit = 50) {
+  const data = await wrfRequest(`/api/wrf/tasks?limit=${encodeURIComponent(limit)}`);
+  return data?.items ?? [];
+}
+
+export function getWrfTask(taskId) {
+  return wrfRequest(`/api/wrf/tasks/${encodeURIComponent(taskId)}`);
+}
+
+export function getWrfTaskLogs(taskId, after = 0) {
+  return wrfRequest(`/api/wrf/tasks/${encodeURIComponent(taskId)}/logs?after=${encodeURIComponent(after)}`);
+}
+
+export function cancelWrfTask(taskId) {
+  return wrfRequest(`/api/wrf/tasks/${encodeURIComponent(taskId)}/cancel`, { method: "POST" });
+}
+
+export function retryWrfTask(taskId) {
+  return wrfRequest(`/api/wrf/tasks/${encodeURIComponent(taskId)}/retry`, { method: "POST" });
+}
+
+export function retryWrfTaskOutputs(taskId) {
+  return wrfRequest(`/api/wrf/tasks/${encodeURIComponent(taskId)}/retry-outputs`, { method: "POST" });
+}
+
+export function renderPartialWrfTask(taskId) {
+  return wrfRequest(`/api/wrf/tasks/${encodeURIComponent(taskId)}/render-partial`, { method: "POST" });
+}
+
+export function deleteWrfTask(taskId) {
+  return wrfRequest(`/api/wrf/tasks/${encodeURIComponent(taskId)}`, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ confirm_task_id: taskId }),
+  });
+}
+
+export function getWrfTaskResult(taskId) {
+  return wrfRequest(`/api/wrf/tasks/${encodeURIComponent(taskId)}/result`);
+}
+
+export function getWrfDisplay(taskId = "") {
+  const query = taskId ? `?task_id=${encodeURIComponent(taskId)}` : "";
+  return wrfRequest(`/api/wrf/display${query}`);
 }
 
 async function era5HistoryRequest(path, options = {}) {
@@ -353,7 +497,7 @@ export async function parseFile(fileOrFiles) {
   return payload.data;
 }
 
-export async function uploadRawFiles(fileOrFiles, dataType) {
+export async function uploadRawFiles(fileOrFiles, dataType, onProgress = () => {}) {
   const body = new FormData();
   const files = Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles];
   if (files.length === 1) {
@@ -363,12 +507,36 @@ export async function uploadRawFiles(fileOrFiles, dataType) {
   }
   body.append("business_type", dataType);
   body.append("data_type", dataType);
-  const response = await authedFetch(`${API_BASE}/api/files/raw-upload`, { method: "POST", body });
-  const payload = await response.json();
-  if (!response.ok || payload.code !== 0) {
-    throw new Error(payload.detail || payload.message || "raw 上传失败");
-  }
-  return payload.data;
+  await ensureFreshToken();
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${API_BASE}/api/files/raw-upload`);
+    const token = getToken();
+    if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    xhr.upload.onprogress = event => {
+      if (event.lengthComputable) onProgress(Math.min(100, event.loaded / event.total * 100));
+    };
+    xhr.onerror = () => reject(new Error("无法连接数据解析服务，请确认 backend_system 已启动。"));
+    xhr.onabort = () => reject(new Error("raw 上传已取消。"));
+    xhr.onload = () => {
+      let payload = null;
+      try {
+        payload = JSON.parse(xhr.responseText || "null");
+      } catch {
+        reject(new Error(`raw 上传返回了无法解析的响应（HTTP ${xhr.status}）`));
+        return;
+      }
+      if (xhr.status === 401) logout();
+      if (xhr.status === 403) ElMessage.warning("权限不足，请联系管理员开通");
+      if (xhr.status < 200 || xhr.status >= 300 || payload?.code !== 0) {
+        reject(new Error(apiError(payload, "raw 上传失败")));
+        return;
+      }
+      onProgress(100);
+      resolve(payload.data);
+    };
+    xhr.send(body);
+  });
 }
 
 export async function getRawScenes(dataType) {
@@ -380,8 +548,11 @@ export async function getRawScenes(dataType) {
   return payload.data;
 }
 
-export async function updateDisplayFromRaw(dataType, { force = false } = {}) {
+export async function updateDisplayFromRaw(dataType, { force = false, sceneIds = [] } = {}) {
   const params = new URLSearchParams({ force: force ? "true" : "false" });
+  Array.from(new Set(sceneIds || [])).filter(Boolean).forEach(sceneId => {
+    params.append("scene_id", sceneId);
+  });
   const response = await authedFetch(`${API_BASE}/api/display/${encodeURIComponent(dataType)}/update?${params}`, {
     method: "POST",
   });
@@ -389,7 +560,67 @@ export async function updateDisplayFromRaw(dataType, { force = false } = {}) {
   if (!response.ok || payload.code !== 0) {
     throw new Error(payload.detail || payload.message || "raw 解析失败");
   }
+  const result = payload.data || {};
+  const failures = Array.isArray(result.results)
+    ? result.results.filter(item => item?.status === "error")
+    : [];
+  if (failures.length || Number(result.failed || 0) > 0) {
+    const detail = failures
+      .map(item => `${item.scene_id || "未知场景"}：${item.error || "解析失败"}`)
+      .join("；");
+    throw new Error(detail || `${dataType} raw 解析失败`);
+  }
+  return result;
+}
+
+export async function startFY3ParseTask(sceneIds, { force = false } = {}) {
+  const params = new URLSearchParams({ force: force ? "true" : "false" });
+  Array.from(new Set(sceneIds || [])).filter(Boolean).forEach(sceneId => {
+    params.append("scene_id", sceneId);
+  });
+  const response = await authedFetch(`${API_BASE}/api/display/FY3/parse-tasks?${params}`, {
+    method: "POST",
+  });
+  const payload = await response.json();
+  if (!response.ok || payload.code !== 0) {
+    throw new Error(apiError(payload, "FY-3 解析任务创建失败"));
+  }
   return payload.data;
+}
+
+export async function getFY3ParseTask(taskId) {
+  const response = await authedFetch(`${API_BASE}/api/display/FY3/parse-tasks/${encodeURIComponent(taskId)}`);
+  const payload = await response.json();
+  if (!response.ok || payload.code !== 0) {
+    throw new Error(apiError(payload, "FY-3 解析任务读取失败"));
+  }
+  return payload.data;
+}
+
+export async function listFY3ParseTasks({ activeOnly = false } = {}) {
+  const params = new URLSearchParams({ active_only: activeOnly ? "true" : "false" });
+  const response = await authedFetch(`${API_BASE}/api/display/FY3/parse-tasks?${params}`);
+  const payload = await response.json();
+  if (!response.ok || payload.code !== 0) {
+    throw new Error(apiError(payload, "FY-3 解析任务列表读取失败"));
+  }
+  return payload.data;
+}
+
+export async function waitForFY3ParseTask(
+  taskId,
+  { onProgress = () => {}, intervalMs = 1000, timeoutMs = 60 * 60 * 1000 } = {},
+) {
+  const startedAt = Date.now();
+  while (true) {
+    const task = await getFY3ParseTask(taskId);
+    onProgress(task);
+    if (["completed", "partial", "failed"].includes(task.state)) return task;
+    if (Date.now() - startedAt >= timeoutMs) {
+      throw new Error("FY-3 解析仍在后台运行，请稍后在待解析队列查看结果。");
+    }
+    await new Promise(resolve => globalThis.setTimeout(resolve, intervalMs));
+  }
 }
 
 export async function getHimawariAutoStatus() {
@@ -410,6 +641,7 @@ export function displayKeyFromBusinessType(value) {
   if (text.includes("cma")) return "cma";
   if (text.includes("radar") || text.includes("雷达")) return "radar";
   if (text.includes("era5")) return "era5";
+  if (text.includes("fy3") || text.includes("fy-3")) return "fy3";
   if (text.includes("himawari") || text.includes("葵花")) return "himawari";
   if (text.includes("wrf")) return "wrf";
   if (text.includes("gfs") || text.includes("ecmwf") || text.includes("grib")) return "grib";
@@ -424,11 +656,13 @@ export function displayKeyFromFileName(filename) {
   if (name.includes("cma")) return "cma";
   if (name.includes("era5")) return "era5";
   if (name.includes("gfs")) return "grib";
+  if (name.includes("fy3") || name.includes("fy-3")) return "fy3";
   if (name.includes("himawari") || name.includes("hsd")) return "himawari";
   if (name.includes("radar") || name.includes("cinrad")) return "radar";
   if (name.includes("wrf")) return "wrf";
 
   if (suffix === ".grib" || suffix === ".grib2") return "grib";
+  if (suffix === ".hdf" && (name.includes("fy3") || name.includes("fy-3"))) return "fy3";
   if (suffix === ".hsd") return "himawari";
   if (suffix === ".cinrad" || suffix === ".radar" || suffix === ".bz2") return "radar";
   if (suffix === ".nc") return "era5";

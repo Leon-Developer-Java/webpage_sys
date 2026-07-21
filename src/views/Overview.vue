@@ -121,19 +121,12 @@
           </div>
           <span class="tc-time">{{ activeTimeLabel }}</span>
         </div>
-        <HimawariTimeAxis
-          v-if="active === 'himawari' || active === 'fy3' || active === 'cma'"
-          :key="timeAxisKey"
-          :times="axisTimes"
-          :active="animPos"
-          @update:active="v => setTimeIndex(v)"
-          :dark="dark"
-        />
         <TimeAxis
-          v-else
           :key="timeAxisKey"
           :times="axisTimes"
           :active="animPos"
+          :tick-mode="usesCompactTimeAxis ? 'all' : 'sampled'"
+          :compact-labels="usesCompactTimeAxis"
           @update:active="v => setTimeIndex(v)"
           :dark="dark"
         />
@@ -158,7 +151,7 @@
 <script setup>
 import { computed, inject, onBeforeUnmount, ref, watch } from "vue";
 import { ArrowLeft, ArrowRight, Check, CircleCheck, Close, Connection, DArrowLeft, DArrowRight, DataAnalysis, Document, FolderOpened, Grid, MapLocation, Monitor, Moon, Operation, Position, RefreshRight, Sunny, VideoPlay, VideoPause } from "@element-plus/icons-vue";
-import { parseFile, uploadRawFiles } from "../api";
+import { parseFile, startFY3ParseTask, updateDisplayFromRaw, uploadRawFiles, waitForFY3ParseTask } from "../api";
 import ProjMap from "../components/ProjMap.vue";
 import MetaPanel from "../components/MetaPanel.vue";
 import TimeAxis from "../components/TimeAxis.vue";
@@ -169,7 +162,6 @@ import CmaLayer from "../layers/CmaLayer.vue";
 import RadarLayer from "../layers/RadarWebpLayer.vue";
 import HimawariLayer from "../layers/HimawariLayer.vue";
 import FY3Layer from "../layers/FY3Layer.vue";
-import HimawariTimeAxis from "../layers/HimawariTimeAxis.vue";
 import WrfLayer from "../layers/WrfLayer.vue";
 
 const dark = inject("theme");
@@ -239,6 +231,10 @@ const parsed = ref(null);
 const parsedLayerKey = ref(null);
 const parseProcessing = ref(null);
 const layerDisplays = ref({});
+const layerRefreshKeys = ref({himawari: 0, fy3: 0});
+const focusedFY3SceneId = ref("");
+const fy3FocusApplied = ref(false);
+const pendingHimawariSceneId = ref("");
 const layerResolutions = ref({cma: "native", fy3: "original", himawari: "original"});
 const himawariTimeline = ref([]);
 const playing = ref(false);
@@ -359,6 +355,7 @@ function onLayerDisplayLoaded(paneIndex, key, payload) {
   }
 
   if (paneIndex === 0) {
+    const previousDisplay = layerDisplays.value[key];
     if (key === "himawari") {
       updateHimawariTimeline(normalizedPayload);
     }
@@ -368,6 +365,9 @@ function onLayerDisplayLoaded(paneIndex, key, payload) {
       [key]: normalizedPayload,
     };
 
+    if (key === "fy3") {
+      updateFY3Selection(normalizedPayload, previousDisplay);
+    }
     if (key === "cma") {
       animPos.value = tIndex.value;
       cmaPlaybackWaiting.value = false;
@@ -458,6 +458,9 @@ function onLayerVariableChange(paneIndex, key, payload) {
   } else {
     // 其他图层暂时保留团队原有兼容字段。
     nextDisplay.png_urls = payload.png_urls || previous.png_urls;
+    nextDisplay.webp_urls = payload.webp_urls || previous.webp_urls;
+    nextDisplay.image_urls = payload.image_urls || previous.image_urls;
+    nextDisplay.frames = payload.frames || previous.frames;
   }
 
   layerDisplays.value = {
@@ -467,10 +470,11 @@ function onLayerVariableChange(paneIndex, key, payload) {
 }
 
 function onLayerResolutionChange(key, value) {
-  if (key !== "cma") return;
+  if (!key) return;
+  const defaultValue = key === "cma" ? "native" : "original";
   layerResolutions.value = {
     ...layerResolutions.value,
-    cma: value || "native",
+    [key]: value || defaultValue,
   };
 }
 
@@ -561,6 +565,8 @@ const activeTimeLabel = computed(() => {
   const index = Math.min(Math.max(Math.round(Number(animPos.value) || 0), 0), axisTimes.value.length - 1);
   return axisTimes.value[index] || "";
 });
+
+const usesCompactTimeAxis = computed(() => ["himawari", "fy3", "cma"].includes(active.value));
 
 function parseAxisHour(text, index = 0) {
   const raw = String(text || "");
@@ -1010,6 +1016,7 @@ function businessTypeToLayerKey(type) {
   if (t === "ERA5") return "era5";
   if (t === "CMA") return "cma";
   if (t === "RADAR") return "radar";
+  if (t === "FY3" || t === "FY-3") return "fy3";
   if (t === "HIMAWARI") return "himawari";
   if (t === "WRF") return "wrf";
 
@@ -1320,6 +1327,7 @@ function layerParsed(key) {
 }
 
 const selectedHimawariSceneId = computed(() => {
+  if (pendingHimawariSceneId.value) return pendingHimawariSceneId.value;
   const items = himawariTimeline.value;
   if (!items.length) return "";
   const index = active.value === "himawari" ? clampTimeIndex(tIndex.value) : items.length - 1;
@@ -1329,8 +1337,16 @@ const selectedHimawariSceneId = computed(() => {
 function layerProps(key) {
   if (key === "gfs") return {dataType: "GFS"};
   if (key === "ecmwf") return {dataType: "ECMWF"};
-  if (key === "himawari") return {sceneId: selectedHimawariSceneId.value, resolution: layerResolutions.value.himawari || "original"};
-  if (key === "fy3") return {resolution: layerResolutions.value.fy3 || "original"};
+  if (key === "himawari") return {
+    sceneId: selectedHimawariSceneId.value,
+    resolution: layerResolutions.value.himawari || "original",
+    refreshKey: layerRefreshKeys.value.himawari || 0,
+  };
+  if (key === "fy3") return {
+    sceneId: focusedFY3SceneId.value,
+    resolution: layerResolutions.value.fy3 || "original",
+    refreshKey: layerRefreshKeys.value.fy3 || 0,
+  };
   if (key === "cma") {
     return {
       resolution: layerResolutions.value.cma || "native",
@@ -1353,8 +1369,17 @@ function updateHimawariTimeline(data) {
 
   if (active.value !== "himawari") return;
 
+  if (pendingHimawariSceneId.value) {
+    const focusedIndex = items.findIndex(item => item.scene_id === pendingHimawariSceneId.value);
+    if (focusedIndex >= 0) {
+      pendingHimawariSceneId.value = "";
+      setTimeIndex(focusedIndex);
+      return;
+    }
+  }
+
   if (!previous.length) {
-    setTimeIndex(0);
+    setTimeIndex(items.length - 1);
     return;
   }
 
@@ -1368,6 +1393,34 @@ function updateHimawariTimeline(data) {
           : Math.min(Math.max(previousIndex, 0), items.length - 1);
 
   setTimeIndex(nextIndex);
+}
+
+function updateFY3Selection(data, previousData) {
+  const frames = Array.isArray(data?.frames) ? data.frames : [];
+  if (!frames.length || active.value !== "fy3") return;
+
+  if (focusedFY3SceneId.value && !fy3FocusApplied.value) {
+    const focusedIndex = frames.findIndex(item => item?.scene_id === focusedFY3SceneId.value);
+    if (focusedIndex >= 0) {
+      fy3FocusApplied.value = true;
+      setTimeIndex(focusedIndex);
+      return;
+    }
+  }
+
+  const previousFrames = Array.isArray(previousData?.frames) ? previousData.frames : [];
+  if (!previousFrames.length) {
+    setTimeIndex(frames.length - 1);
+    return;
+  }
+
+  const previousIndex = Math.min(Math.max(tIndex.value, 0), previousFrames.length - 1);
+  const previousSceneId = previousFrames[previousIndex]?.scene_id || "";
+  const wasAtLatest = previousIndex >= previousFrames.length - 1;
+  const preservedIndex = previousSceneId
+    ? frames.findIndex(item => item?.scene_id === previousSceneId)
+    : -1;
+  setTimeIndex(wasAtLatest ? frames.length - 1 : (preservedIndex >= 0 ? preservedIndex : previousIndex));
 }
 
 function normalizeHimawariTimeline(data) {
@@ -1513,6 +1566,11 @@ function selectSource(key) {
     return;
   }
   if (key === active.value) return;
+  if (key === "fy3") {
+    focusedFY3SceneId.value = "";
+    fy3FocusApplied.value = false;
+  }
+  if (key === "himawari") pendingHimawariSceneId.value = "";
   resetTimebar();
   switching.value = true;
   clearTimeout(switchingTimer);
@@ -1531,6 +1589,11 @@ function pickFile(i) {
   selected.value = i;
   resetTimebar();
   active.value = files[i].key;
+  if (active.value === "fy3") {
+    focusedFY3SceneId.value = "";
+    fy3FocusApplied.value = false;
+  }
+  if (active.value === "himawari") pendingHimawariSceneId.value = "";
   parsed.value = null;
   parsedLayerKey.value = null;
   parseProcessing.value = null;
@@ -1553,15 +1616,6 @@ function rawBusinessType(files) {
   return "";
 }
 
-function rawQueueSummary(result) {
-  const scenes = Array.isArray(result?.scenes) ? result.scenes : [];
-  const ready = scenes.filter(scene => scene.complete).length;
-  const incomplete = scenes.filter(scene => !scene.complete);
-  if (!incomplete.length) return `已入队 ${scenes.length || 0} 个场景，等待在数据上传页执行 update。`;
-  const missing = incomplete.map(scene => `${scene.scene_id} 缺少 ${scene.missing.join("、")}`).join("；");
-  return `已入队 ${ready} 个完整场景；${missing}`;
-}
-
 async function parse() {
   const uploadFiles = Array.isArray(file.value) ? file.value : [file.value].filter(Boolean);
   if (!uploadFiles.length) return;
@@ -1580,29 +1634,117 @@ async function parse() {
   }
 
   if (rawType) {
+    let rawUploadSucceeded = false;
+    let uploadedFileCount = 0;
     parseProcessing.value = [
       {step: "上传/读取", state: "上传原始数据中", t: "", ok: false, running: true},
-      {step: "解析", state: "等待 update", t: "", ok: false},
-      {step: "渲染 WEBP", state: "等待 update", t: "", ok: false},
+      {step: "解析", state: "等待上传完成", t: "", ok: false},
+      {step: "渲染 WEBP", state: "等待解析", t: "", ok: false},
       {step: "前端展示", state: "等待解析完成", t: "", ok: false},
     ];
 
     try {
       const result = await uploadRawFiles(uploadFiles, rawType);
-      const summary = rawQueueSummary(result);
+      rawUploadSucceeded = true;
+      uploadedFileCount = Number(result.file_count || 0);
+      const scenes = Array.isArray(result?.scenes) ? result.scenes : [];
+      const readyScenes = scenes.filter(scene => scene?.complete);
+      const incompleteScenes = scenes.filter(scene => !scene?.complete);
+      if (!readyScenes.length) {
+        const detail = incompleteScenes
+          .map(scene => `${scene.scene_id} 缺少 ${(scene.missing || []).join("、")}`)
+          .join("；");
+        throw new Error(detail || "原始文件尚未组成完整场景");
+      }
+
+      parseProcessing.value = [
+        {step: "上传/读取", state: `成功：${uploadedFileCount} 个原始文件`, t: new Date().toLocaleTimeString(), ok: true},
+        {step: "解析", state: "解析中", t: "", ok: false, running: true},
+        {step: "渲染 WEBP", state: "等待解析", t: "", ok: false},
+        {step: "前端展示", state: "等待解析完成", t: "", ok: false},
+      ];
+
+      const sceneIds = readyScenes.map(scene => scene.scene_id).filter(Boolean);
+      let updateResult;
+      let taskState = "completed";
+      if (rawType === "FY3") {
+        const task = await startFY3ParseTask(sceneIds);
+        const finishedTask = await waitForFY3ParseTask(task.task_id, {
+          onProgress(current) {
+            const progress = Number(current?.progress || 0).toFixed(1);
+            const detail = [current?.current_scene, current?.current_band].filter(Boolean).join(" · ");
+            parseProcessing.value = [
+              {step: "上传/读取", state: `成功：${uploadedFileCount} 个原始文件`, t: new Date().toLocaleTimeString(), ok: true},
+              {step: "解析", state: `${progress}%${detail ? ` · ${detail}` : ""}`, t: "后台任务", ok: false, running: true},
+              {step: "渲染 WEBP", state: "随波段生成", t: "", ok: false, running: true},
+              {step: "前端展示", state: "等待任务完成", t: "", ok: false},
+            ];
+          },
+        });
+        taskState = finishedTask.state;
+        updateResult = finishedTask.result || {};
+        if (taskState === "failed" || (!updateResult.results?.length && finishedTask.error)) {
+          throw new Error(finishedTask.error || "FY-3 解析任务失败");
+        }
+      } else {
+        updateResult = await updateDisplayFromRaw(rawType, {sceneIds});
+      }
+
+      const completedIds = (updateResult.results || [])
+        .filter(item => item?.status === "ok" || item?.status === "cached")
+        .map(item => item.scene_id)
+        .filter(Boolean);
+      const displayableIds = Array.isArray(updateResult.displayable_scene_ids)
+        ? updateResult.displayable_scene_ids
+        : (updateResult.results || [])
+          .filter(item => (item?.status === "ok" || item?.status === "cached") && item?.displayable !== false)
+          .map(item => item.scene_id)
+          .filter(Boolean);
+      const noCoverageIds = Array.isArray(updateResult.no_coverage_scene_ids)
+        ? updateResult.no_coverage_scene_ids
+        : completedIds.filter(sceneId => !displayableIds.includes(sceneId));
+      const focusedSceneId = displayableIds.at(-1) || completedIds.at(-1) || sceneIds.at(-1) || "";
+      const layerKey = businessTypeToLayerKey(rawType);
+
       parsed.value = null;
       parsedLayerKey.value = null;
+      resetTimebar();
+      active.value = layerKey;
+      if (layerKey === "himawari") pendingHimawariSceneId.value = focusedSceneId;
+      if (layerKey === "fy3") {
+        focusedFY3SceneId.value = focusedSceneId;
+        fy3FocusApplied.value = false;
+      }
+      layerRefreshKeys.value = {
+        ...layerRefreshKeys.value,
+        [layerKey]: (layerRefreshKeys.value[layerKey] || 0) + 1,
+      };
       parseProcessing.value = [
-        {step: "上传/读取", state: `成功：${result.file_count || 0} 个原始文件`, t: new Date().toLocaleTimeString(), ok: true},
-        {step: "解析", state: summary, t: "", ok: true},
-        {step: "渲染 WEBP", state: "未生成，等待 update", t: "", ok: false},
-        {step: "前端展示", state: "未生成 WebP", t: "", ok: false},
+        {step: "上传/读取", state: `成功：${uploadedFileCount} 个原始文件`, t: new Date().toLocaleTimeString(), ok: true},
+        {
+          step: "解析",
+          state: `${taskState === "partial" ? "部分完成" : "成功"}：${completedIds.length || readyScenes.length} 个场景${noCoverageIds.length ? `，${noCoverageIds.length} 个无区域覆盖` : ""}`,
+          t: new Date().toLocaleTimeString(),
+          ok: taskState !== "partial",
+        },
+        {step: "渲染 WEBP", state: displayableIds.length ? "成功" : "无有效覆盖图像", t: new Date().toLocaleTimeString(), ok: Boolean(displayableIds.length)},
+        {step: "前端展示", state: focusedSceneId ? `显示 ${focusedSceneId}` : "无可展示场景", t: "实时", ok: Boolean(focusedSceneId)},
       ];
     } catch (err) {
-      console.error("raw 上传失败：", err);
+      console.error("raw 上传或解析失败：", err);
       parseProcessing.value = [
-        {step: "上传/读取", state: err?.message || "上传失败", t: new Date().toLocaleTimeString(), ok: false},
-        {step: "解析", state: "未开始", t: "", ok: false},
+        {
+          step: "上传/读取",
+          state: rawUploadSucceeded ? `成功：${uploadedFileCount} 个原始文件` : (err?.message || "上传失败"),
+          t: new Date().toLocaleTimeString(),
+          ok: rawUploadSucceeded,
+        },
+        {
+          step: "解析",
+          state: rawUploadSucceeded ? (err?.message || "解析失败") : "未开始",
+          t: rawUploadSucceeded ? new Date().toLocaleTimeString() : "",
+          ok: false,
+        },
         {step: "渲染 WEBP", state: "未生成", t: "", ok: false},
         {step: "前端展示", state: "未生成", t: "", ok: false},
       ];

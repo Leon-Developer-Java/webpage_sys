@@ -263,6 +263,23 @@ function projectLonLat(lonDeg, latDeg) {
   };
 }
 
+function screenToLonLat(clientX, clientY) {
+  const el = box.value;
+  if (!el) return null;
+  const rect = el.getBoundingClientRect();
+  if (!rect.width || !rect.height) return null;
+  const nx = ((Number(clientX) - rect.left) / rect.width) * 2 - 1;
+  const ny = 1 - ((Number(clientY) - rect.top) / rect.height) * 2;
+  const planeX = center[0] + nx * scale * aspect;
+  const planeY = center[1] + ny * scale;
+  const value = invert(PROJ[props.projection] ?? 0, planeX, planeY);
+  if (!value) return null;
+  return {
+    lon: wrapPi(value[0] + centerLon()) / D2R,
+    lat: value[1] / D2R,
+  };
+}
+
 function invert(p, x, y) {
   if (p === 0) return Math.abs(x) <= Math.PI && Math.abs(y) <= HALF_PI ? [x, y] : null;
   if (p === 1) return Math.abs(x) > Math.PI ? null : [x, 2 * Math.atan(Math.exp(y)) - HALF_PI];
@@ -370,7 +387,7 @@ function emitView() {
   emit("view-change", { center: center.slice(), scale, viewLon, orthoLat });
 }
 
-defineExpose({ flyTo, zoomBy, home, clearData: () => { dataRef.value = null; } });
+defineExpose({ flyTo, zoomBy, home, screenToLonLat, clearData: () => { dataRef.value = null; } });
 
 provide("mapSurface", {
   setData: (src, extent, alpha = 1, options = {}) => {
@@ -388,6 +405,7 @@ provide("mapControls", {
 provide("mapProjector", {
   state: overlayState,
   project: projectLonLat,
+  unproject: screenToLonLat,
 });
 
 function makeTexture(source, slot, lonBox, merc) {

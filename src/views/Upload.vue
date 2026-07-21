@@ -18,7 +18,7 @@
       >
         <el-icon class="dz-icon"><Upload /></el-icon>
         <p class="dz-title">拖拽文件到此处，或<em>点击选择</em></p>
-        <small class="dz-hint">支持 .cinrad / .nc / .grib2 / .hsd 等格式，可多选</small>
+        <small class="dz-hint">支持 .cinrad / .nc / .grib2 / .hdf / .hsd 等格式，可多选</small>
         <input ref="input" type="file" multiple hidden @change="onPick" />
       </div>
 
@@ -44,7 +44,7 @@
             </template>
             <template v-else>
               <button class="act del" :disabled="!pqChecked.length" @click="deletePqChecked">
-                <el-icon><Delete /></el-icon>删除
+                <el-icon><Delete /></el-icon>移出列表
               </button>
               <button class="act parse" :disabled="!pqChecked.length" @click="parsePqChecked">
                 <el-icon><DataAnalysis /></el-icon>解析选中
@@ -127,7 +127,12 @@
               <tr v-if="!parseQueue.length">
                 <td colspan="7" class="tbl-empty">待解析队列为空</td>
               </tr>
-              <tr v-for="f in parseQueue" :key="f.id" :class="{ done: f.status === 'done' }">
+              <tr
+                v-for="f in parseQueue"
+                :key="f.id"
+                :class="{ hl: selected === f.id, done: f.status === 'done' }"
+                @click="selected = f.id"
+              >
                 <td><input type="checkbox" v-model="f.checked" :disabled="f.status !== 'pending'" @click.stop /></td>
                 <td><span class="trunc" :title="f.name">{{ f.name }}</span></td>
                 <td>{{ f.fmt }}</td>
@@ -135,7 +140,10 @@
                 <td>{{ f.uploaded }}</td>
                 <td class="pin-l"><span class="type-tag">{{ f.dataType }}</span></td>
                 <td class="pin-r">
-                  <span :class="['badge', f.status === 'parsing' ? 'uploading' : f.status]">{{ PARSE_STATUS[f.status] }}</span>
+                  <span
+                    :class="['badge', f.status === 'parsing' ? 'uploading' : f.status]"
+                    :title="parseStatusDetail(f)"
+                  >{{ parseStatusText(f) }}</span>
                 </td>
               </tr>
             </tbody>
@@ -176,10 +184,19 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { DataAnalysis, Delete, Upload, WarningFilled } from "@element-plus/icons-vue";
 import MetaPanel from "../components/MetaPanel.vue";
-import { getRawScenes, updateDisplayFromRaw, uploadFileResumable, uploadRawFiles, authedFetch } from "../api.js";
+import {
+  authedFetch,
+  getRawScenes,
+  listFY3ParseTasks,
+  startFY3ParseTask,
+  updateDisplayFromRaw,
+  uploadFileResumable,
+  uploadRawFiles,
+  waitForFY3ParseTask,
+} from "../api.js";
 
 const files = ref([]);
 const selected = ref(null);
@@ -198,6 +215,21 @@ const STATUS = { pending: "待上传", uploading: "上传中", done: "完成", e
 const PARSE_STATUS = { pending: "待解析", parsing: "解析中", done: "已解析", error: "不完整" };
 
 const parseQueue = ref([]);
+let rawSceneTimer = null;
+
+function parseStatusText(file) {
+  if (file?.rawStatus === "no_coverage") return "无区域覆盖";
+  if (file?.status === "parsing" && Number.isFinite(Number(file?.progress))) {
+    return `解析中 ${Number(file.progress).toFixed(1)}%`;
+  }
+  if (file?.status === "error" && file?.rawStatus === "parse_error") return "解析失败";
+  return PARSE_STATUS[file?.status] || file?.status || "—";
+}
+
+function parseStatusDetail(file) {
+  const details = Array.isArray(file?.missing) ? file.missing.filter(Boolean) : [];
+  return details.join("；");
+}
 
 const checked = computed(() => files.value.filter(f => f.checked));
 const allChecked = computed(() => files.value.length > 0 && files.value.every(f => f.checked));
@@ -205,14 +237,15 @@ const pqChecked = computed(() => parseQueue.value.filter(f => f.checked));
 const pqAllChecked = computed(() => parseQueue.value.length > 0 && parseQueue.value.every(f => f.checked));
 
 const cur = computed(() => {
-  const f = files.value.find(f => f.id === selected.value);
-  return f?.status === "done" ? f : null;
+  const uploaded = files.value.find(f => f.id === selected.value);
+  if (uploaded?.status === "done") return uploaded;
+  return parseQueue.value.find(f => f.id === selected.value) || null;
 });
 
 const stats = computed(() => [
   { label: "已上传", val: files.value.filter(f => f.status === "done").length, sub: "本次会话", cls: "" },
-  { label: "数据库总量", val: "1,284", sub: "42.3 GB", cls: "" },
-  { label: "已解析", val: 847 + files.value.filter(f => f.status === "done").length, sub: "36.1 GB", cls: "ok" },
+  { label: "场景总量", val: parseQueue.value.length, sub: "FY-3 / Himawari raw", cls: "" },
+  { label: "已解析", val: parseQueue.value.filter(f => f.status === "done").length, sub: "已生成元数据", cls: "ok" },
   { label: "待解析", val: parseQueue.value.filter(f => f.status === "pending").length, sub: "等待处理", cls: "accent" },
 ]);
 
@@ -494,6 +527,12 @@ function isRawFirstType(dataType) {
 function rawSceneToQueueItem(scene) {
   const businessType = normalizeDataTypeForBackend(scene.business_type || "");
   const status = scene.parsed ? "done" : (scene.complete ? "pending" : "error");
+  const quality = scene.quality || {};
+  const qualityRatio = Number(quality.valid_pixel_ratio);
+  const qualityText = Number.isFinite(qualityRatio) ? `${(qualityRatio * 100).toFixed(2)}% 有效像素` : "—";
+  const missing = scene.status === "no_coverage"
+    ? (quality.warnings || ["轨迹未覆盖当前业务区域"])
+    : (scene.missing || []);
   return {
     id: `${businessType}:${scene.scene_id}`,
     sceneId: scene.scene_id,
@@ -504,17 +543,57 @@ function rawSceneToQueueItem(scene) {
     dataType: businessType,
     status,
     rawStatus: scene.status,
-    missing: scene.missing || [],
+    missing,
     checked: false,
+    progress: status === "done" ? 100 : 0,
+    meta: {
+      file: scene.scene_id,
+      element: businessType === "FY3" ? "FY-3 MERSI-II" : "Himawari HSD",
+      time: `${scene.date || ""} ${scene.time || ""}`.trim() || "—",
+      level: "卫星观测",
+      range: scene.status === "no_coverage" ? "当前业务区域无覆盖" : "按解析元数据确定",
+      grid: scene.parsed ? "已生成" : "待解析",
+      missing: missing.length ? missing.join("；") : "无",
+      unit: "—",
+      vars: businessType === "FY3" ? "MERSI-II 25 波段" : "HSD 通道",
+      steps: `${scene.file_count || 0} 个 raw 文件`,
+      status: parseStatusText({status, rawStatus: scene.status}),
+      quality: qualityText,
+      alert: missing.length ? missing.join("；") : "无",
+    },
+    steps: [
+      {label: "上传", state: "已保存到 raw", t: "", ok: true},
+      {label: "解析", state: parseStatusText({status, rawStatus: scene.status}), t: "", ok: status === "done", running: status === "parsing"},
+      {label: "渲染 WEBP", state: scene.parsed ? "已完成" : "等待", t: "", ok: Boolean(scene.parsed)},
+    ],
   };
 }
 
 async function refreshRawScenes() {
-  const sceneGroups = await Promise.allSettled([getRawScenes("Himawari"), getRawScenes("FY3")]);
+  const sceneGroups = await Promise.allSettled([
+    getRawScenes("Himawari"),
+    getRawScenes("FY3"),
+    listFY3ParseTasks({activeOnly: true}),
+  ]);
   const rows = [];
-  sceneGroups.forEach(group => {
+  sceneGroups.slice(0, 2).forEach(group => {
     if (group.status !== "fulfilled") return;
     (group.value.scenes || []).forEach(scene => rows.push(rawSceneToQueueItem(scene)));
+  });
+  const activeTasks = sceneGroups[2]?.status === "fulfilled" ? (sceneGroups[2].value.tasks || []) : [];
+  const activeByScene = new Map();
+  activeTasks.forEach(task => {
+    (task.scene_ids || []).forEach(sceneId => activeByScene.set(`${task.business_type}:${sceneId}`, task));
+  });
+  rows.forEach(row => {
+    const task = activeByScene.get(row.id);
+    if (!task) return;
+    row.status = "parsing";
+    row.rawStatus = task.stage;
+    row.progress = Number(task.progress || 0);
+    row.taskId = task.task_id;
+    row.missing = [task.current_band ? `${task.current_scene || row.sceneId} · ${task.current_band}` : "后台解析中"];
+    row.steps[1] = {label: "解析", state: parseStatusText(row), t: "后台任务", ok: false, running: true};
   });
   parseQueue.value = rows.sort((a, b) => String(b.sceneId).localeCompare(String(a.sceneId)));
 }
@@ -562,7 +641,10 @@ async function run(f) {
 
   try {
     const uploadData = rawFirst
-      ? await uploadRawFiles(f.raw, uploadType)
+      ? await uploadRawFiles(f.raw, uploadType, p => {
+          f.percent = p;
+          f.steps[0].state = `上传中 ${Math.floor(p)}%`;
+        })
       : await uploadFileResumable(f.raw, uploadType, p => {
           f.percent = p;
           f.steps[0].state = `上传中 ${Math.floor(p)}%`;
@@ -726,18 +808,61 @@ async function parsePqChecked() {
   const selectedRows = parseQueue.value.filter(f => f.checked && f.status === "pending");
   if (!selectedRows.length) return;
 
-  const types = [...new Set(selectedRows.map(f => normalizeDataTypeForBackend(f.dataType)).filter(Boolean))];
+  const scenesByType = new Map();
+  selectedRows.forEach(row => {
+    const type = normalizeDataTypeForBackend(row.dataType);
+    if (!type) return;
+    if (!scenesByType.has(type)) scenesByType.set(type, []);
+    scenesByType.get(type).push(row.sceneId);
+  });
   selectedRows.forEach(f => {
     f.checked = false;
     f.status = "parsing";
   });
 
   try {
-    await Promise.all(types.map(type => updateDisplayFromRaw(type)));
+    const outcomes = await Promise.all(
+      [...scenesByType.entries()].map(async ([type, sceneIds]) => {
+        if (type !== "FY3") {
+          return {type, result: await updateDisplayFromRaw(type, {sceneIds})};
+        }
+        const task = await startFY3ParseTask(sceneIds);
+        selectedRows.forEach(row => {
+          if (row.dataType === "FY3" && sceneIds.includes(row.sceneId)) row.taskId = task.task_id;
+        });
+        const finished = await waitForFY3ParseTask(task.task_id, {
+          onProgress(current) {
+            selectedRows.forEach(row => {
+              if (row.dataType !== "FY3" || !(current.scene_ids || []).includes(row.sceneId)) return;
+              row.status = "parsing";
+              row.rawStatus = current.stage;
+              row.progress = Number(current.progress || 0);
+              row.missing = [current.current_band ? `${current.current_scene || row.sceneId} · ${current.current_band}` : "后台解析中"];
+              row.steps = row.steps || [];
+              row.steps[1] = {label: "解析", state: parseStatusText(row), t: "后台任务", ok: false, running: true};
+            });
+          },
+        });
+        if (finished.state === "failed") throw new Error(finished.error || "FY-3 解析任务失败");
+        return {type, task: finished, result: finished.result || {}};
+      }),
+    );
     await refreshRawScenes();
+    outcomes.forEach(outcome => {
+      (outcome.result?.results || [])
+        .filter(item => item?.status === "error")
+        .forEach(item => {
+          const row = parseQueue.value.find(candidate => candidate.sceneId === item.scene_id && candidate.dataType === outcome.type);
+          if (!row) return;
+          row.status = "error";
+          row.rawStatus = "parse_error";
+          row.missing = [item.error || "解析失败"];
+        });
+    });
   } catch (err) {
     selectedRows.forEach(f => {
       f.status = "error";
+      f.rawStatus = "parse_error";
       f.missing = [err?.message || "解析失败"];
     });
     console.error("raw 解析失败：", err);
@@ -756,6 +881,13 @@ function onPick(e) {
 
 onMounted(() => {
   refreshRawScenes().catch(err => console.error("raw 场景读取失败：", err));
+  rawSceneTimer = window.setInterval(() => {
+    refreshRawScenes().catch(err => console.error("raw 场景读取失败：", err));
+  }, 3000);
+});
+
+onBeforeUnmount(() => {
+  if (rawSceneTimer) window.clearInterval(rawSceneTimer);
 });
 </script>
 

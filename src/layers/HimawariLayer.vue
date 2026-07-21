@@ -30,7 +30,6 @@ import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import LayerCard from "../components/LayerCard.vue";
 import WebglLayer from "../components/WebglLayer.vue";
 import { authedFetch } from "../api";
-import { buildHimawariVariableInfo, isHimawariRgbProduct, resolveHimawariImageUrl } from "./himawariVariableInfo";
 
 const props = defineProps({
   src: String,
@@ -142,6 +141,126 @@ function productTicks(item) {
   return ["-80", "-40", "0", "40"];
 }
 
+function isHimawariRgbProduct(product) {
+  return product?.is_rgb === true ||
+    product?.render_mode === "rgb" ||
+    product?.render_mode === "image" ||
+    product?.product_type === "composite";
+}
+
+function resolveHimawariImageUrl({ product, display: displayData, fallback = "", apiBase = "" } = {}) {
+  const candidates = [
+    product?.webp_url,
+    product?.image_url,
+    product?.image,
+    product?.url,
+    product?.src,
+    displayData?.webp_url,
+    displayData?.image_url,
+    displayData?.image,
+    displayData?.url,
+    displayData?.src,
+    fallback,
+  ];
+
+  for (const candidate of candidates) {
+    const url = toPublicWebpUrl(candidate, apiBase);
+    if (url) return url;
+  }
+  return "";
+}
+
+function buildHimawariVariableInfo({ product, display: displayData }) {
+  const meta = displayData?.meta_json || displayData?.meta || {};
+  const weather = meta.weather_info || displayData?.weather_info || {};
+  const productDisplayName = productLabel(product);
+  const isRgb = isHimawariRgbProduct(product);
+  const unit = isRgb ? "RGB合成" : product?.display_unit || product?.unit || weather.unit || "";
+  const cnDescription = firstText(
+    product?.description_cn,
+    product?.description_zh,
+    product?.explanation_cn,
+    product?.explanation_zh,
+  );
+  const enDescription = firstText(
+    product?.description_en,
+    product?.description,
+    product?.long_name,
+    product?.plain_name,
+  );
+  const { label: enLabel, explanation: enExplanation } = splitEnDescription(enDescription);
+  const productId = product?.name || product?.key || "";
+  const elementEn = productId ? productId + (enLabel ? ` · ${enLabel}` : "") : enLabel;
+  const elementMeaning = cnDescription
+    ? cnDescription + (enExplanation && enExplanation !== cnDescription ? ` ${enExplanation}` : "")
+    : (enExplanation || "");
+
+  return {
+    file: meta.scene_id || displayData?.meta_file || weather.file || "—",
+    element: productDisplayName || weather.element || "—",
+    element_en: elementEn,
+    elementMeaning,
+    time: meta.observation_time || weather.time || "—",
+    level: weather.level || "卫星观测",
+    range: weather.range || formatExtent(meta.extent || displayData?.extent),
+    grid: weather.grid || formatGrid(meta.grid || displayData?.grid),
+    unit,
+    missing: isRgb ? "—" : weather.missing || product?.missing || "—",
+    status: weather.status || "解析完成",
+    timeResolution: "10分钟",
+    spatialResolution: weather.resolution || (meta.resolution ? `${meta.resolution}°` : ""),
+    extraRows: buildExtraRows(product),
+  };
+}
+
+function buildExtraRows(product) {
+  if (!product) return [];
+  return [
+    { key: "wavelength", label: "波长", value: product.wavelength },
+    { key: "source_bands", label: "来源", value: formatSourceBands(product.source_bands) },
+  ].filter((row) => row.value !== undefined && row.value !== null && row.value !== "");
+}
+
+function firstText(...values) {
+  return values.map((value) => String(value || "").trim()).find(Boolean) || "";
+}
+
+function splitEnDescription(text) {
+  if (!text) return { label: "", explanation: "" };
+  const index = text.indexOf("; ");
+  if (index <= 0) return { label: text, explanation: text };
+  return {
+    label: text.slice(0, index).trim(),
+    explanation: text.slice(index + 2).trim(),
+  };
+}
+
+function toPublicWebpUrl(value, apiBase) {
+  const text = String(value || "").trim();
+  if (!text || !/\.webp(\?.*)?$/i.test(text)) return "";
+  if (/^https?:\/\//i.test(text)) return text;
+  const base = String(apiBase || "").replace(/\/$/, "");
+  if (text.startsWith("/")) return `${base}${text}`;
+  if (/^(data|static|assets)\//i.test(text)) return `${base}/${text}`;
+  return "";
+}
+
+function formatSourceBands(sourceBands) {
+  if (!Array.isArray(sourceBands) || !sourceBands.length) return "";
+  return sourceBands.join("、");
+}
+
+function formatExtent(extent) {
+  if (!Array.isArray(extent) || extent.length !== 4) return "";
+  const [west, south, east, north] = extent;
+  return `${west}°E-${east}°E, ${south}°N-${north}°N`;
+}
+
+function formatGrid(grid) {
+  if (!grid?.nx || !grid?.ny) return "";
+  return `${grid.nx} × ${grid.ny}`;
+}
+
 function formatBeijingTime(value) {
   if (!value) return "";
   const parsed = new Date(String(value).replace("Z", "+00:00"));
@@ -211,12 +330,17 @@ async function loadHimawariDisplay() {
 }
 
 onMounted(() => {
+  selectedResolution.value = props.resolution || "original";
   loadHimawariDisplay();
   timer = window.setInterval(loadHimawariDisplay, 30000);
 });
 
 watch(() => [props.refreshKey, props.sceneId], () => {
   loadHimawariDisplay();
+});
+
+watch(() => props.resolution, (value) => {
+  if (value && value !== selectedResolution.value) selectedResolution.value = value;
 });
 
 watch(() => [display.value, imageExtent.value], flyToData, { immediate: true });
