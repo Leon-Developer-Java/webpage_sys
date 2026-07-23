@@ -21,7 +21,7 @@ webpage_sys/
 ├── src/
 │   ├── main.js              # 入口：Vue + Router + ElementPlus
 │   ├── router.js            # 路由配置
-│   ├── api.js               # 统一请求：parseFile→8002 / 分片上传→8003 / chatStream→8004
+│   ├── api.js               # 统一请求：展示→8002 / 上传及任务状态→8003 / chatStream→8004
 │   ├── markdown.js          # 智能体消息 Markdown 渲染（marked + 中文加粗修复 + 净化）
 │   ├── App.vue              # 顶栏 + 主题切换 + <router-view>
 │   ├── styles/global.css    # CSS 变量（亮/暗主题）、公共组件样式
@@ -77,7 +77,9 @@ npm run dev -- --port 5177
 http://127.0.0.1:5177
 ```
 
-前端需要后端 `8002` 同时运行。Himawari 展示依赖：
+上传页的标准单文件只提交给 `backend_upload:8003` 一次，之后轮询数据库任务状态；解析由无端口 Adapter Worker 串行执行。前端不再把同一文件二次提交给 `8002/api/files/parse`。FY-3/Himawari 多文件流程暂时保留。
+
+前端完整联调需要 `8002`、`8003`、`8005` 和 Adapter Worker 同时运行。Himawari 展示依赖：
 
 ```text
 GET http://127.0.0.1:8002/api/display/HIMAWARI

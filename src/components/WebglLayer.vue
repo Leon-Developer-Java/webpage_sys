@@ -5,6 +5,7 @@
 <script setup>
 import { inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { withToken } from "../api";
+import { getCachedFrame, preloadFrame } from "../utils/frameImageCache";
 
 const props = defineProps({
   src: String,
@@ -163,18 +164,29 @@ function loadGridTexture(currentVersion) {
   draw();
 }
 
-function updateTexture() {
+async function updateTexture() {
   if (!gl) return;
   const currentVersion = ++textureVersion;
-  clearSurface();
   if (props.values && props.width && props.height) loadGridTexture(currentVersion);
   else if (props.src) {
+    const cached = getCachedFrame(props.src);
     surface?.setData?.(props.src, props.extent, props.alpha, {
       source: "WebglLayer",
       mode: "image",
+      ...(cached ? { image: cached } : {}),
     });
+    if (!cached) {
+      const image = await preloadFrame(props.src);
+      if (currentVersion === textureVersion && image) {
+        surface?.setData?.(props.src, props.extent, props.alpha, {
+          source: "WebglLayer",
+          mode: "image",
+          image,
+        });
+      }
+    }
   }
-  else { ++textureVersion; draw(); }
+  else { clearSurface(); ++textureVersion; draw(); }
 }
 
 onMounted(() => {

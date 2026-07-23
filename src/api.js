@@ -450,7 +450,19 @@ export async function uploadFileResumable(file, dataType, onProgress = () => {})
   const statusRes = await authedFetch(
     `${UPLOAD_BASE}/api/upload/status?file_id=${encodeURIComponent(fileId)}`
   );
-  const { data } = await statusRes.json();
+  const statusPayload = await statusRes.json();
+  if (!statusRes.ok || statusPayload.code !== 0) {
+    throw new Error(apiError(statusPayload, "上传状态读取失败"));
+  }
+  const { data } = statusPayload;
+  if (data?.completed) {
+    onProgress(100);
+    return {
+      ...data.completed,
+      duplicate_content: true,
+      duplicate_reason: "existing_upload",
+    };
+  }
   const done = new Set(data?.uploaded ?? []);
 
   // 2. 顺序上传缺失分片，按分片粒度聚合进度
@@ -481,18 +493,71 @@ export async function uploadFileResumable(file, dataType, onProgress = () => {})
   return payload.data;
 }
 
-export async function parseFile(fileOrFiles) {
-  const body = new FormData();
-  const files = Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles];
-  if (files.length === 1) {
-    body.append("file", files[0]);
-  } else {
-    files.forEach(file => body.append("files", file));
-  }
-  const response = await authedFetch(`${API_BASE}/api/files/parse`, { method: "POST", body });
+export async function getUploadTasks({ limit = 100, offset = 0 } = {}) {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  const response = await authedFetch(`${UPLOAD_BASE}/api/upload/tasks?${params}`);
   const payload = await response.json();
   if (!response.ok || payload.code !== 0) {
-    throw new Error(payload.detail || payload.message || "解析失败");
+    throw new Error(apiError(payload, "解析队列读取失败"));
+  }
+  return payload.data;
+}
+
+export async function getUploadTask(fileUuid) {
+  const response = await authedFetch(`${UPLOAD_BASE}/api/upload/tasks/${encodeURIComponent(fileUuid)}`);
+  const payload = await response.json();
+  if (!response.ok || payload.code !== 0) {
+    throw new Error(apiError(payload, "解析状态读取失败"));
+  }
+  return payload.data;
+}
+
+export async function retryUploadTask(fileUuid) {
+  const response = await authedFetch(`${UPLOAD_BASE}/api/upload/tasks/${encodeURIComponent(fileUuid)}/retry`, {
+    method: "POST",
+  });
+  const payload = await response.json();
+  if (!response.ok || payload.code !== 0) {
+    throw new Error(apiError(payload, "任务重试失败"));
+  }
+  return payload.data;
+}
+
+export async function getDisplayResources(dataType, { limit = 100, offset = 0, timeStart = "", timeEnd = "" } = {}) {
+  const params = new URLSearchParams({
+    data_type: dataType,
+    limit: String(limit),
+    offset: String(offset),
+  });
+  if (timeStart) params.set("time_start", timeStart);
+  if (timeEnd) params.set("time_end", timeEnd);
+  const response = await authedFetch(`${UPLOAD_BASE}/api/catalog/resources?${params}`);
+  const payload = await response.json();
+  if (!response.ok || payload.code !== 0) {
+    throw new Error(apiError(payload, "可展示数据读取失败"));
+  }
+  return payload.data;
+}
+
+export async function getDisplayResource(resource) {
+  const fileUuids = Array.isArray(resource?.file_uuids) ? resource.file_uuids : [];
+  if (fileUuids.length >= 1) {
+    const response = await authedFetch(`${UPLOAD_BASE}/api/catalog/series`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ file_uuids: fileUuids }),
+    });
+    const payload = await response.json();
+    if (!response.ok || payload.code !== 0) {
+      throw new Error(apiError(payload, "时间序列读取失败"));
+    }
+    return payload.data;
+  }
+  const fileUuid = typeof resource === "string" ? resource : resource?.file_uuid;
+  const response = await authedFetch(`${UPLOAD_BASE}/api/catalog/resources/${encodeURIComponent(fileUuid)}`);
+  const payload = await response.json();
+  if (!response.ok || payload.code !== 0) {
+    throw new Error(apiError(payload, "数据详情读取失败"));
   }
   return payload.data;
 }
@@ -630,10 +695,6 @@ export async function getHimawariAutoStatus() {
     throw new Error(payload.detail || payload.message || "Himawari 自动处理状态读取失败");
   }
   return payload.data;
-}
-
-export async function parseFiles(files) {
-  return parseFile(Array.from(files || []));
 }
 
 export function displayKeyFromBusinessType(value) {

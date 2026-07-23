@@ -93,7 +93,7 @@ const effectiveResolution = computed(() => {
   return "original";
 });
 
-function currentProductImageUrl() {
+function productImageUrlForFrame(frame) {
   const product = selectedProduct.value;
   if (!product) return props.src || "";
 
@@ -102,7 +102,7 @@ function currentProductImageUrl() {
   if (assets && assets[resKey] && assets[resKey].webp_url) {
     return resolveFY3ImageUrl({
       product: { ...product, webp_url: assets[resKey].webp_url },
-      currentFrame: currentFrame.value,
+      currentFrame: frame,
       resolution: resKey,
       fallback: props.src,
       apiBase: API_BASE,
@@ -110,11 +110,15 @@ function currentProductImageUrl() {
   }
   return resolveFY3ImageUrl({
     product,
-    currentFrame: currentFrame.value,
+    currentFrame: frame,
     resolution: resKey,
     fallback: props.src,
     apiBase: API_BASE,
   });
+}
+
+function currentProductImageUrl() {
+  return productImageUrlForFrame(currentFrame.value);
 }
 
 const imageSrc = computed(() => currentProductImageUrl());
@@ -225,7 +229,7 @@ function buildVariableInfo() {
     timeResolution: meta.temporal_resolution || "5分钟",
     spatialResolution: meta.spatial_resolution || "",
     times: frames.value.map((frameItem) => frameItem.label || frameItem.time || frameItem.scene_id).filter(Boolean),
-    webp_urls: frames.value.map((frameItem) => frameItem.webp_url).filter(Boolean),
+    webp_urls: frames.value.map(productImageUrlForFrame).filter(Boolean),
     extraRows: buildFY3ExtraRows(bandInfo),
   };
 }
@@ -433,7 +437,7 @@ watch(() => props.resolution, (value) => {
   if (value && value !== selectedResolution.value) selectedResolution.value = value;
 });
 watch(() => [display.value, imageExtent.value], flyToData, { immediate: true });
-watch(() => [selectedProductKey.value, props.timeIndex], emitSelectedVariableInfo);
+watch(() => [selectedProductKey.value, selectedResolution.value, props.timeIndex], emitSelectedVariableInfo);
 watch(selectedResolution, (val) => emit("resolution-change", val));
 
 onBeforeUnmount(() => {

@@ -1,8 +1,7 @@
 <template>
   <div class="ov">
     <aside class="rail glass">
-      <button :class="{ on: dockOpen && tool === 'file' }" @click="openTool('file')"><el-icon><FolderOpened /></el-icon><span>文件</span></button>
-      <button :class="{ on: dockOpen && tool === 'data' }" @click="openTool('data')"><el-icon><DataAnalysis /></el-icon><span>数据</span></button>
+      <button :class="{ on: dockOpen && tool === 'select' }" @click="openTool('select')"><el-icon><Collection /></el-icon><span>数据源</span></button>
       <button :class="{ on: propsOpen }" @click="propsOpen = !propsOpen"><el-icon><Document /></el-icon><span>信息</span></button>
       <button :class="{ on: dockOpen && tool === 'proj' }" @click="openTool('proj')"><el-icon><Position /></el-icon><span>投影</span></button>
       <button :class="{ on: dockOpen && tool === 'base' }" @click="openTool('base')"><el-icon><MapLocation /></el-icon><span>底图</span></button>
@@ -24,30 +23,81 @@
     <section v-if="dockOpen" class="dock glass">
       <div class="dock-head"><h3>{{ dockTitle }}</h3><el-icon @click="dockOpen = false"><Close /></el-icon></div>
 
-      <template v-if="tool === 'file'">
-        <div class="path"><el-icon><FolderOpened /></el-icon><input :value="path" readonly /></div>
-        <div class="list-head"><span>文件列表</span><el-icon><RefreshRight /></el-icon></div>
-        <ul class="files">
-          <li v-for="(f, i) in files" :key="f.name" :class="{ sel: selected === i }" @click="pickFile(i)">
-            <i class="dot"></i>
-            <div><b>{{ f.name }}</b><span>{{ f.time }} · {{ f.size }}</span></div>
-          </li>
-        </ul>
-        <label class="upload"><input type="file" multiple hidden @change="choose" />{{ selectedFileLabel }}</label>
-        <el-button type="primary" size="small" class="parse" @click="parse">打开并解析</el-button>
-        <p class="hint">解析后生成 meta.json + WEBP</p>
-        <div class="vars">
-          <VariableSelect v-model="variable" :options="variableOptions" />
-          <VariableSelect v-model="level" :options="levels" />
-        </div>
-      </template>
+      <template v-if="tool === 'select'">
+        <div class="resource-filter">
+          <label class="filter-label">数据类型</label>
+          <div class="data-type-grid">
+            <button
+              v-for="source in sources"
+              :key="source.key"
+              type="button"
+              :class="{ on: catalogSourceKey === source.key }"
+              :disabled="switching && catalogSourceKey !== source.key"
+              @click="selectCatalogSource(source.key)"
+            >{{ source.btn }}</button>
+          </div>
 
-      <template v-else-if="tool === 'data'">
-        <p class="pick-hint">选择数据类型</p>
-        <div class="picker">
-          <button v-for="s in sources" :key="s.key" :class="{ on: pickerActive === s.key }" :disabled="switching && s.key !== pickerActive" @click="selectSource(s.key)">
-            <span>{{ s.btn }}</span><el-icon v-if="pickerActive === s.key"><Check /></el-icon>
+          <div class="time-filter-row">
+            <label class="filter-field">
+              <span class="filter-label">开始时间</span>
+              <el-date-picker
+                v-model="resourceStartTime"
+                class="resource-time"
+                type="datetime"
+                size="small"
+                value-format="YYYY-MM-DD HH:mm:ss"
+                format="YYYY-MM-DD HH:mm"
+                placeholder="选择开始"
+                :clearable="true"
+                @change="onResourceStartChange"
+              />
+            </label>
+            <label class="filter-field">
+              <span class="filter-label">结束时间</span>
+              <el-date-picker
+                v-model="resourceEndTime"
+                class="resource-time"
+                type="datetime"
+                size="small"
+                value-format="YYYY-MM-DD HH:mm:ss"
+                format="YYYY-MM-DD HH:mm"
+                placeholder="选择结束"
+                :disabled="!resourceStartTime"
+                :disabled-date="disableResourceEndDate"
+                :clearable="true"
+                @change="onResourceEndChange"
+              />
+            </label>
+          </div>
+
+        </div>
+
+        <div class="resource-head">
+          <span>{{ resourceListLabel }} · {{ filteredDataResources.length }}</span>
+          <button type="button" title="刷新数据" :disabled="resourcesLoading" @click="refreshDataResources">
+            <el-icon :class="{ rotating: resourcesLoading }"><RefreshRight /></el-icon>
           </button>
+        </div>
+        <div class="resource-results">
+          <p v-if="resourcesError" class="resource-state error">{{ resourcesError }}</p>
+          <p v-else-if="resourcesLoading && !dataResources.length" class="resource-state">正在读取数据...</p>
+          <p v-else-if="!dataResources.length" class="resource-state">暂无已解析数据</p>
+          <p v-else-if="!filteredDataResources.length" class="resource-state">当前条件下暂无数据</p>
+          <ul v-else class="resource-list">
+            <li
+              v-for="item in filteredDataResources"
+              :key="item.file_uuid"
+              :class="{ sel: catalogSelectedResourceUuid === item.file_uuid }"
+              @click="selectDataResource(item)"
+            >
+              <div class="resource-title">
+                <b :title="item.file_name">{{ item.file_name }}</b>
+                <span :class="['continuity', { gap: !item.continuous }]">{{ resourceStatus(item) }}</span>
+              </div>
+              <span>{{ resourceTimeRange(item) }}</span>
+              <span>{{ formatFileSize(item.file_size) }} · {{ item.elements.length }} 个要素</span>
+            </li>
+          </ul>
         </div>
       </template>
 
@@ -95,15 +145,14 @@
             @view-change="v => onViewChange(i, v)"
           >
             <component
-              :key="`${layout}-${i}-${p.key}-${p.variantIndex}`"
+              :key="`${layout}-${i}-${p.key}-${p.variantIndex}-${resourceRenderKey(p.key, i)}`"
               :is="p.comp"
-              :parsed="layerParsed(p.key)"
+              :parsed="layerParsed(p.key, i)"
               :time-index="layerTimeIndex"
               :variant-index="p.variantIndex"
               v-bind="layerProps(p.key)"
               @display-loaded="payload => onLayerDisplayLoaded(i, p.key, payload)"
               @variable-change="payload => onLayerVariableChange(i, p.key, payload)"
-              @resolution-change="value => onLayerResolutionChange(p.key, value)"
             />
           </ProjMap>
         </div>
@@ -113,7 +162,7 @@
         <div class="tb-head">
           <button class="tc-btn" @click="setTimeIndex(0)"><el-icon><DArrowLeft /></el-icon></button>
           <button class="tc-btn" @click="setTimeIndex(Math.max(0, tIndex - 1))"><el-icon><ArrowLeft /></el-icon></button>
-          <button class="tc-play" @click="togglePlaying"><el-icon><VideoPause v-if="playing" /><VideoPlay v-else /></el-icon></button>
+          <button class="tc-play" :disabled="playingPreparing" @click="togglePlaying"><el-icon><Loading v-if="playingPreparing" class="is-loading" /><VideoPause v-else-if="playing" /><VideoPlay v-else /></el-icon></button>
           <button class="tc-btn" @click="setTimeIndex(Math.min(axisTimes.length - 1, tIndex + 1))"><el-icon><ArrowRight /></el-icon></button>
           <button class="tc-btn" @click="setTimeIndex(axisTimes.length - 1)"><el-icon><DArrowRight /></el-icon></button>
           <div class="tc-speed">
@@ -149,13 +198,17 @@
 </template>
 
 <script setup>
-import { computed, inject, onBeforeUnmount, ref, watch } from "vue";
-import { ArrowLeft, ArrowRight, Check, CircleCheck, Close, Connection, DArrowLeft, DArrowRight, DataAnalysis, Document, FolderOpened, Grid, MapLocation, Monitor, Moon, Operation, Position, RefreshRight, Sunny, VideoPlay, VideoPause } from "@element-plus/icons-vue";
-import { parseFile, startFY3ParseTask, updateDisplayFromRaw, uploadRawFiles, waitForFY3ParseTask } from "../api";
+import { computed, inject, onBeforeUnmount, provide, ref, watch } from "vue";
+import { ElNotification } from "element-plus";
+import { ArrowLeft, ArrowRight, Check, CircleCheck, Close, Collection, Connection, DArrowLeft, DArrowRight, Document, Grid, Loading, MapLocation, Monitor, Moon, Operation, Position, RefreshRight, Sunny, VideoPlay, VideoPause } from "@element-plus/icons-vue";
+import {
+  getDisplayResource,
+  getDisplayResources,
+} from "../api";
+import { preloadFrames } from "../utils/frameImageCache";
 import ProjMap from "../components/ProjMap.vue";
 import MetaPanel from "../components/MetaPanel.vue";
 import TimeAxis from "../components/TimeAxis.vue";
-import VariableSelect from "../components/VariableSelect.vue";
 import Era5Layer from "../layers/Era5Layer.vue";
 import GribLayer from "../layers/GribLayer.vue";
 import CmaLayer from "../layers/CmaLayer.vue";
@@ -177,6 +230,48 @@ const sources = [
   {key: "era5", btn: "ERA5", comp: Era5Layer}
 ];
 
+const attributeLabels = {
+  levels: "层次",
+  level_types: "层次类型",
+  resolutions: "分辨率",
+  datasets: "数据集",
+  product_types: "产品类型",
+  product_names: "产品名称",
+  data_streams: "数据流",
+  step_types: "步长类型",
+  grid_types: "网格类型",
+  run_times: "起报时间",
+  cycle_hours: "起报时次",
+  forecast_hours: "预报时效",
+  product_categories: "产品类别",
+  streams: "数据流",
+  product_classes: "产品级别",
+  radar_names: "雷达名称",
+  station_codes: "站号",
+  radar_types: "雷达类型",
+  product_codes: "产品代码",
+  elevations: "仰角",
+  domains: "计算区域",
+  forecast_reference_times: "预报基准时间",
+  source_resolutions: "源分辨率",
+  satellites: "卫星",
+  instruments: "仪器",
+  bands: "波段",
+  file_roles: "文件角色",
+  regions: "区域",
+};
+
+const typeAttributeOrder = {
+  era5: ["levels", "level_types", "resolutions", "product_types", "data_streams", "step_types", "grid_types", "datasets"],
+  gfs: ["levels", "level_types", "resolutions", "run_times", "cycle_hours", "forecast_hours", "step_types", "product_categories", "datasets"],
+  ecmwf: ["levels", "level_types", "resolutions", "run_times", "cycle_hours", "forecast_hours", "step_types", "streams", "product_classes", "datasets"],
+  cma: ["levels", "level_types", "resolutions", "product_types", "product_names", "datasets"],
+  radar: ["levels", "resolutions", "radar_names", "station_codes", "radar_types", "product_codes", "elevations", "datasets"],
+  wrf: ["levels", "resolutions", "domains", "forecast_reference_times", "forecast_hours", "source_resolutions", "datasets"],
+  fy3: ["resolutions", "satellites", "instruments", "bands", "source_resolutions", "file_roles", "datasets"],
+  himawari: ["resolutions", "satellites", "regions", "bands", "datasets"],
+};
+
 const infos = {
   radar: { file: "radar_xh_20250616_1000.cinrad", element: "组合反射率 DBZH、径向速度、谱宽", time: "2025-06-16 10:00", level: "0.5° 仰角", range: "73°E-135°E, 15°N-55°N", grid: "721 × 361", missing: "-9999", unit: "dBZ / m·s⁻¹", vars: "3", steps: "24" },
   himawari: { file: "himawari_20250616_1000.hsd", element: "B01-B16 全通道、真彩色合成", time: "2025-06-16 10:00", level: "全圆盘 / 区域", range: "80°E-160°E, 0°N-60°N", grid: "5500 × 5500", missing: "-9999", unit: "°C / %", vars: "16", steps: "25" },
@@ -186,15 +281,6 @@ const infos = {
   cma: { file: "cma_meso_20250616.grib2", element: "2m 温度、降水", time: "2025-06-16 08:00", level: "地面 / 多层", range: "70°E-140°E, 10°N-60°N", grid: "1025 × 801", missing: "9999", unit: "°C / mm", vars: "6", steps: "24" },
   wrf: { file: "wrf_radar_20250616.nc", element: "雷达反射率 (NC)", time: "2025-06-16 10:00", level: "多仰角", range: "73°E-135°E, 15°N-55°N", grid: "460 × 460", missing: "-9999", unit: "dBZ", vars: "2", steps: "12" }
 };
-
-const files = [
-  {name: "radar_xh_20250616_1000.cinrad", time: "2025-06-16 10:00", size: "2.14 MB", key: "radar"},
-  {name: "era5_t2m_20250616.nc", time: "2025-06-16 09:00", size: "1.28 GB", key: "era5"},
-  {name: "gfs.t00z.pgrb2.0p25.f006", time: "2025-06-16 08:00", size: "524 MB", key: "gfs"},
-  {name: "ecmwf_realtime_20250616_00z_f000_f024.grib2", time: "2025-06-16 08:00", size: "480 MB", key: "ecmwf"},
-  {name: "himawari_20250616_1000.hsd", time: "2025-06-16 10:00", size: "380 MB", key: "himawari"},
-  {name: "FY3D_MERSI_GBAL_L1_20260701_0055_1000M_MS.HDF", time: "2026-07-01 08:55", size: "1.4 GB", key: "fy3"}
-];
 
 const defaultProcessing = [
   {step: "下载", state: "成功", t: "06-16 09:58", ok: true},
@@ -206,30 +292,36 @@ const defaultProcessing = [
 const versions = ["文件存储：原始数据 + meta.json + WEBP", "前端渲染：GFS/ECMWF 独立入口 + WEBP 优先显示", "数据处理：后端完成、前端轻展示"];
 const projections = ["等经纬", "墨卡托", "正弦", "罗宾逊", "兰博托", "卫星正视", "北极", "南极"];
 const basemaps = ["矢量底图", "影像底图", "地形晕渲", "全球境界"];
-const levels = ["地面", "850hPa", "500hPa", "200hPa"];
 const defaultTimes = ["00时", "02时", "04时", "06时", "08时", "10时", "12时", "14时", "16时", "18时", "20时", "22时"];
 
 function isGribLayerKey(key) {
   return key === "gfs" || key === "ecmwf";
 }
 
-const tool = ref("file");
+function sourceFallbackInfo(key) {
+  return infos[key] || (isGribLayerKey(key) ? infos.grib : {});
+}
+
+const tool = ref("select");
 const dockOpen = ref(false);
 const showGrid = ref(true);
 const layout = ref("1");
 const propsOpen = ref(true);
 const active = ref("radar");
-const selected = ref(0);
-const file = ref([]);
-const path = ref("D:/weather_data/radar/");
 const projection = ref("等经纬");
 const basemap = ref("矢量底图");
-const variable = ref("组合反射率 DBZH");
-const level = ref("500hPa");
 const tIndex = ref(0);
 const parsed = ref(null);
 const parsedLayerKey = ref(null);
 const parseProcessing = ref(null);
+const dataResources = ref([]);
+const selectedResource = ref(null);
+const selectedResourceUuid = ref("");
+const resourcesLoading = ref(false);
+const resourcesError = ref("");
+const resourceStartTime = ref("");
+const resourceEndTime = ref("");
+const attributeFilters = ref({});
 const layerDisplays = ref({});
 const layerRefreshKeys = ref({himawari: 0, fy3: 0});
 const focusedFY3SceneId = ref("");
@@ -238,6 +330,7 @@ const pendingHimawariSceneId = ref("");
 const layerResolutions = ref({cma: "native", fy3: "original", himawari: "original"});
 const himawariTimeline = ref([]);
 const playing = ref(false);
+const playingPreparing = ref(false);
 const speed = ref(1);
 const animPos = ref(tIndex.value);
 const cmaPlaybackWaiting = ref(false);
@@ -251,11 +344,14 @@ const paneLabels = ref({});
 const selectedPane = ref(-1);
 const paneSources = ref({});
 const paneDisplays = ref({});
+const paneParsed = ref({});
 let paneDownAt = null;
 let switchingTarget = { pane: 0, key: "" };
 const latestView = {};
 let animTimer = null;
 let switchingTimer = null;
+let resourceRequestId = 0;
+const paneFramePreloads = new Map();
 const PLAYBACK_BASE_INTERVAL_MS = 900;
 const PLAYBACK_MIN_INTERVAL_MS = 120;
 const CMA_PLAYBACK_MIN_INTERVAL_MS = 200;
@@ -267,12 +363,120 @@ function playbackIntervalMs(baseInterval = PLAYBACK_BASE_INTERVAL_MS, minInterva
   return Math.max(minInterval, baseInterval / multiplier);
 }
 
-const selectedFileLabel = computed(() => {
-  const files = Array.isArray(file.value) ? file.value : [];
-  if (!files.length) return "选择本地文件…";
-  if (files.length === 1) return files[0].name;
-  return `已选择 ${files.length} 个文件`;
+const catalogSourceKey = computed(() =>
+  layout.value !== "1" && selectedPane.value >= 0
+    ? (paneSources.value[selectedPane.value] || active.value)
+    : active.value,
+);
+
+const activeSourceLabel = computed(() => sources.find(item => item.key === catalogSourceKey.value)?.btn || catalogSourceKey.value.toUpperCase());
+const resourceListLabel = computed(() =>
+  resourceStartTime.value && resourceEndTime.value
+    ? `${activeSourceLabel.value} 搜索结果`
+    : `${activeSourceLabel.value} 最近连续数据`,
+);
+const catalogSelectedResourceUuid = computed(() => {
+  if (layout.value !== "1" && selectedPane.value >= 0) {
+    return paneParsed.value[selectedPane.value]?.fileUuid || "";
+  }
+  return selectedResourceUuid.value;
 });
+
+const attributeOptions = computed(() => {
+  const values = {};
+  dataResources.value.forEach(item => {
+    Object.entries(item.attributes || {}).forEach(([key, options]) => {
+      if (!Array.isArray(options)) return;
+      if (!values[key]) values[key] = new Set();
+      options.forEach(option => {
+        if (option !== null && option !== undefined && String(option).trim()) values[key].add(String(option));
+      });
+    });
+  });
+  return Object.fromEntries(
+    Object.entries(values).map(([key, options]) => [key, [...options].sort((a, b) => a.localeCompare(b, "zh-CN", { numeric: true }))]),
+  );
+});
+
+const availableAttributeFilters = computed(() => {
+  const preferred = typeAttributeOrder[catalogSourceKey.value] || [];
+  const keys = [...preferred, ...Object.keys(attributeOptions.value).filter(key => !preferred.includes(key))];
+  return keys
+    .filter(key => key !== "elements" && attributeOptions.value[key]?.length)
+    .map(key => ({ key, label: attributeLabels[key] || key, options: attributeOptions.value[key] }));
+});
+
+const layerCardFilters = computed(() => ({
+  filters: availableAttributeFilters.value,
+  values: attributeFilters.value,
+}));
+
+provide("layerCardFilters", layerCardFilters);
+
+function timestamp(value) {
+  if (!value) return Number.NaN;
+  if (value instanceof Date) return value.getTime();
+  const text = String(value);
+  const beijing = text.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/);
+  const parsed = beijing
+    ? Date.UTC(Number(beijing[1]), Number(beijing[2]) - 1, Number(beijing[3]), Number(beijing[4]) - 8, Number(beijing[5]), Number(beijing[6]))
+    : new Date(text).getTime();
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
+}
+
+function overlapsSelectedTime(item) {
+  if (!resourceStartTime.value || !resourceEndTime.value) return true;
+  const selectedStart = timestamp(resourceStartTime.value);
+  const selectedEnd = timestamp(resourceEndTime.value);
+  const itemStart = timestamp(item?.time_start);
+  const itemEnd = timestamp(item?.time_end || item?.time_start);
+  if (![selectedStart, selectedEnd, itemStart, itemEnd].every(Number.isFinite)) return false;
+  return itemStart <= selectedEnd && itemEnd >= selectedStart;
+}
+
+const filteredDataResources = computed(() => {
+  const selectedAttributes = Object.entries(attributeFilters.value).filter(([key, value]) => key !== "elements" && value !== "" && value !== null && value !== undefined);
+  const matches = dataResources.value.filter(item => {
+    if (!overlapsSelectedTime(item)) return false;
+    return selectedAttributes.every(([key, value]) =>
+      (item.attributes?.[key] || []).some(option => String(option) === String(value)),
+    );
+  });
+  matches.sort((left, right) => timestamp(right.time_end || right.time_start) - timestamp(left.time_end || left.time_start));
+  if (!resourceStartTime.value || !resourceEndTime.value) {
+    return matches.filter(item => item.continuous);
+  }
+  return matches;
+});
+
+function onResourceStartChange(value) {
+  if (!value) {
+    resourceEndTime.value = "";
+    refreshDataResources();
+    return;
+  }
+  if (resourceEndTime.value && timestamp(resourceEndTime.value) < timestamp(value)) {
+    resourceEndTime.value = "";
+  }
+  refreshDataResources();
+}
+
+function onResourceEndChange(value) {
+  if (value && resourceStartTime.value && timestamp(value) < timestamp(resourceStartTime.value)) {
+    resourceEndTime.value = "";
+    ElNotification({ title: "时间范围无效", message: "结束时间不能早于开始时间。", type: "warning", duration: 2500, position: "top-right" });
+    refreshDataResources();
+    return;
+  }
+  refreshDataResources();
+}
+
+function disableResourceEndDate(date) {
+  if (!resourceStartTime.value) return false;
+  const start = new Date(String(resourceStartTime.value).replace(" ", "T"));
+  const startDay = new Date(start.getFullYear(), start.getMonth(), start.getDate()).getTime();
+  return date.getTime() < startDay;
+}
 
 function onPaneDown(e) {
   paneDownAt = [e.clientX, e.clientY];
@@ -282,7 +486,38 @@ function onPaneClick(i, e) {
   if (layout.value === "1") return;
   if (e.target.closest(".layer-card")) return;
   if (paneDownAt && Math.hypot(e.clientX - paneDownAt[0], e.clientY - paneDownAt[1]) > 5) return;
-  selectedPane.value = selectedPane.value === i ? -1 : i;
+  const deselecting = selectedPane.value === i;
+  if (deselecting) {
+    clearPaneOverride(i);
+    selectedPane.value = -1;
+  } else {
+    selectedPane.value = i;
+  }
+  if (dockOpen.value && tool.value === "select") {
+    resetCatalogFilters();
+    dataResources.value = [];
+    refreshDataResources();
+  }
+}
+
+function clearPaneOverride(pane) {
+  const nextPaneSources = { ...paneSources.value };
+  const nextPaneParsed = { ...paneParsed.value };
+  const nextPaneDisplays = { ...paneDisplays.value };
+  const nextPaneLabels = { ...paneLabels.value };
+  delete nextPaneSources[pane];
+  delete nextPaneParsed[pane];
+  delete nextPaneDisplays[pane];
+  delete nextPaneLabels[pane];
+  paneSources.value = nextPaneSources;
+  paneParsed.value = nextPaneParsed;
+  paneDisplays.value = nextPaneDisplays;
+  paneLabels.value = nextPaneLabels;
+  paneFramePreloads.delete(pane);
+
+  // 取消独立屏时，忽略它尚未返回的资源请求。
+  resourceRequestId += 1;
+  resourcesLoading.value = false;
 }
 
 function onViewChange(i, view) {
@@ -309,6 +544,56 @@ function updatePaneLabel(paneIndex, key, payload) {
     const src = sources.find(s => s.key === key);
     paneLabels.value = {...paneLabels.value, [paneIndex]: `${src?.btn || key} · ${label}`};
   }
+}
+
+function collectFrameImageUrls(payload) {
+  const urls = new Set();
+  const add = value => {
+    if (typeof value !== "string") return;
+    const url = value.trim();
+    if (/\.(?:webp|png|jpe?g)(?:[?#].*)?$/i.test(url) || url.startsWith("data:image/")) urls.add(url);
+  };
+  const scanContainer = container => {
+    if (!container || typeof container !== "object") return;
+    [container.image_url, container.webp_url, container.png_url, container.image, container.webp].forEach(add);
+    [container.image_urls, container.webp_urls, container.png_urls].forEach(items => {
+      if (Array.isArray(items)) items.forEach(add);
+    });
+    if (Array.isArray(container.frames)) {
+      container.frames.forEach(frame => {
+        if (!frame || typeof frame !== "object") return;
+        [frame.url, frame.image_url, frame.webp_url, frame.png_url, frame.image, frame.webp].forEach(add);
+      });
+    }
+  };
+
+  scanContainer(payload);
+  scanContainer(payload?.meta);
+  scanContainer(payload?.meta_json);
+  scanContainer(payload?.weather_info);
+  scanContainer(preferredVariableLayer(payload));
+  return [...urls];
+}
+
+function schedulePaneFramePreload(paneIndex, payload) {
+  const urls = collectFrameImageUrls(payload);
+  const imageJob = preloadFrames(urls);
+  const sourceJob = payload?.frame_preload_promise;
+  const job = Promise.all([
+    imageJob,
+    sourceJob && typeof sourceJob.then === "function" ? sourceJob : Promise.resolve(),
+  ]).catch(error => {
+    console.warn("Frame preload failed:", error);
+    return [{ total: urls.length, loaded: 0, failed: urls.length }];
+  });
+  paneFramePreloads.set(paneIndex, job);
+  return job;
+}
+
+async function waitForCurrentPaneFrames() {
+  const paneCount = Math.max(1, Number(layout.value) || 1);
+  const jobs = Array.from({ length: paneCount }, (_, index) => paneFramePreloads.get(index)).filter(Boolean);
+  await Promise.all(jobs);
 }
 
 function onLayerDisplayLoaded(paneIndex, key, payload) {
@@ -344,6 +629,7 @@ function onLayerDisplayLoaded(paneIndex, key, payload) {
   };
 
   updatePaneLabel(paneIndex, key, normalizedPayload);
+  schedulePaneFramePreload(paneIndex, normalizedPayload);
 
   if (
     switching.value &&
@@ -379,6 +665,7 @@ function onLayerVariableChange(paneIndex, key, payload) {
   if (!payload) return;
 
   updatePaneLabel(paneIndex, key, payload);
+  schedulePaneFramePreload(paneIndex, payload);
   paneDisplays.value = {
     ...paneDisplays.value,
     [paneIndex]: {
@@ -520,6 +807,11 @@ function formatAxisTime(value) {
   return text.slice(0, 16) || text;
 }
 
+const selectedResourceTimes = computed(() => {
+  if (!selectedResource.value || parsedLayerKey.value !== active.value) return [];
+  return Array.isArray(selectedResource.value.times) ? selectedResource.value.times : [];
+});
+
 const activeLayerTimes = computed(() => {
   // 当前图层选择（例如从 t2m 切换到 tp）优先，避免与上传解析快照混合后帧数错位。
   const displayTimes = collectTimes(layerDisplays.value[active.value]);
@@ -537,6 +829,11 @@ const activeLayerTimes = computed(() => {
 });
 
 const axisTimes = computed(() => {
+  if (selectedResource.value && parsedLayerKey.value === active.value) {
+    const times = selectedResourceTimes.value;
+    return times.length ? times.map(formatAxisTime) : ["无有效时间"];
+  }
+
   if (active.value === "himawari" && himawariTimeline.value.length) {
     return himawariTimeline.value.map(item => item.label);
   }
@@ -913,19 +1210,49 @@ function setTimeIndex(v) {
   cmaPlaybackWaiting.value = false;
 }
 
-function togglePlaying() {
+async function togglePlaying() {
+  if (playing.value) {
+    playing.value = false;
+    return;
+  }
+
+  if (playingPreparing.value) return;
+
+  if (selectedResource.value && parsedLayerKey.value === active.value && !selectedResource.value.playable) {
+    const firstGap = selectedResource.value.gaps?.[0];
+    const gapDetail = firstGap
+      ? `缺少 ${formatAxisTime(firstGap.after)} 与 ${formatAxisTime(firstGap.before)} 之间的时次。`
+      : selectedResource.value.reason;
+    ElNotification({
+      title: "无法播放",
+      message: gapDetail || "时间序列不连续，请补齐数据后再播放。",
+      type: "warning",
+      position: "top-right",
+      duration: 3200,
+    });
+    return;
+  }
+
+  playingPreparing.value = true;
+  try {
+    await waitForCurrentPaneFrames();
+  } finally {
+    playingPreparing.value = false;
+  }
+
   if (!playing.value && active.value === "cma" && layerResolutions.value.cma !== "native") {
     layerResolutions.value = {
       ...layerResolutions.value,
       cma: "native",
     };
   }
-  playing.value = !playing.value;
+  playing.value = true;
 }
 
 function resetTimebar() {
   clearInterval(animTimer);
   playing.value = false;
+  playingPreparing.value = false;
   tIndex.value = 0;
   animPos.value = 0;
   cmaPlaybackWaiting.value = false;
@@ -1005,23 +1332,6 @@ onBeforeUnmount(() => {
   cmaPlaybackWaiting.value = false;
   clearTimeout(switchingTimer);
 });
-
-function businessTypeToLayerKey(type) {
-  const t = String(type || "").toUpperCase();
-
-  if (t === "GFS") return "gfs";
-  if (t === "ECMWF" || t === "EC" || t === "IFS") return "ecmwf";
-  // 历史兼容：旧接口仍返回 GFS/ECMWF 时，默认放到 GFS 页面。
-  if (t === "GFS/ECMWF" || t === "GRIB") return "gfs";
-  if (t === "ERA5") return "era5";
-  if (t === "CMA") return "cma";
-  if (t === "RADAR") return "radar";
-  if (t === "FY3" || t === "FY-3") return "fy3";
-  if (t === "HIMAWARI") return "himawari";
-  if (t === "WRF") return "wrf";
-
-  return active.value;
-}
 
 function extractOverviewGribFileName(value) {
   if (!value) return "";
@@ -1215,6 +1525,9 @@ const meta = computed(() => {
     const paneDisplay = paneDisplays.value[selectedPane.value];
     const paneMeta = paneDisplay?.meta || paneDisplay?.weather_info || null;
     if (paneMeta) return paneMeta;
+    const paneResource = paneParsed.value[selectedPane.value];
+    if (paneResource?.parsed) return normalizeParsedMeta(paneResource.parsed);
+    return sourceFallbackInfo(catalogSourceKey.value);
   }
 
   const display = layerDisplays.value[active.value];
@@ -1259,10 +1572,14 @@ const meta = computed(() => {
     return displayMeta;
   }
 
-  return infos[active.value];
+  return sourceFallbackInfo(active.value);
 });
 
 const processing = computed(() => {
+  if (layout.value !== "1" && selectedPane.value >= 0) {
+    const paneResource = paneParsed.value[selectedPane.value];
+    if (paneResource?.processing) return paneResource.processing;
+  }
   if (parseProcessing.value) {
     return parseProcessing.value;
   }
@@ -1270,60 +1587,49 @@ const processing = computed(() => {
   return defaultProcessing;
 });
 
-const variableOptions = computed(() => {
-  const displayVars = layerDisplays.value[active.value]?.variables;
-  if (Array.isArray(displayVars) && displayVars.length) {
-    return displayVars.map(item => {
-      if (typeof item === "string") return item;
-      const name = item?.name || item?.value || item?.key || "";
-      const label = item?.label || item?.element || "";
-      return label && label !== name ? `${name} - ${label}` : name;
-    }).filter(Boolean);
-  }
-  const text = meta.value?.element || infos[active.value]?.element || "";
-  return String(text).split("、").filter(Boolean);
-});
-
-function layerParsed(key) {
-  if (!parsed.value || parsedLayerKey.value !== key) {
+function layerParsed(key, paneIndex = 0) {
+  const paneResource = layout.value !== "1" ? paneParsed.value[paneIndex] : null;
+  const source = paneResource?.key === key ? paneResource.parsed : parsed.value;
+  const sourceKey = paneResource?.key === key ? paneResource.key : parsedLayerKey.value;
+  if (!source || sourceKey !== key) {
     return null;
   }
 
   // GFS / ECMWF 上传接口外层是 { file_name, business_type, meta, weather_info }。
   // GribLayer 需要直接读取 compact meta v2，因此只对这两个数据源解包。
-  if (isGribLayerKey(key) && parsed.value?.meta?.variable_layers) {
+  if (isGribLayerKey(key) && source?.meta?.variable_layers) {
     return {
-      ...parsed.value.meta,
+      ...source.meta,
       file_name:
-        resolveOverviewFileName(parsed.value) ||
-        parsed.value.file_name ||
-        parsed.value.filename ||
-        parsed.value.file ||
-        parsed.value.meta.file_name ||
-        parsed.value.meta.filename ||
-        parsed.value.meta.file,
+        resolveOverviewFileName(source) ||
+        source.file_name ||
+        source.filename ||
+        source.file ||
+        source.meta.file_name ||
+        source.meta.filename ||
+        source.meta.file,
       file:
-        resolveOverviewFileName(parsed.value) ||
-        parsed.value.file ||
-        parsed.value.file_name ||
-        parsed.value.meta.file ||
-        parsed.value.meta.file_name,
+        resolveOverviewFileName(source) ||
+        source.file ||
+        source.file_name ||
+        source.meta.file ||
+        source.meta.file_name,
       business_type:
-        parsed.value.business_type ||
-        parsed.value.meta.business_type,
+        source.business_type ||
+        source.meta.business_type,
       data_type:
-        parsed.value.data_type ||
-        parsed.value.meta.data_type,
+        source.data_type ||
+        source.meta.data_type,
       source:
-        parsed.value.source ||
-        parsed.value.meta.source,
+        source.source ||
+        source.meta.source,
       weather_info:
-        parsed.value.weather_info ||
-        parsed.value.meta.weather_info,
+        source.weather_info ||
+        source.meta.weather_info,
     };
   }
 
-  return parsed.value;
+  return source;
 }
 
 const selectedHimawariSceneId = computed(() => {
@@ -1341,16 +1647,19 @@ function layerProps(key) {
     sceneId: selectedHimawariSceneId.value,
     resolution: layerResolutions.value.himawari || "original",
     refreshKey: layerRefreshKeys.value.himawari || 0,
+    onResolutionChange: value => onLayerResolutionChange(key, value),
   };
   if (key === "fy3") return {
     sceneId: focusedFY3SceneId.value,
     resolution: layerResolutions.value.fy3 || "original",
     refreshKey: layerRefreshKeys.value.fy3 || 0,
+    onResolutionChange: value => onLayerResolutionChange(key, value),
   };
   if (key === "cma") {
     return {
       resolution: layerResolutions.value.cma || "native",
       playing: playing.value,
+      onResolutionChange: value => onLayerResolutionChange(key, value),
     };
   }
   return {};
@@ -1487,12 +1796,6 @@ function formatBeijingTime(date) {
   return `${mm}-${dd} ${hh}:${mi}`;
 }
 
-const pickerActive = computed(() =>
-  layout.value !== "1" && selectedPane.value >= 0
-    ? (paneSources.value[selectedPane.value] || active.value)
-    : active.value
-);
-
 const panes = computed(() => {
   const base = sources.find(source => source.key === active.value);
   if (!base) return [];
@@ -1523,8 +1826,7 @@ const mapsGrid = computed(() => {
 });
 
 const dockTitle = computed(() => ({
-  file: "选择文件",
-  data: "数据类型",
+  select: "数据源",
   proj: "投影方式",
   base: "底图图层"
 }[tool.value]));
@@ -1541,6 +1843,7 @@ function cycleLayout() {
   selectedPane.value = -1;
   paneSources.value = {};
   paneDisplays.value = {};
+  paneParsed.value = {};
 }
 
 function openTool(name) {
@@ -1548,6 +1851,193 @@ function openTool(name) {
   else {
     tool.value = name;
     dockOpen.value = true;
+    if (name === "select") refreshDataResources({ autoSelect: true });
+  }
+}
+
+function sourceDataType(key = active.value) {
+  const source = sources.find(item => item.key === key);
+  return source?.dataType || ({ radar: "Radar", himawari: "Himawari", fy3: "FY3" }[key] || key.toUpperCase());
+}
+
+function formatFileSize(value) {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes < 0) return "—";
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+function resourceTimeRange(item) {
+  if (!item?.time_start) return "无有效时间";
+  const start = formatAxisTime(item.time_start);
+  const end = formatAxisTime(item.time_end);
+  return start === end ? start : `${start} 至 ${end}`;
+}
+
+function resourceStatus(item) {
+  if (item.frame_count < 2) return `${item.frame_count || 0} 帧`;
+  return item.continuous ? `${item.frame_count} 帧连续` : `${item.frame_count} 帧有断点`;
+}
+
+function resourceRenderKey(key, paneIndex = 0) {
+  const paneResource = layout.value !== "1" ? paneParsed.value[paneIndex] : null;
+  if (paneResource?.key === key) return paneResource.fileUuid;
+  return parsedLayerKey.value === key ? selectedResourceUuid.value : "latest";
+}
+
+function clearSelectedResource() {
+  selectedResource.value = null;
+  selectedResourceUuid.value = "";
+  parsed.value = null;
+  parsedLayerKey.value = null;
+  parseProcessing.value = null;
+}
+
+function resetCatalogFilters() {
+  resourceStartTime.value = "";
+  resourceEndTime.value = "";
+  attributeFilters.value = {};
+}
+
+function selectCatalogSource(key) {
+  resetCatalogFilters();
+  if (key === catalogSourceKey.value) {
+    clearCatalogResourceSelection();
+    dataResources.value = [];
+    refreshDataResources({ autoSelect: true });
+    return;
+  }
+  selectSource(key);
+}
+
+function clearCatalogResourceSelection() {
+  resetTimebar();
+  if (layout.value !== "1" && selectedPane.value >= 0) {
+    const pane = selectedPane.value;
+    const nextPaneParsed = { ...paneParsed.value };
+    delete nextPaneParsed[pane];
+    paneParsed.value = nextPaneParsed;
+    paneDisplays.value = { ...paneDisplays.value, [pane]: null };
+    return;
+  }
+
+  clearSelectedResource();
+  layerDisplays.value = { ...layerDisplays.value, [catalogSourceKey.value]: null };
+}
+
+function resourceRequest(item) {
+  if (!Array.isArray(item?.members) || item.members.length === 0 || !resourceStartTime.value || !resourceEndTime.value) return item;
+  const fileUuids = item.members
+    .filter(member => overlapsSelectedTime(member))
+    .map(member => member.file_uuid)
+    .filter(Boolean);
+  return { ...item, file_uuids: fileUuids };
+}
+
+function resourceWithSelectionDefaults(resource) {
+  const defaultResolution = attributeFilters.value.resolutions;
+  if (!defaultResolution) return resource;
+  return {
+    ...resource,
+    meta: {
+      ...(resource.meta || {}),
+      default_resolution: defaultResolution,
+    },
+  };
+}
+
+async function refreshDataResources(options = {}) {
+  const requestId = ++resourceRequestId;
+  resourcesLoading.value = true;
+  resourcesError.value = "";
+  try {
+    const hasTimeRange = resourceStartTime.value && resourceEndTime.value;
+    const result = await getDisplayResources(sourceDataType(catalogSourceKey.value), {
+      timeStart: hasTimeRange ? new Date(timestamp(resourceStartTime.value)).toISOString().slice(0, 19) : "",
+      timeEnd: hasTimeRange ? new Date(timestamp(resourceEndTime.value)).toISOString().slice(0, 19) : "",
+    });
+    if (requestId !== resourceRequestId) return;
+    dataResources.value = result.items || [];
+    if (layout.value === "1" && selectedResourceUuid.value && !dataResources.value.some(item => item.file_uuid === selectedResourceUuid.value)) {
+      clearSelectedResource();
+    }
+    const defaultResource = options.autoSelect && !hasTimeRange && !catalogSelectedResourceUuid.value
+      ? filteredDataResources.value[0]
+      : null;
+    if (defaultResource) {
+      // 先结束列表请求状态，否则 selectDataResource 会因加载中而直接返回。
+      resourcesLoading.value = false;
+      await selectDataResource(defaultResource);
+    }
+  } catch (err) {
+    if (requestId !== resourceRequestId) return;
+    dataResources.value = [];
+    resourcesError.value = err?.message || "数据读取失败";
+  } finally {
+    if (requestId === resourceRequestId) resourcesLoading.value = false;
+  }
+}
+
+function parsedResourcePayload(resource, sourceKey = catalogSourceKey.value) {
+  const meta = resource.meta || {};
+  const common = {
+    file_name: resource.file_name,
+    file: resource.file_name,
+    business_type: resource.data_type,
+    data_type: resource.data_type,
+    meta_file: resource.meta_path,
+    meta,
+    meta_json: meta,
+  };
+  return isGribLayerKey(sourceKey) ? { ...common, meta } : { ...meta, ...common };
+}
+
+async function selectDataResource(item) {
+  if (!item?.file_uuid || resourcesLoading.value) return;
+  const targetPane = layout.value !== "1" && selectedPane.value >= 0 ? selectedPane.value : -1;
+  const targetSource = catalogSourceKey.value;
+  if (targetPane < 0) selectedResourceUuid.value = item.file_uuid;
+  resourcesLoading.value = true;
+  resourcesError.value = "";
+  const requestId = ++resourceRequestId;
+  try {
+    const resource = resourceWithSelectionDefaults(await getDisplayResource(resourceRequest(item)));
+    if (requestId !== resourceRequestId) return;
+    resetTimebar();
+    const nextProcessing = [
+      {step: "上传/下载", state: "已入库", t: resource.create_time || "", ok: true},
+      {step: "解析", state: "成功", t: resource.parse_finished_at || "", ok: true},
+      {step: "渲染 WEBP", state: `${resource.webp_count || 0} 个资源`, t: "", ok: true},
+      {step: "前端展示", state: "已加载首帧", t: "实时", ok: true},
+    ];
+    const nextParsed = parsedResourcePayload(resource, targetSource);
+    if (targetPane >= 0) {
+      paneParsed.value = {
+        ...paneParsed.value,
+        [targetPane]: {
+          key: targetSource,
+          parsed: nextParsed,
+          resource,
+          fileUuid: item.file_uuid,
+          processing: nextProcessing,
+        },
+      };
+      paneDisplays.value = { ...paneDisplays.value, [targetPane]: null };
+    } else {
+      selectedResource.value = resource;
+      parsed.value = nextParsed;
+      parsedLayerKey.value = targetSource;
+      layerDisplays.value = { ...layerDisplays.value, [targetSource]: null };
+      parseProcessing.value = nextProcessing;
+    }
+    setTimeIndex(0);
+  } catch (err) {
+    if (requestId !== resourceRequestId) return;
+    if (targetPane < 0) clearSelectedResource();
+    resourcesError.value = err?.message || "数据加载失败";
+  } finally {
+    if (requestId === resourceRequestId) resourcesLoading.value = false;
   }
 }
 
@@ -1559,10 +2049,15 @@ function selectSource(key) {
     paneSources.value = { ...paneSources.value, [pane]: key };
     paneLabels.value = { ...paneLabels.value, [pane]: "" };
     paneDisplays.value = { ...paneDisplays.value, [pane]: null };
+    const nextPaneParsed = { ...paneParsed.value };
+    delete nextPaneParsed[pane];
+    paneParsed.value = nextPaneParsed;
+    dataResources.value = [];
     switching.value = true;
     clearTimeout(switchingTimer);
     switchingTimer = setTimeout(() => { switching.value = false; }, 10000);
     switchingTarget = { pane, key };
+    if (dockOpen.value && tool.value === "select") refreshDataResources({ autoSelect: true });
     return;
   }
   if (key === active.value) return;
@@ -1577,230 +2072,16 @@ function selectSource(key) {
   switchingTimer = setTimeout(() => { switching.value = false; }, 10000);
   switchingTarget = { pane: 0, key };
   active.value = key;
-  parsed.value = null;
-  parsedLayerKey.value = null;
-  parseProcessing.value = null;
+  clearSelectedResource();
+  dataResources.value = [];
   paneLabels.value = {};
   paneSources.value = {};
   paneDisplays.value = {};
-}
-
-function pickFile(i) {
-  selected.value = i;
-  resetTimebar();
-  active.value = files[i].key;
-  if (active.value === "fy3") {
-    focusedFY3SceneId.value = "";
-    fy3FocusApplied.value = false;
-  }
-  if (active.value === "himawari") pendingHimawariSceneId.value = "";
-  parsed.value = null;
-  parsedLayerKey.value = null;
-  parseProcessing.value = null;
-}
-
-function choose(e) {
-  file.value = Array.from(e.target.files || []);
-}
-
-function rawBusinessType(files) {
-  const names = files.map(item => String(item?.name || ""));
-  const isFY3 = name => /^FY3[A-Z]_MERSI_GBAL_L1_\d{8}_\d{4}_(?:1000M_MS|GEO1K_MS)\.HDF$/i.test(name);
-  const isHimawari = name => /^HS_H\d{2}_\d{8}_\d{4}_B\d{2}_[A-Z0-9]+_R\d{2}_S\d{4}\.DAT(?:_\d+)?(?:\.bz2)?$/i.test(name);
-
-  if (names.length && names.every(isFY3)) return "FY3";
-  if (names.length && names.every(isHimawari)) return "Himawari";
-  if (names.some(isFY3) || names.some(isHimawari)) {
-    throw new Error("FY-3、Himawari 原始文件不能与其他类型混合上传，请分别提交。");
-  }
-  return "";
-}
-
-async function parse() {
-  const uploadFiles = Array.isArray(file.value) ? file.value : [file.value].filter(Boolean);
-  if (!uploadFiles.length) return;
-
-  let rawType = "";
-  try {
-    rawType = rawBusinessType(uploadFiles);
-  } catch (err) {
-    parseProcessing.value = [
-      {step: "上传/读取", state: err?.message || "文件类型不一致", t: new Date().toLocaleTimeString(), ok: false},
-      {step: "解析", state: "未开始", t: "", ok: false},
-      {step: "渲染 WEBP", state: "未开始", t: "", ok: false},
-      {step: "前端展示", state: "未开始", t: "", ok: false},
-    ];
-    return;
-  }
-
-  if (rawType) {
-    let rawUploadSucceeded = false;
-    let uploadedFileCount = 0;
-    parseProcessing.value = [
-      {step: "上传/读取", state: "上传原始数据中", t: "", ok: false, running: true},
-      {step: "解析", state: "等待上传完成", t: "", ok: false},
-      {step: "渲染 WEBP", state: "等待解析", t: "", ok: false},
-      {step: "前端展示", state: "等待解析完成", t: "", ok: false},
-    ];
-
-    try {
-      const result = await uploadRawFiles(uploadFiles, rawType);
-      rawUploadSucceeded = true;
-      uploadedFileCount = Number(result.file_count || 0);
-      const scenes = Array.isArray(result?.scenes) ? result.scenes : [];
-      const readyScenes = scenes.filter(scene => scene?.complete);
-      const incompleteScenes = scenes.filter(scene => !scene?.complete);
-      if (!readyScenes.length) {
-        const detail = incompleteScenes
-          .map(scene => `${scene.scene_id} 缺少 ${(scene.missing || []).join("、")}`)
-          .join("；");
-        throw new Error(detail || "原始文件尚未组成完整场景");
-      }
-
-      parseProcessing.value = [
-        {step: "上传/读取", state: `成功：${uploadedFileCount} 个原始文件`, t: new Date().toLocaleTimeString(), ok: true},
-        {step: "解析", state: "解析中", t: "", ok: false, running: true},
-        {step: "渲染 WEBP", state: "等待解析", t: "", ok: false},
-        {step: "前端展示", state: "等待解析完成", t: "", ok: false},
-      ];
-
-      const sceneIds = readyScenes.map(scene => scene.scene_id).filter(Boolean);
-      let updateResult;
-      let taskState = "completed";
-      if (rawType === "FY3") {
-        const task = await startFY3ParseTask(sceneIds);
-        const finishedTask = await waitForFY3ParseTask(task.task_id, {
-          onProgress(current) {
-            const progress = Number(current?.progress || 0).toFixed(1);
-            const detail = [current?.current_scene, current?.current_band].filter(Boolean).join(" · ");
-            parseProcessing.value = [
-              {step: "上传/读取", state: `成功：${uploadedFileCount} 个原始文件`, t: new Date().toLocaleTimeString(), ok: true},
-              {step: "解析", state: `${progress}%${detail ? ` · ${detail}` : ""}`, t: "后台任务", ok: false, running: true},
-              {step: "渲染 WEBP", state: "随波段生成", t: "", ok: false, running: true},
-              {step: "前端展示", state: "等待任务完成", t: "", ok: false},
-            ];
-          },
-        });
-        taskState = finishedTask.state;
-        updateResult = finishedTask.result || {};
-        if (taskState === "failed" || (!updateResult.results?.length && finishedTask.error)) {
-          throw new Error(finishedTask.error || "FY-3 解析任务失败");
-        }
-      } else {
-        updateResult = await updateDisplayFromRaw(rawType, {sceneIds});
-      }
-
-      const completedIds = (updateResult.results || [])
-        .filter(item => item?.status === "ok" || item?.status === "cached")
-        .map(item => item.scene_id)
-        .filter(Boolean);
-      const displayableIds = Array.isArray(updateResult.displayable_scene_ids)
-        ? updateResult.displayable_scene_ids
-        : (updateResult.results || [])
-          .filter(item => (item?.status === "ok" || item?.status === "cached") && item?.displayable !== false)
-          .map(item => item.scene_id)
-          .filter(Boolean);
-      const noCoverageIds = Array.isArray(updateResult.no_coverage_scene_ids)
-        ? updateResult.no_coverage_scene_ids
-        : completedIds.filter(sceneId => !displayableIds.includes(sceneId));
-      const focusedSceneId = displayableIds.at(-1) || completedIds.at(-1) || sceneIds.at(-1) || "";
-      const layerKey = businessTypeToLayerKey(rawType);
-
-      parsed.value = null;
-      parsedLayerKey.value = null;
-      resetTimebar();
-      active.value = layerKey;
-      if (layerKey === "himawari") pendingHimawariSceneId.value = focusedSceneId;
-      if (layerKey === "fy3") {
-        focusedFY3SceneId.value = focusedSceneId;
-        fy3FocusApplied.value = false;
-      }
-      layerRefreshKeys.value = {
-        ...layerRefreshKeys.value,
-        [layerKey]: (layerRefreshKeys.value[layerKey] || 0) + 1,
-      };
-      parseProcessing.value = [
-        {step: "上传/读取", state: `成功：${uploadedFileCount} 个原始文件`, t: new Date().toLocaleTimeString(), ok: true},
-        {
-          step: "解析",
-          state: `${taskState === "partial" ? "部分完成" : "成功"}：${completedIds.length || readyScenes.length} 个场景${noCoverageIds.length ? `，${noCoverageIds.length} 个无区域覆盖` : ""}`,
-          t: new Date().toLocaleTimeString(),
-          ok: taskState !== "partial",
-        },
-        {step: "渲染 WEBP", state: displayableIds.length ? "成功" : "无有效覆盖图像", t: new Date().toLocaleTimeString(), ok: Boolean(displayableIds.length)},
-        {step: "前端展示", state: focusedSceneId ? `显示 ${focusedSceneId}` : "无可展示场景", t: "实时", ok: Boolean(focusedSceneId)},
-      ];
-    } catch (err) {
-      console.error("raw 上传或解析失败：", err);
-      parseProcessing.value = [
-        {
-          step: "上传/读取",
-          state: rawUploadSucceeded ? `成功：${uploadedFileCount} 个原始文件` : (err?.message || "上传失败"),
-          t: new Date().toLocaleTimeString(),
-          ok: rawUploadSucceeded,
-        },
-        {
-          step: "解析",
-          state: rawUploadSucceeded ? (err?.message || "解析失败") : "未开始",
-          t: rawUploadSucceeded ? new Date().toLocaleTimeString() : "",
-          ok: false,
-        },
-        {step: "渲染 WEBP", state: "未生成", t: "", ok: false},
-        {step: "前端展示", state: "未生成", t: "", ok: false},
-      ];
-    }
-    return;
-  }
-
-  parseProcessing.value = [
-    {step: "上传/读取", state: "本地文件", t: new Date().toLocaleTimeString(), ok: true},
-    {step: "解析", state: "解析中", t: "", ok: false, running: true},
-    {step: "渲染 WEBP", state: "等待", t: "", ok: false},
-    {step: "前端展示", state: "等待", t: "", ok: false},
-  ];
-
-  try {
-    const result = await parseFile(uploadFiles);
-
-    const businessType =
-        result?.business_type ||
-        result?.data_type ||
-        result?.meta?.business_type ||
-        result?.meta?.data_type;
-
-    const layerKey = businessTypeToLayerKey(businessType);
-    if (layerKey === "radar") {
-      layerDisplays.value = {...layerDisplays.value, radar: null};
-    }
-
-    parsed.value = result;
-    parsedLayerKey.value = layerKey;
-    resetTimebar();
-    active.value = layerKey;
-
-    parseProcessing.value = [
-      {step: "上传/读取", state: "成功", t: new Date().toLocaleTimeString(), ok: true},
-      {step: "解析", state: "成功", t: new Date().toLocaleTimeString(), ok: true},
-      {step: "渲染 WEBP", state: "成功", t: new Date().toLocaleTimeString(), ok: true},
-      {step: "前端展示", state: "完成", t: "实时", ok: true},
-    ];
-
-    setTimeIndex(0);
-  } catch (err) {
-    console.error("解析失败：", err);
-
-    parseProcessing.value = [
-      {step: "上传/读取", state: "成功", t: new Date().toLocaleTimeString(), ok: true},
-      {step: "解析", state: err?.message || "失败", t: new Date().toLocaleTimeString(), ok: false},
-      {step: "渲染 WEBP", state: "未完成", t: "", ok: false},
-      {step: "前端展示", state: "未完成", t: "", ok: false},
-    ];
-  }
+  paneParsed.value = {};
+  if (dockOpen.value && tool.value === "select") refreshDataResources({ autoSelect: true });
 }
 
 watch(active, () => {
-  const opts = variableOptions.value;
-  variable.value = opts[0] || "";
   cmaPlaybackWaiting.value = false;
   setTimeIndex(tIndex.value);
   if (playing.value) startAnim();
@@ -1824,140 +2105,50 @@ watch(active, () => {
 .rail button:hover { color: var(--text); background: var(--field); }
 .rail button.on { color: #fff; background: var(--accent); }
 
-.dock { flex-shrink: 0; width: 250px; display: flex; flex-direction: column; gap: 11px; padding: 15px; overflow-y: auto; scrollbar-width: none; }
-.dock::-webkit-scrollbar { display: none; }
+.dock { flex-shrink: 0; width: 300px; display: flex; flex-direction: column; gap: 11px; padding: 15px; overflow: hidden; }
 .dock-head { display: flex; align-items: center; justify-content: space-between; }
 .dock-head h3 { margin: 0; font-size: 15px; }
 .dock-head .el-icon { cursor: pointer; color: var(--muted); }
-.path { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-radius: 10px; background: var(--field); color: var(--muted); }
-.path input { flex: 1; min-width: 0; border: 0; background: transparent; color: var(--text); font: inherit; outline: none; }
-.list-head { display: flex; align-items: center; justify-content: space-between; color: var(--muted); font-size: 12px; }
-.list-head .el-icon { cursor: pointer; }
-.files { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
-.files li { display: flex; align-items: center; gap: 9px; padding: 9px 10px; border-radius: 10px; cursor: pointer; background: var(--field); border: 1px solid transparent; transition: 0.15s; }
-.files li.sel { border-color: var(--accent); background: var(--accent-soft); }
-.files .dot { width: 11px; height: 11px; border-radius: 50%; border: 2px solid var(--muted); flex-shrink: 0; }
-.files li.sel .dot { border-color: var(--accent); background: var(--accent); }
-.files b { display: block; font-size: 12px; font-weight: 500; word-break: break-all; }
-.files span { font-size: 11px; color: var(--muted); }
-.upload { padding: 8px; border: 1px dashed var(--border); border-radius: 10px; color: var(--muted); font-size: 12px; cursor: pointer; text-align: center; }
-.parse { width: 100%; }
-.hint { margin: 0; color: var(--muted); font-size: 11px; text-align: center; }
-.vars { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.vars :deep(.el-select) { width: 100%; }
-.pick-hint { margin: 0; color: var(--muted); font-size: 12px; }
-.picker { display: flex; flex-direction: column; gap: 6px; }
-.picker button { display: flex; align-items: center; justify-content: space-between; padding: 11px 13px; border: 1px solid var(--border); border-radius: 10px; background: var(--field); color: var(--text); font: inherit; font-size: 13px; cursor: pointer; transition: 0.15s; }
-.picker button:hover { border-color: var(--accent); }
-.picker button.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
-.picker button:disabled { opacity: 0.38; cursor: not-allowed; }
-.picker button:disabled:hover { border-color: var(--border); background: var(--field); color: var(--text); }
-.soon-tag { font-size: 10px; color: var(--muted); }
-.picker button .el-icon { font-size: 15px; }
-
-.center { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
-.maps { flex: 1; min-height: 0; display: grid; gap: 10px; }
-.cell { position: relative; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; transition: border-color 0.18s, box-shadow 0.18s; }
-.cell.sel { border-color: var(--accent); box-shadow: inset 0 0 0 1.5px var(--accent), 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent), 0 0 18px color-mix(in srgb, var(--accent) 60%, transparent); }
-.app.dark .cell.sel { box-shadow: inset 0 0 0 1.5px var(--accent), 0 0 0 1px rgba(150, 205, 255, 0.6), 0 0 22px rgba(150, 205, 255, 0.8); }
-.cell-tag { position: absolute; top: 8px; right: 8px; z-index: 6; padding: 3px 9px; border: 1px solid rgba(255, 255, 255, 0.16); border-radius: 7px; background: rgba(16, 24, 38, 0.68); backdrop-filter: blur(10px); color: #eaf1fb; font-size: 11px; font-weight: 600; letter-spacing: 0.3px; pointer-events: none; }
-.cell-sel-tag { position: absolute; top: 8px; left: 8px; z-index: 6; display: flex; align-items: center; gap: 6px; padding: 3px 9px; border: 1px solid rgba(255, 255, 255, 0.16); border-radius: 7px; background: rgba(16, 24, 38, 0.68); backdrop-filter: blur(10px); color: #eaf1fb; font-size: 11px; font-weight: 600; letter-spacing: 0.5px; pointer-events: none; }
-.cell-sel-tag i { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 6px var(--accent); }
-.cell :deep(.projmap) { position: absolute; inset: 0; }
-
-.list-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.list-head .el-icon {
-  cursor: pointer;
-}
-
-.files {
-  display: grid;
-  gap: 6px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.files li {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 9px 10px;
-  border-radius: 10px;
-  cursor: pointer;
-  background: var(--field);
-  border: 1px solid transparent;
-  transition: 0.15s;
-}
-
-.files li.sel {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-}
-
-.files .dot {
-  width: 11px;
-  height: 11px;
-  border-radius: 50%;
-  border: 2px solid var(--muted);
-  flex-shrink: 0;
-}
-
-.files li.sel .dot {
-  border-color: var(--accent);
-  background: var(--accent);
-}
-
-.files b {
-  display: block;
-  font-size: 12px;
-  font-weight: 500;
-  word-break: break-all;
-}
-
-.files span {
-  font-size: 11px;
-  color: var(--muted);
-}
-
-.upload {
-  padding: 8px;
-  border: 1px dashed var(--border);
-  border-radius: 10px;
-  color: var(--muted);
-  font-size: 12px;
-  cursor: pointer;
-  text-align: center;
-}
-
-.parse {
-  width: 100%;
-}
-
-.hint {
-  margin: 0;
-  color: var(--muted);
-  font-size: 11px;
-  text-align: center;
-}
-
-.vars {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-}
-
-.vars :deep(.el-select) {
-  width: 100%;
-}
-
+.resource-filter { display: grid; gap: 9px; padding-bottom: 11px; border-bottom: 1px solid var(--border); }
+.filter-label { color: var(--muted); font-size: 11px; }
+.filter-field { display: grid; gap: 5px; min-width: 0; }
+.time-filter-row { display: grid; gap: 7px; }
+.data-type-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; }
+.data-type-grid button { min-width: 0; height: 30px; overflow: hidden; border: 1px solid var(--border); border-radius: 6px; background: var(--field); color: var(--text); font: inherit; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.data-type-grid button:hover { border-color: var(--accent); }
+.data-type-grid button.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.data-type-grid button:disabled { opacity: 0.4; cursor: not-allowed; }
+.resource-filter :deep(.el-date-editor),
+.resource-filter :deep(.el-select) { width: 100%; }
+.resource-filter :deep(.el-date-editor) { --el-date-editor-width: 100%; }
+.resource-filter :deep(.el-input__wrapper),
+.resource-filter :deep(.el-select__wrapper) { min-height: 30px; background: var(--field); box-shadow: 0 0 0 1px var(--border) inset; }
+.resource-filter :deep(.resource-time .el-input__wrapper) { min-height: 24px; }
+.resource-filter :deep(.el-range-input),
+.resource-filter :deep(.el-range-separator),
+.resource-filter :deep(.el-select__placeholder),
+.resource-filter :deep(.el-select__selected-item) { color: var(--text); font-size: 11px; }
+.resource-filter :deep(.el-date-editor .el-input__inner) { min-width: 0; font-size: 11px; }
+.resource-head { display: flex; align-items: center; justify-content: space-between; color: var(--muted); font-size: 12px; }
+.resource-head button { display: grid; place-items: center; width: 28px; height: 28px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; }
+.resource-head button:hover { color: var(--text); background: var(--field); }
+.resource-head button:disabled { cursor: wait; opacity: 0.55; }
+.resource-head .rotating { animation: resource-spin 0.8s linear infinite; }
+.resource-results { flex: 1; min-height: 0; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+.resource-results::-webkit-scrollbar { width: 5px; }
+.resource-results::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+.resource-state { margin: 0; padding: 18px 8px; color: var(--muted); font-size: 12px; text-align: center; }
+.resource-state.error { color: var(--danger, #dc2626); }
+.resource-list { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
+.resource-list li { display: grid; gap: 5px; min-width: 0; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--field); cursor: pointer; transition: 0.15s; }
+.resource-list li:hover { border-color: var(--accent); }
+.resource-list li.sel { border-color: var(--accent); background: var(--accent-soft); }
+.resource-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 7px; min-width: 0; }
+.resource-title b { min-width: 0; overflow: hidden; color: var(--text); font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.resource-list li > span { color: var(--muted); font-size: 11px; }
+.continuity { flex-shrink: 0; color: #15803d; font-size: 10px; }
+.continuity.gap { color: #b45309; }
+@keyframes resource-spin { to { transform: rotate(360deg); } }
 .pick-hint {
   margin: 0;
   color: var(--muted);
@@ -2035,6 +2226,16 @@ watch(active, () => {
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 14px;
+  transition: border-color 0.18s, box-shadow 0.18s;
+}
+
+.cell.sel {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1.5px var(--accent), 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent), 0 0 18px color-mix(in srgb, var(--accent) 60%, transparent);
+}
+
+.app.dark .cell.sel {
+  box-shadow: inset 0 0 0 1.5px var(--accent), 0 0 0 1px rgba(150, 205, 255, 0.6), 0 0 22px rgba(150, 205, 255, 0.8);
 }
 
 .cell-tag {
@@ -2052,6 +2253,34 @@ watch(active, () => {
   font-weight: 600;
   letter-spacing: 0.3px;
   pointer-events: none;
+}
+
+.cell-sel-tag {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 7px;
+  background: rgba(16, 24, 38, 0.68);
+  backdrop-filter: blur(10px);
+  color: #eaf1fb;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  pointer-events: none;
+}
+
+.cell-sel-tag i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
 }
 
 .cell :deep(.projmap) {

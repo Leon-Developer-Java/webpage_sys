@@ -7,7 +7,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, provide, ref, watch } from "vue";
-import { withToken } from "../api";
+import { getCachedFrame, preloadFrame } from "../utils/frameImageCache";
 
 const props = defineProps({
   projection: { type: String, default: "等经纬" },
@@ -391,7 +391,9 @@ defineExpose({ flyTo, zoomBy, home, screenToLonLat, clearData: () => { dataRef.v
 
 provide("mapSurface", {
   setData: (src, extent, alpha = 1, options = {}) => {
-    dataRef.value = src && extent ? { src, extent, alpha, ...options } : null;
+    const image = options.image || getCachedFrame(src);
+    dataRef.value = src && extent ? { src, extent, alpha, ...options, ...(image ? { image } : {}) } : null;
+    if (src && !image) preloadFrame(src);
   },
   clear: () => { dataRef.value = null; },
 });
@@ -420,7 +422,7 @@ function makeTexture(source, slot, lonBox, merc) {
   if (slot === 0) { baseTex = tex; hasBase = true; baseBox = lonBox; baseMerc = !!merc; } else { dataTex = tex; hasData = true; }
 }
 
-function loadDataTexture(payload, token) {
+async function loadDataTexture(payload, token) {
   const data = typeof payload === "string" ? { src: payload } : (payload || {});
   const source = data.image;
   if (source?.complete && source.naturalWidth) {
@@ -432,20 +434,14 @@ function loadDataTexture(payload, token) {
 
   const url = data.src;
   if (!url) return;
-  const img = new Image();
-  img.crossOrigin = "anonymous";
-  img.onload = () => {
-    if (token !== dataTextureToken) return;
-    makeTexture(img, 1);
-    render();
-  };
-  img.onerror = () => {
-    if (token !== dataTextureToken) return;
+  const img = await preloadFrame(url);
+  if (token !== dataTextureToken) return;
+  if (!img) {
     console.warn("Data texture load failed:", url);
-    hasData = false;
-    render();
-  };
-  img.src = withToken(url);
+    return;
+  }
+  makeTexture(img, 1);
+  render();
 }
 
 function visibleBox() {
@@ -673,7 +669,7 @@ watch(dataRef, () => {
   ++dataTextureToken;
   const source = dataRef.value?.image;
   const hasReadySource = source?.complete && source.naturalWidth;
-  if (!hasReadySource) {
+  if (!dataRef.value) {
     hasData = false;
     render();
   }

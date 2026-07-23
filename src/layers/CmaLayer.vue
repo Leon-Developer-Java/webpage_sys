@@ -59,11 +59,7 @@ let cacheRevision = 0;
 const displayCache = new Map();
 const pendingDisplays = new Map();
 const imageCache = new Map();
-const INITIAL_PRELOAD_AHEAD = 3;
-const PLAYING_PRELOAD_AHEAD = 6;
-const CACHE_BEHIND = 3;
-const CACHE_AHEAD = 8;
-const MAX_NATIVE_CACHE_FRAMES = 14;
+const FRAME_PRELOAD_CONCURRENCY = 4;
 
 const resolvedFile = computed(() => grid.value?.file || props.file || "");
 const currentMetaFile = computed(() => props.parsed?.meta?.meta_file || props.parsed?.meta_file || "");
@@ -223,7 +219,8 @@ function applyImageryLayer() {
     return;
   }
 
-  surface?.setData(imageUrl, extent, 1);
+  const cached = imageCache.get(imageUrl)?.image;
+  surface?.setData(imageUrl, extent, 1, cached?.complete && cached.naturalWidth ? { image: cached } : {});
   const [west, south, east, north] = extent;
   const dx = Math.max((east - west) * 0.35, 0.5);
   const dy = Math.max((north - south) * 0.35, 0.5);
@@ -275,7 +272,7 @@ function buildPanelInfo(data) {
   };
 }
 
-function emitDisplay(data) {
+function emitDisplay(data, framePreloadPromise = null) {
   const currentGrid = data?.grid || {};
   const panelInfo = buildPanelInfo(data);
   const elementDesc = [
@@ -338,6 +335,7 @@ function emitDisplay(data) {
     frames: data?.frames || [],
     variables: variables.value,
     frame_count: Array.isArray(data?.frames) ? data.frames.length : 0,
+    frame_preload_promise: framePreloadPromise,
   };
 
   emit("variable-change", payload);
@@ -352,6 +350,7 @@ function emitDisplay(data) {
     warnings: warnings.value,
     file: panelInfo.file,
     variable: currentGrid.variable || "",
+    frame_preload_promise: framePreloadPromise,
   });
 }
 
@@ -460,26 +459,27 @@ function dropCacheKeys(keys) {
   });
 }
 
-function preloadNativeFrames(data, variableName) {
+async function preloadNativeFrames(data, variableName) {
   if (selectedResolution.value !== "native") return;
   const count = frameCountOf(data);
   if (count <= 1) return;
-  const center = Math.min(Math.max(Number(props.timeIndex) || 0, 0), count - 1);
-  const ahead = props.playing ? PLAYING_PRELOAD_AHEAD : INITIAL_PRELOAD_AHEAD;
   const revision = cacheRevision;
-  trimNativeCache(center);
-  for (let offset = 1; offset <= ahead; offset += 1) {
-    const nextIndex = center + offset;
-    if (nextIndex >= count) break;
-    const key = cacheKey(variableName, props.levelIndex, nextIndex, "native");
-    if (displayCache.has(key)) continue;
-    fetchCachedDisplay(variableName, props.levelIndex, nextIndex, "native")
-      .then(() => {
-        if (revision !== cacheRevision) return;
-        trimNativeCache(center);
-      })
-      .catch(() => {});
-  }
+  const indices = Array.from({ length: count }, (_, index) => index);
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < indices.length && revision === cacheRevision) {
+      const index = indices[cursor];
+      cursor += 1;
+      const key = cacheKey(variableName, props.levelIndex, index, "native");
+      if (displayCache.has(key)) continue;
+      try {
+        await fetchCachedDisplay(variableName, props.levelIndex, index, "native");
+      } catch {
+        // 单帧失败不阻塞其余可播放帧的预加载。
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(FRAME_PRELOAD_CONCURRENCY, count) }, worker));
 }
 
 async function loadDisplay(variableName = selectedVariable.value) {
@@ -511,10 +511,11 @@ async function loadDisplay(variableName = selectedVariable.value) {
     grid.value = nextDisplay.grid || null;
     lastFrameCount.value = frameCountOf(nextDisplay);
     warnings.value = nextDisplay.warnings || nextDisplay.grid?.warnings || nextDisplay.weather_info?.warnings || [];
-    emitDisplay(nextDisplay);
+    await preloadImage(displayImagePath(nextDisplay));
+    if (requestId !== displayRequestId) return;
+    const framePreloadPromise = preloadNativeFrames(nextDisplay, nextVariable);
+    emitDisplay(nextDisplay, framePreloadPromise);
     applyImageryLayer();
-    preloadImage(displayImagePath(nextDisplay));
-    preloadNativeFrames(nextDisplay, nextVariable);
   } catch (err) {
     if (requestId !== displayRequestId) return;
     grid.value = null;

@@ -18,15 +18,15 @@
       >
         <el-icon class="dz-icon"><Upload /></el-icon>
         <p class="dz-title">拖拽文件到此处，或<em>点击选择</em></p>
-        <small class="dz-hint">支持 .cinrad / .nc / .grib2 / .hdf / .hsd 等格式，可多选</small>
+        <small class="dz-hint">支持 .cinrad / .nc / .grib2 / .hsd 等格式，可多选</small>
         <input ref="input" type="file" multiple hidden @change="onPick" />
       </div>
 
       <div class="file-section glass">
         <div class="sec-bar">
           <div class="tabs">
-            <button :class="{ on: tab === 'upload' }" @click="tab = 'upload'">待上传</button>
-            <button :class="{ on: tab === 'parse' }" @click="tab = 'parse'">待解析</button>
+            <button :class="{ on: tab === 'upload' }" @click="switchTab('upload')">待上传</button>
+            <button :class="{ on: tab === 'parse' }" @click="switchTab('parse')">待解析</button>
           </div>
           <span class="sec-info">
             {{ tab === 'upload'
@@ -35,6 +35,17 @@
           </span>
           <div class="bar-btns">
             <template v-if="tab === 'upload'">
+              <div v-if="checked.length >= 2" class="batch-type">
+                <el-select
+                  v-model="batchDataType"
+                  class="batch-type-select"
+                  size="small"
+                  placeholder="统一设置类型"
+                  title="统一设置数据类型"
+                >
+                  <el-option v-for="t in TYPES" :key="t" :label="t" :value="t" />
+                </el-select>
+              </div>
               <button class="act del" :disabled="!checked.length" @click="deleteChecked">
                 <el-icon><Delete /></el-icon>删除
               </button>
@@ -44,10 +55,10 @@
             </template>
             <template v-else>
               <button class="act del" :disabled="!pqChecked.length" @click="deletePqChecked">
-                <el-icon><Delete /></el-icon>移出列表
+                <el-icon><Delete /></el-icon>清除选择
               </button>
               <button class="act parse" :disabled="!pqChecked.length" @click="parsePqChecked">
-                <el-icon><DataAnalysis /></el-icon>解析选中
+                <el-icon><DataAnalysis /></el-icon>解析 / 重试
               </button>
             </template>
           </div>
@@ -58,7 +69,7 @@
             <colgroup>
               <col style="width:36px"><col>
               <col style="width:68px"><col style="width:90px">
-              <col style="width:130px"><col style="width:124px"><col style="width:76px">
+              <col style="width:130px"><col style="width:142px"><col style="width:76px">
             </colgroup>
             <thead>
               <tr>
@@ -92,10 +103,14 @@
                 <td>{{ f.size }}</td>
                 <td>{{ f.modified }}</td>
                 <td class="pin-l">
-                  <select class="type-sel" v-model="f.dataType" @click.stop :disabled="f.status !== 'pending'">
-                    <option value="">选择类型</option>
-                    <option v-for="t in TYPES" :key="t" :value="t">{{ t }}</option>
-                  </select>
+                  <div class="type-cell">
+                    <select class="type-sel" v-model="f.dataType" @click.stop @change="markTypeManual(f)" :disabled="f.status !== 'pending'">
+                      <option value="">选择类型</option>
+                      <option v-for="t in TYPES" :key="t" :value="t">{{ t }}</option>
+                    </select>
+                    <small v-if="f.typeDetected" :title="f.detectionReason">自动识别</small>
+                    <small v-else-if="!f.dataType" class="unresolved">未识别</small>
+                  </div>
                 </td>
                 <td class="pin-r">
                   <span :class="['badge', f.status]">{{ STATUS[f.status] }}</span>
@@ -127,13 +142,8 @@
               <tr v-if="!parseQueue.length">
                 <td colspan="7" class="tbl-empty">待解析队列为空</td>
               </tr>
-              <tr
-                v-for="f in parseQueue"
-                :key="f.id"
-                :class="{ hl: selected === f.id, done: f.status === 'done' }"
-                @click="selected = f.id"
-              >
-                <td><input type="checkbox" v-model="f.checked" :disabled="f.status !== 'pending'" @click.stop /></td>
+              <tr v-for="f in parseQueue" :key="f.id" :class="{ done: f.status === 'done' }">
+                <td><input type="checkbox" v-model="f.checked" :disabled="!canQueueAction(f)" @click.stop /></td>
                 <td><span class="trunc" :title="f.name">{{ f.name }}</span></td>
                 <td>{{ f.fmt }}</td>
                 <td>{{ f.size }}</td>
@@ -185,10 +195,10 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { ElNotification } from "element-plus";
 import { DataAnalysis, Delete, Upload, WarningFilled } from "@element-plus/icons-vue";
 import MetaPanel from "../components/MetaPanel.vue";
 import {
-  authedFetch,
   getRawScenes,
   listFY3ParseTasks,
   startFY3ParseTask,
@@ -196,6 +206,8 @@ import {
   uploadFileResumable,
   uploadRawFiles,
   waitForFY3ParseTask,
+  getUploadTasks,
+  retryUploadTask,
 } from "../api.js";
 
 const files = ref([]);
@@ -206,16 +218,16 @@ const tab = ref("upload");
 const dlgVisible = ref(false);
 const missingTypeFiles = ref([]);
 const pendingUpload = ref([]);
-
-const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8002";
+let queueTimer = null;
 
 // GFS 与 ECMWF 必须分开。不能再使用合并入口，否则 ECMWF 可能会被落入 GFS 目录。
 const TYPES = ["ERA5", "GFS", "ECMWF", "CMA", "雷达", "葵花", "FY-3", "WRF"];
 const STATUS = { pending: "待上传", uploading: "上传中", done: "完成", error: "失败" };
-const PARSE_STATUS = { pending: "待解析", parsing: "解析中", done: "已解析", error: "不完整" };
+const PARSE_STATUS = { pending: "待解析", parsing: "解析中", done: "已解析", error: "失败" };
 
 const parseQueue = ref([]);
-let rawSceneTimer = null;
+const databaseTaskTotal = ref(0);
+const databaseParsedTotal = ref(0);
 
 function parseStatusText(file) {
   if (file?.rawStatus === "no_coverage") return "无区域覆盖";
@@ -233,8 +245,24 @@ function parseStatusDetail(file) {
 
 const checked = computed(() => files.value.filter(f => f.checked));
 const allChecked = computed(() => files.value.length > 0 && files.value.every(f => f.checked));
+const batchTypeTargets = computed(() => {
+  return checked.value.filter(file => file.status === "pending");
+});
+const batchDataType = computed({
+  get() {
+    const types = batchTypeTargets.value.map(file => file.dataType || "");
+    if (!types.length || types.some(type => type !== types[0])) return "";
+    return types[0];
+  },
+  set(dataType) {
+    applyBatchType(dataType);
+  },
+});
 const pqChecked = computed(() => parseQueue.value.filter(f => f.checked));
-const pqAllChecked = computed(() => parseQueue.value.length > 0 && parseQueue.value.every(f => f.checked));
+const pqAllChecked = computed(() => {
+  const actionable = parseQueue.value.filter(canQueueAction);
+  return actionable.length > 0 && actionable.every(f => f.checked);
+});
 
 const cur = computed(() => {
   const uploaded = files.value.find(f => f.id === selected.value);
@@ -244,8 +272,8 @@ const cur = computed(() => {
 
 const stats = computed(() => [
   { label: "已上传", val: files.value.filter(f => f.status === "done").length, sub: "本次会话", cls: "" },
-  { label: "场景总量", val: parseQueue.value.length, sub: "FY-3 / Himawari raw", cls: "" },
-  { label: "已解析", val: parseQueue.value.filter(f => f.status === "done").length, sub: "已生成元数据", cls: "ok" },
+  { label: "数据库总量", val: databaseTaskTotal.value, sub: "当前账号", cls: "" },
+  { label: "已解析", val: databaseParsedTotal.value, sub: "当前账号", cls: "ok" },
   { label: "待解析", val: parseQueue.value.filter(f => f.status === "pending").length, sub: "等待处理", cls: "accent" },
 ]);
 
@@ -464,6 +492,54 @@ function buildMetaFromParsed(parsed, fallbackFile) {
   };
 }
 
+function inferDataType(file) {
+  const name = String(file?.name || "");
+  const lower = name.toLowerCase();
+  const upper = name.toUpperCase();
+  const suffix = lower.includes(".") ? lower.slice(lower.lastIndexOf(".")) : "";
+  const result = (type, reason) => ({ type, reason });
+
+  if (/^WRFOUT_D\d{2}_/i.test(name) || lower.includes("wrfout_")) {
+    return result("WRF", "文件名符合 wrfout_dXX_ 时间格式");
+  }
+  if (/^FY3[A-Z]?[_-]/i.test(name) || lower.includes("fy-3") || lower.includes("fy3")) {
+    return result("FY-3", "文件名包含 FY-3/FY3 卫星标识");
+  }
+  if (/^HS_H\d{2}_/i.test(name) || lower.includes("himawari") || lower.includes("ahi")) {
+    return result("葵花", "文件名包含 Himawari/AHI 场景标识");
+  }
+  if (upper.includes("Z_RADR") || lower.includes("cinrad") || lower.includes("radar") || [".cinrad", ".radar"].includes(suffix)) {
+    return result("雷达", "文件名或扩展名包含雷达产品标识");
+  }
+  if (lower.includes("ecmwf") || lower.includes("ifs") || /^ec[_-]/i.test(name)) {
+    return result("ECMWF", "文件名包含 ECMWF/IFS 标识");
+  }
+  if (lower.includes("gfs") || lower.includes("pgrb") || lower.includes("gdas")) {
+    return result("GFS", "文件名包含 GFS/PGRB/GDAS 标识");
+  }
+  if (lower.includes("era5")) {
+    return result("ERA5", "文件名包含 ERA5 标识");
+  }
+  if (lower.includes("cma") || lower.includes("cra40") || upper.includes("Z_NAFP")) {
+    return result("CMA", "文件名包含 CMA/CRA40 产品标识");
+  }
+  return result("", "仅凭文件名和扩展名无法可靠判断");
+}
+
+function markTypeManual(file) {
+  file.typeDetected = false;
+  file.detectionReason = file.dataType ? "用户手动指定" : "未指定";
+}
+
+function applyBatchType(dataType) {
+  if (!dataType) return;
+  batchTypeTargets.value.forEach(file => {
+    file.dataType = dataType;
+    file.typeDetected = false;
+    file.detectionReason = "批量统一指定";
+  });
+}
+
 function addFiles(list) {
   const incoming = [...list].map(file => file.name);
   const incomingSet = new Set(incoming);
@@ -477,6 +553,7 @@ function addFiles(list) {
   });
 
   for (const file of list) {
+    const detected = inferDataType(file);
     files.value.push({
       id: Date.now() + Math.random(),
       name: file.name,
@@ -484,7 +561,9 @@ function addFiles(list) {
       size: fmtSize(file.size),
       created: "—",
       modified: file.lastModified ? fmtDate(file.lastModified) : "—",
-      dataType: "",
+      dataType: detected.type,
+      typeDetected: Boolean(detected.type),
+      detectionReason: detected.reason,
       status: "pending",
       checked: false,
       dup: existingNames.has(file.name) || hasDupInBatch(file.name),
@@ -535,6 +614,7 @@ function rawSceneToQueueItem(scene) {
     : (scene.missing || []);
   return {
     id: `${businessType}:${scene.scene_id}`,
+    queueKind: "raw",
     sceneId: scene.scene_id,
     name: scene.scene_id,
     fmt: businessType === "FY3" ? "HDF" : "HSD",
@@ -569,18 +649,98 @@ function rawSceneToQueueItem(scene) {
   };
 }
 
-async function refreshRawScenes() {
-  const sceneGroups = await Promise.allSettled([
+function databaseTaskToQueueItem(task, previous = {}) {
+  const statusMap = { pending: "pending", running: "parsing", success: "done", failed: "error" };
+  return {
+    id: `database:${task.file_uuid}`,
+    queueKind: "database",
+    fileUuid: task.file_uuid,
+    name: task.file_name,
+    fmt: task.file_type || "—",
+    size: Number.isFinite(Number(task.file_size)) ? fmtSize(Number(task.file_size)) : "—",
+    uploaded: task.create_time ? new Date(task.create_time).toLocaleString("zh-CN") : "—",
+    dataType: task.data_type,
+    status: statusMap[task.parse_status] || "error",
+    rawStatus: task.parse_status,
+    parseError: task.parse_error,
+    defaultWebpUrl: task.default_webp_url,
+    checked: previous.checked || false,
+  };
+}
+
+function canQueueAction(item) {
+  return (item.queueKind === "raw" && item.status === "pending")
+    || (item.queueKind === "database" && item.status === "error");
+}
+
+function syncLocalFileStatus(tasks) {
+  const byUuid = new Map(tasks.map(task => [task.fileUuid, task]));
+  files.value.forEach(file => {
+    const task = file.fileUuid && byUuid.get(file.fileUuid);
+    if (!task || !file.steps?.length) return;
+    const parseStep = file.steps[1];
+    if (task.status === "pending") {
+      parseStep.running = false;
+      parseStep.ok = false;
+      parseStep.state = "等待 Worker";
+    } else if (task.status === "parsing") {
+      parseStep.running = true;
+      parseStep.ok = false;
+      parseStep.state = "解析中";
+    } else if (task.status === "done") {
+      parseStep.running = false;
+      parseStep.ok = true;
+      parseStep.state = "成功";
+      file.steps[2].ok = true;
+      file.steps[2].state = "成功";
+      file.steps[3].ok = true;
+      file.steps[3].state = "可展示";
+      file.meta = { ...file.meta, status: "解析成功", alert: task.defaultWebpUrl || "WebP 已生成" };
+    } else if (task.status === "error") {
+      parseStep.running = false;
+      parseStep.ok = false;
+      parseStep.state = task.parseError || "解析失败";
+      file.meta = { ...file.meta, status: "解析失败", alert: task.parseError || "可在待解析列表中重试" };
+    }
+  });
+}
+
+async function refreshParseQueue() {
+  const previous = new Map(parseQueue.value.map(item => [item.id, item]));
+  const [databaseGroup, himawariGroup, fy3Group, activeTasksGroup] = await Promise.allSettled([
+    getUploadTasks(),
     getRawScenes("Himawari"),
     getRawScenes("FY3"),
     listFY3ParseTasks({activeOnly: true}),
   ]);
   const rows = [];
-  sceneGroups.slice(0, 2).forEach(group => {
-    if (group.status !== "fulfilled") return;
-    (group.value.scenes || []).forEach(scene => rows.push(rawSceneToQueueItem(scene)));
+  const databaseItems = [];
+  if (databaseGroup.status === "fulfilled") {
+    databaseTaskTotal.value = Number(databaseGroup.value.total || 0);
+    (databaseGroup.value.items || []).forEach(task => {
+      const id = `database:${task.file_uuid}`;
+      databaseItems.push(databaseTaskToQueueItem(task, previous.get(id)));
+    });
+    databaseParsedTotal.value = databaseItems.filter(item => item.status === "done").length;
+    rows.push(...databaseItems.filter(item => item.status !== "done"));
+  } else {
+    rows.push(...parseQueue.value.filter(item => item.queueKind === "database"));
+  }
+
+  [himawariGroup, fy3Group].forEach((group, index) => {
+    const businessType = index === 0 ? "Himawari" : "FY3";
+    if (group.status !== "fulfilled") {
+      rows.push(...parseQueue.value.filter(item => item.queueKind === "raw" && item.dataType === businessType));
+      return;
+    }
+    (group.value.scenes || []).forEach(scene => {
+      const item = rawSceneToQueueItem(scene);
+      item.checked = previous.get(item.id)?.checked || false;
+      if (item.status !== "done") rows.push(item);
+    });
   });
-  const activeTasks = sceneGroups[2]?.status === "fulfilled" ? (sceneGroups[2].value.tasks || []) : [];
+
+  const activeTasks = activeTasksGroup.status === "fulfilled" ? (activeTasksGroup.value.tasks || []) : [];
   const activeByScene = new Map();
   activeTasks.forEach(task => {
     (task.scene_ids || []).forEach(sceneId => activeByScene.set(`${task.business_type}:${sceneId}`, task));
@@ -593,38 +753,36 @@ async function refreshRawScenes() {
     row.progress = Number(task.progress || 0);
     row.taskId = task.task_id;
     row.missing = [task.current_band ? `${task.current_scene || row.sceneId} · ${task.current_band}` : "后台解析中"];
-    row.steps[1] = {label: "解析", state: parseStatusText(row), t: "后台任务", ok: false, running: true};
+    if (row.steps?.[1]) {
+      row.steps[1] = {label: "解析", state: parseStatusText(row), t: "后台任务", ok: false, running: true};
+    }
   });
-  parseQueue.value = rows.sort((a, b) => String(b.sceneId).localeCompare(String(a.sceneId)));
+  parseQueue.value = rows.sort((a, b) => String(b.uploaded || b.sceneId).localeCompare(String(a.uploaded || a.sceneId)));
+  syncLocalFileStatus(databaseItems);
 }
 
-async function parseFileWithType(fileOrFiles, dataType) {
-  const body = new FormData();
-  const filesToParse = Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles];
-  const normalizedType = normalizeDataTypeForBackend(dataType, filesToParse[0]?.name || "");
+async function switchTab(nextTab) {
+  if (nextTab === tab.value) return;
+  try {
+    await refreshParseQueue();
+    if (nextTab === "upload") {
+      const completedIds = new Set(files.value.filter(file => file.status === "done").map(file => file.id));
+      if (completedIds.has(selected.value)) selected.value = null;
+      files.value = files.value.filter(file => file.status !== "done");
 
-  if (filesToParse.length === 1) {
-    body.append("file", filesToParse[0]);
-  } else {
-    filesToParse.forEach(file => body.append("files", file));
+      const nameCounts = {};
+      files.value.forEach(file => {
+        nameCounts[file.name] = (nameCounts[file.name] || 0) + 1;
+      });
+      files.value.forEach(file => {
+        file.dup = nameCounts[file.name] > 1;
+      });
+    }
+  } catch (err) {
+    console.error("页签数据刷新失败：", err);
+  } finally {
+    tab.value = nextTab;
   }
-
-  // backend_system/main.py 需要支持 business_type/data_type Form 字段。
-  // 这样 ECMWF 不依赖文件名，也不会被误识别成 GFS。
-  body.append("business_type", normalizedType);
-  body.append("data_type", normalizedType);
-
-  const response = await authedFetch(`${API_BASE}/api/files/parse`, {
-    method: "POST",
-    body,
-  });
-
-  const payload = await response.json();
-  if (!response.ok || payload.code !== 0) {
-    throw new Error(payload.detail || payload.message || "解析失败");
-  }
-
-  return payload.data;
 }
 
 async function run(f) {
@@ -683,36 +841,76 @@ async function run(f) {
       f.uploadResult = uploadData;
       f.status = "done";
       selected.value = f.id;
-      await refreshRawScenes();
+      await refreshParseQueue();
       tab.value = "parse";
       return;
     }
 
-    f.steps[1].running = true;
-    f.steps[1].state = "解析中";
-
-    const parsedData = await parseFileWithType(f.raw, uploadType);
-
-    f.steps[1].ok = true;
-    f.steps[1].running = false;
-    f.steps[1].state = "成功";
-    f.steps[1].t = now();
-
-    f.steps[2].ok = true;
-    f.steps[2].running = false;
-    f.steps[2].state = "成功";
-    f.steps[2].t = now();
-
-    f.steps[3].ok = true;
-    f.steps[3].running = false;
-    f.steps[3].state = "完成";
-    f.steps[3].t = now();
-
-    f.meta = buildMetaFromParsed(parsedData, f);
+    f.fileUuid = uploadData.file_uuid;
+    if (uploadData.duplicate_content) {
+      const parsedDuplicate = uploadData.parse_status === "success";
+      const failedDuplicate = uploadData.parse_status === "failed";
+      f.steps[1].ok = parsedDuplicate;
+      f.steps[1].running = uploadData.parse_status === "running";
+      f.steps[1].state = parsedDuplicate ? "复用已有结果" : failedDuplicate ? "原任务解析失败" : "复用已有任务";
+      f.steps[1].t = now();
+      f.steps[2].ok = parsedDuplicate;
+      f.steps[2].state = parsedDuplicate ? "无需重复处理" : "跟随原任务";
+      f.steps[3].ok = parsedDuplicate;
+      f.steps[3].state = parsedDuplicate ? "已有数据可展示" : "等待原任务";
+      f.meta = {
+        file: f.name,
+        element: uploadType,
+        time: "—",
+        level: "重复数据",
+        range: "复用已有数据记录",
+        grid: parsedDuplicate ? "无需重复解析" : "沿用原解析任务",
+        missing: "—",
+        unit: "—",
+        vars: "—",
+        steps: "—",
+        status: "检测到重复数据",
+        quality: parsedDuplicate ? "已复用" : "复用任务中",
+        alert: "该数据已存在，系统已复用已有记录或解析结果。",
+      };
+      f.uploadResult = uploadData;
+      f.status = "done";
+      selected.value = f.id;
+      ElNotification({
+        title: "上传的是重复数据",
+        message: `${f.name} 与已有数据重复，系统已复用已有记录或解析结果。`,
+        type: "warning",
+        position: "top-right",
+        duration: 4500,
+      });
+      await refreshParseQueue();
+      tab.value = "parse";
+      return;
+    }
+    f.steps[1].running = uploadData.parse_status === "running";
+    f.steps[1].state = uploadData.parse_status === "running" ? "解析中" : "等待 Worker";
+    f.steps[2].state = "等待 Adapter";
+    f.steps[3].state = "待解析完成";
+    f.meta = {
+      file: f.name,
+      element: uploadType,
+      time: "—",
+      level: "原始单文件",
+      range: "私有 raw 存储",
+      grid: "待解析",
+      missing: "待 Adapter 检查",
+      unit: "—",
+      vars: "—",
+      steps: "—",
+      status: "已上传，等待自动解析",
+      quality: "待解析",
+      alert: uploadData.duplicate_content ? "检测到相同内容，将复用已有解析结果" : `任务 ${uploadData.file_uuid}`,
+    };
     f.uploadResult = uploadData;
-    f.parseResult = parsedData;
     f.status = "done";
     selected.value = f.id;
+    await refreshParseQueue();
+    tab.value = "parse";
   } catch (err) {
     const msg = err?.message || "失败";
 
@@ -740,7 +938,7 @@ function toggleAll(e) {
 
 function togglePqAll(e) {
   parseQueue.value.forEach(f => {
-    if (f.status === "pending") {
+    if (canQueueAction(f)) {
       f.checked = e.target.checked;
     }
   });
@@ -801,17 +999,19 @@ function cancelUpload() {
 }
 
 function deletePqChecked() {
-  parseQueue.value = parseQueue.value.filter(f => !f.checked);
+  parseQueue.value.forEach(f => { f.checked = false; });
 }
 
 async function parsePqChecked() {
-  const selectedRows = parseQueue.value.filter(f => f.checked && f.status === "pending");
+  const selectedRows = parseQueue.value.filter(f => f.checked && canQueueAction(f));
   if (!selectedRows.length) return;
 
+  const rawRows = selectedRows.filter(f => f.queueKind === "raw");
+  const databaseRows = selectedRows.filter(f => f.queueKind === "database");
   const scenesByType = new Map();
-  selectedRows.forEach(row => {
+  rawRows.forEach(row => {
     const type = normalizeDataTypeForBackend(row.dataType);
-    if (!type) return;
+    if (!type || !row.sceneId) return;
     if (!scenesByType.has(type)) scenesByType.set(type, []);
     scenesByType.get(type).push(row.sceneId);
   });
@@ -821,8 +1021,8 @@ async function parsePqChecked() {
   });
 
   try {
-    const outcomes = await Promise.all(
-      [...scenesByType.entries()].map(async ([type, sceneIds]) => {
+    const [outcomes] = await Promise.all([
+      Promise.all([...scenesByType.entries()].map(async ([type, sceneIds]) => {
         if (type !== "FY3") {
           return {type, result: await updateDisplayFromRaw(type, {sceneIds})};
         }
@@ -845,9 +1045,10 @@ async function parsePqChecked() {
         });
         if (finished.state === "failed") throw new Error(finished.error || "FY-3 解析任务失败");
         return {type, task: finished, result: finished.result || {}};
-      }),
-    );
-    await refreshRawScenes();
+      })),
+      Promise.all(databaseRows.map(row => retryUploadTask(row.fileUuid))),
+    ]);
+    await refreshParseQueue();
     outcomes.forEach(outcome => {
       (outcome.result?.results || [])
         .filter(item => item?.status === "error")
@@ -865,7 +1066,7 @@ async function parsePqChecked() {
       f.rawStatus = "parse_error";
       f.missing = [err?.message || "解析失败"];
     });
-    console.error("raw 解析失败：", err);
+    console.error("解析或重试失败：", err);
   }
 }
 
@@ -880,14 +1081,14 @@ function onPick(e) {
 }
 
 onMounted(() => {
-  refreshRawScenes().catch(err => console.error("raw 场景读取失败：", err));
-  rawSceneTimer = window.setInterval(() => {
-    refreshRawScenes().catch(err => console.error("raw 场景读取失败：", err));
+  refreshParseQueue().catch(err => console.error("解析队列读取失败：", err));
+  queueTimer = window.setInterval(() => {
+    refreshParseQueue().catch(err => console.error("解析队列轮询失败：", err));
   }, 3000);
 });
 
 onBeforeUnmount(() => {
-  if (rawSceneTimer) window.clearInterval(rawSceneTimer);
+  if (queueTimer) window.clearInterval(queueTimer);
 });
 </script>
 
@@ -985,7 +1186,11 @@ onBeforeUnmount(() => {
 .tabs button:hover { color: var(--text); }
 .tabs button.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 
-.bar-btns { display: flex; gap: 8px; }
+.bar-btns { display: flex; align-items: center; gap: 8px; }
+.batch-type { display: flex; align-items: center; gap: 6px; }
+.batch-type-select {
+  width: 116px;
+}
 .act {
   display: inline-flex;
   align-items: center;
@@ -1090,6 +1295,9 @@ input[type="checkbox"] { cursor: pointer; accent-color: var(--accent); }
 .type-sel:focus { border-color: var(--accent); }
 .type-sel:disabled { opacity: 0.45; cursor: default; }
 .type-sel option { background: var(--glass-2); color: var(--text); }
+.type-cell { display: grid; gap: 3px; min-width: 0; }
+.type-cell small { overflow: hidden; color: var(--accent); font-size: 9px; line-height: 1.1; text-overflow: ellipsis; white-space: nowrap; }
+.type-cell small.unresolved { color: #b45309; }
 
 .type-tag {
   display: inline-block;

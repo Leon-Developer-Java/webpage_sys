@@ -266,6 +266,9 @@ const currentFrameIndex = computed(() => {
   const count = dayTimes.value.length;
   if (count <= 1) return 0;
   const sourceIndex = Number.isFinite(Number(props.timeIndex)) ? Number(props.timeIndex) : 0;
+  if (props.parsed || props.parsedMeta) {
+    return Math.max(0, Math.min(count - 1, Math.floor(sourceIndex)));
+  }
   const clampedIndex = Math.max(0, Math.min(timelineSlotCount - 1, sourceIndex));
   return Math.round((clampedIndex / (timelineSlotCount - 1)) * (count - 1));
 });
@@ -279,6 +282,24 @@ const imageUrl = computed(() => {
   const parsedUrl = parsedWebpUrl(variable.value);
   if (parsedUrl) return parsedUrl;
   return toPublicUrl(display.value?.webp);
+});
+const selectedFrameUrls = computed(() => {
+  const files = currentWebpFiles.value;
+  if (!Array.isArray(files) || !files.length) return imageUrl.value ? [imageUrl.value] : [];
+  const target = String(variable.value || "");
+  const candidates = files.filter(item => {
+    const normalized = String(item).replaceAll("\\", "/");
+    const base = normalized.split("/").pop()?.replace(/\.webp$/i, "") ?? "";
+    return domainMatches(normalized) && base.endsWith(`_${target}`) && (!selectedDate.value || base.startsWith(selectedDate.value));
+  });
+  const ordered = dayTimes.value.map(item => {
+    const timePart = String(item).replace(":", "_").replace(":", "_");
+    return candidates.find(candidate => {
+      const base = String(candidate).replaceAll("\\", "/").split("/").pop()?.replace(/\.webp$/i, "") ?? "";
+      return base.startsWith(`${timePart}_`);
+    });
+  }).filter(Boolean);
+  return [...new Set((ordered.length ? ordered : candidates).map(localDataUrl).filter(Boolean))];
 });
 const layerKey = computed(() => `${imageUrl.value}|${extent.value.join(",")}`);
 
@@ -335,7 +356,7 @@ function preferredVariable(meta) {
   const list = Array.isArray(meta?.variables)
     ? meta.variables.filter((item) => !hiddenVariables.has(item.name))
     : [];
-  const priority = ["T2", "PBLH", "U10", "V10", "PSFC", "RAINC", "RAINNC"];
+  const priority = [meta?.default_variable, "T2", "PBLH", "U10", "V10", "PSFC", "RAINC", "RAINNC"].filter(Boolean);
   return priority
     .map((name) => list.find((item) => item.name === name && isRenderableVariable(item)))
     .find(Boolean)?.name
@@ -417,6 +438,13 @@ function emitPanelInfo() {
     weather_info: { ...info },
     variables: currentResolutionProduct.value?.variables || wrfMeta.value?.variables || [],
     times: wrfMeta.value?.times || [],
+    image_url: imageUrl.value,
+    image_urls: selectedFrameUrls.value,
+    frames: selectedFrameUrls.value.map((url, index) => ({
+      index,
+      url,
+      valid_time: dayTimes.value[index] || wrfMeta.value?.times?.[index] || "",
+    })),
     file: info.file,
     variable: variable.value,
   });

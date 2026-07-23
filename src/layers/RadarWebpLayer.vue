@@ -51,9 +51,7 @@ const props = defineProps({
 const emit = defineEmits(["display-loaded", "variable-change"]);
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8002";
-const PRELOAD_FRAME_COUNT = 5;
-const CACHE_BEHIND = 1;
-const CACHE_AHEAD = 3;
+const FRAME_PRELOAD_CONCURRENCY = 4;
 const REFRESH_INTERVAL_MS = 30000;
 const surface = inject("mapSurface", null);
 const flyToExtent = inject("flyToExtent", null);
@@ -70,6 +68,7 @@ const pendingFrames = new Map();
 const imageCache = new Map();
 let wantedFrameIndices = new Set();
 let appliedLayerKey = "";
+let framePreloadPromise = Promise.resolve();
 
 const products = computed(() => display.value?.products ?? []);
 const frames = computed(() => Array.isArray(display.value?.frames) ? display.value.frames : []);
@@ -342,6 +341,7 @@ function emitDisplayLoaded() {
     webp_url: apiUrl(imageUrl.value),
     extent: imageExtent.value,
     variables: products.value,
+    frame_preload_promise: framePreloadPromise,
   };
   emit("variable-change", payload);
   emit("display-loaded", payload);
@@ -440,6 +440,8 @@ async function fetchRadarFrame(index, options = {}) {
   const request = (async () => {
     const params = new URLSearchParams();
     params.set("time_index", String(targetIndex));
+    const metaFile = props.parsed?.meta_file || props.parsed?.meta?.meta_file;
+    if (metaFile) params.set("meta_file", metaFile);
     const response = await fetch(`${API_BASE}/api/display/RADAR?${params.toString()}`);
     const payload = await response.json();
     if (!response.ok || payload.code !== 0) {
@@ -463,18 +465,9 @@ async function fetchRadarFrame(index, options = {}) {
   }
 }
 
-function frameWindow(centerIndex, initial = false) {
+function frameWindow() {
   const count = frameCount.value;
-  const center = clampedTimeIndex(centerIndex);
-  const start = initial ? 0 : Math.max(0, center - CACHE_BEHIND);
-  const end = initial
-    ? (count ? Math.min(count - 1, PRELOAD_FRAME_COUNT - 1) : PRELOAD_FRAME_COUNT - 1)
-    : (count ? Math.min(count - 1, center + CACHE_AHEAD) : center + CACHE_AHEAD);
-  const indices = [];
-  for (let index = start; index <= end; index += 1) {
-    indices.push(index);
-  }
-  return indices;
+  return Array.from({ length: count }, (_, index) => index);
 }
 
 function releaseFarFrames(keepIndices) {
@@ -497,13 +490,22 @@ function releaseFarFrames(keepIndices) {
   });
 }
 
-function preloadFrameWindow(centerIndex, options = {}) {
-  const indices = frameWindow(centerIndex, !!options.initial);
+async function preloadFrameWindow() {
+  const indices = frameWindow();
   wantedFrameIndices = new Set(indices);
-  releaseFarFrames(indices);
-  indices.forEach((index) => {
-    fetchRadarFrame(index, { prefetch: true }).catch((err) => console.warn(err));
-  });
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < indices.length) {
+      const index = indices[cursor];
+      cursor += 1;
+      try {
+        await fetchRadarFrame(index, { prefetch: true });
+      } catch (err) {
+        console.warn(err);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(FRAME_PRELOAD_CONCURRENCY, Math.max(1, indices.length)) }, worker));
 }
 
 function clearFrameCaches() {
@@ -511,12 +513,14 @@ function clearFrameCaches() {
   pendingFrames.clear();
   frameCache.clear();
   clearImageCache();
+  framePreloadPromise = Promise.resolve();
 }
 
 function applyDisplayPayload(data) {
   display.value = data;
   error.value = "";
   syncSelection();
+  framePreloadPromise = preloadFrameWindow();
   applyImageryLayer();
   preloadImage(imageUrl.value);
   emitDisplayLoaded();
@@ -531,7 +535,6 @@ async function loadRadarDisplay(options = {}) {
     await preloadImage(payloadImageUrl(data));
     if (currentRequest !== requestId) return;
     applyDisplayPayload(data);
-    preloadFrameWindow(targetIndex, { initial: !!options.initial });
   } catch (err) {
     if (currentRequest !== requestId) return;
     error.value = "雷达数据未加载";

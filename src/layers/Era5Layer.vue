@@ -747,6 +747,20 @@ async function loadDisplay(variableName = selectedVariable.value) {
   error.value = "";
   releaseFrameCache();
   try {
+    if (props.parsed) {
+      const selected = props.parsed.meta_json || props.parsed.meta || props.parsed;
+      display.value = normalizeDisplay(selected);
+    } else {
+      const params = new URLSearchParams();
+      if (variableName) params.set("variable", variableName);
+      const query = params.toString();
+      const response = await authedFetch(`${API_BASE}/api/display/ERA5${query ? `?${query}` : ""}`);
+      const payload = await response.json();
+      if (!response.ok || payload.code !== 0) {
+        throw new Error(payload.detail || payload.message || "ERA5 data load failed");
+      }
+      display.value = normalizeDisplay(payload.data);
+    }
     const params = new URLSearchParams();
     if (variableName) params.set("variable", variableName);
     const query = params.toString();
