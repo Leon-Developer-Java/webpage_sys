@@ -373,7 +373,7 @@ const activeSourceLabel = computed(() => sources.find(item => item.key === catal
 const resourceListLabel = computed(() =>
   resourceStartTime.value && resourceEndTime.value
     ? `${activeSourceLabel.value} 搜索结果`
-    : `${activeSourceLabel.value} 最近连续数据`,
+    : `${activeSourceLabel.value} ${catalogSourceKey.value === "radar" ? "最近数据" : "最近连续数据"}`,
 );
 const catalogSelectedResourceUuid = computed(() => {
   if (layout.value !== "1" && selectedPane.value >= 0) {
@@ -444,7 +444,10 @@ const filteredDataResources = computed(() => {
   });
   matches.sort((left, right) => timestamp(right.time_end || right.time_start) - timestamp(left.time_end || left.time_start));
   if (!resourceStartTime.value || !resourceEndTime.value) {
-    return matches.filter(item => item.continuous);
+    return matches.filter(item =>
+      item.continuous
+      || (catalogSourceKey.value === "radar" && Number(item.frame_count) >= 1),
+    );
   }
   return matches;
 });

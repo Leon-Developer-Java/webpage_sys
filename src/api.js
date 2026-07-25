@@ -441,6 +441,51 @@ export async function* chatStream(messages, context) {
   if (tail) yield JSON.parse(tail);
 }
 
+async function agentRequest(path, options = {}) {
+  let response;
+  try {
+    response = await authedFetch(`${AGENT_BASE}${path}`, options);
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new Error("无法连接智能体服务，请确认 backend_agent 已启动并监听 8004 端口。");
+    }
+    throw error;
+  }
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new Error(`智能体服务返回了无法解析的响应（HTTP ${response.status}）`);
+  }
+  if (!response.ok || payload?.code !== 0) {
+    throw new Error(apiError(payload, `智能体服务请求失败（HTTP ${response.status}）`));
+  }
+  return payload.data;
+}
+
+export async function submitAgentNowcast(fileUuids) {
+  return agentRequest("/api/agent/nowcast/runs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ file_uuids: Array.from(fileUuids || []) }),
+  });
+}
+
+export async function getAgentNowcastRun(runId) {
+  return agentRequest(`/api/agent/nowcast/runs/${encodeURIComponent(runId)}`);
+}
+
+export async function getAgentNowcastResult(runId) {
+  const result = await agentRequest(`/api/agent/nowcast/runs/${encodeURIComponent(runId)}/result`);
+  return {
+    ...result,
+    frames: (result?.frames ?? []).map(frame => ({
+      ...frame,
+      prediction_url: modelAssetUrl(frame.prediction_url),
+    })),
+  };
+}
+
 // 分片上传 + 断点续传。文件唯一标识用组合键（文件名+大小+修改时间）。
 export async function uploadFileResumable(file, dataType, onProgress = () => {}) {
   const fileId = `${file.name}-${file.size}-${file.lastModified}`;

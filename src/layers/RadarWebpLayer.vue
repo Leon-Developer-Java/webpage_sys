@@ -37,7 +37,7 @@
 <script setup>
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import LayerCard from "../components/LayerCard.vue";
-import { withToken } from "../api";
+import { authedFetch, withToken } from "../api";
 
 const props = defineProps({
   src: String,
@@ -442,7 +442,7 @@ async function fetchRadarFrame(index, options = {}) {
     params.set("time_index", String(targetIndex));
     const metaFile = props.parsed?.meta_file || props.parsed?.meta?.meta_file;
     if (metaFile) params.set("meta_file", metaFile);
-    const response = await fetch(`${API_BASE}/api/display/RADAR?${params.toString()}`);
+    const response = await authedFetch(`${API_BASE}/api/display/RADAR?${params.toString()}`);
     const payload = await response.json();
     if (!response.ok || payload.code !== 0) {
       throw new Error(payload.detail || payload.message || "Radar display data load failed");

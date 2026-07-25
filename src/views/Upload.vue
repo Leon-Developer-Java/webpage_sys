@@ -26,7 +26,7 @@
         <div class="sec-bar">
           <div class="tabs">
             <button :class="{ on: tab === 'upload' }" @click="switchTab('upload')">待上传</button>
-            <button :class="{ on: tab === 'parse' }" @click="switchTab('parse')">待解析</button>
+            <button :class="{ on: tab === 'parse' }" @click="switchTab('parse')">解析记录</button>
           </div>
           <span class="sec-info">
             {{ tab === 'upload'
@@ -129,7 +129,7 @@
             </colgroup>
             <thead>
               <tr>
-                <th><input type="checkbox" :checked="pqAllChecked" @change="togglePqAll" :disabled="!parseQueue.length" /></th>
+                <th><input type="checkbox" :checked="pqAllChecked" @change="togglePqAll" :disabled="!parseQueue.some(canQueueAction)" /></th>
                 <th>文件名</th>
                 <th>格式</th>
                 <th>大小</th>
@@ -140,9 +140,15 @@
             </thead>
             <tbody>
               <tr v-if="!parseQueue.length">
-                <td colspan="7" class="tbl-empty">待解析队列为空</td>
+                <td colspan="7" class="tbl-empty">暂无解析记录</td>
               </tr>
-              <tr v-for="f in parseQueue" :key="f.id" :class="{ done: f.status === 'done' }">
+              <tr
+                v-for="f in parseQueue"
+                :key="f.id"
+                class="record-row"
+                :class="{ hl: selected === f.id, done: f.status === 'done' }"
+                @click="selected = f.id"
+              >
                 <td><input type="checkbox" v-model="f.checked" :disabled="!canQueueAction(f)" @click.stop /></td>
                 <td><span class="trunc" :title="f.name">{{ f.name }}</span></td>
                 <td>{{ f.fmt }}</td>
@@ -230,6 +236,7 @@ const databaseTaskTotal = ref(0);
 const databaseParsedTotal = ref(0);
 
 function parseStatusText(file) {
+  if (isRawSourceMissing(file)) return "原文件缺失";
   if (file?.rawStatus === "no_coverage") return "无区域覆盖";
   if (file?.status === "parsing" && Number.isFinite(Number(file?.progress))) {
     return `解析中 ${Number(file.progress).toFixed(1)}%`;
@@ -239,8 +246,14 @@ function parseStatusText(file) {
 }
 
 function parseStatusDetail(file) {
+  if (file?.parseError) return String(file.parseError);
   const details = Array.isArray(file?.missing) ? file.missing.filter(Boolean) : [];
   return details.join("；");
+}
+
+function isRawSourceMissing(file) {
+  return file?.queueKind === "database"
+    && /raw source is missing/i.test(String(file?.parseError || ""));
 }
 
 const checked = computed(() => files.value.filter(f => f.checked));
@@ -651,7 +664,9 @@ function rawSceneToQueueItem(scene) {
 
 function databaseTaskToQueueItem(task, previous = {}) {
   const statusMap = { pending: "pending", running: "parsing", success: "done", failed: "error" };
-  return {
+  const status = statusMap[task.parse_status] || "error";
+  const parseError = task.parse_error || "";
+  const item = {
     id: `database:${task.file_uuid}`,
     queueKind: "database",
     fileUuid: task.file_uuid,
@@ -660,17 +675,36 @@ function databaseTaskToQueueItem(task, previous = {}) {
     size: Number.isFinite(Number(task.file_size)) ? fmtSize(Number(task.file_size)) : "—",
     uploaded: task.create_time ? new Date(task.create_time).toLocaleString("zh-CN") : "—",
     dataType: task.data_type,
-    status: statusMap[task.parse_status] || "error",
+    status,
     rawStatus: task.parse_status,
-    parseError: task.parse_error,
+    parseError,
     defaultWebpUrl: task.default_webp_url,
     checked: previous.checked || false,
+    meta: {
+      file: task.file_name,
+      element: task.data_type || "—",
+      time: task.create_time ? new Date(task.create_time).toLocaleString("zh-CN") : "—",
+      level: "上传任务",
+      range: status === "done" ? "已进入可展示数据目录" : "私有 raw 存储",
+      grid: status === "done" ? `${Number(task.webp_count || 0)} 个 WebP` : "—",
+      missing: isRawSourceMissing({queueKind: "database", parseError}) ? "原始文件不在本机" : "—",
+      status: parseStatusText({queueKind: "database", status, rawStatus: task.parse_status, parseError}),
+      extraRows: [
+        ["fileUuid", "任务 ID", task.file_uuid],
+        ["parseAttempts", "解析次数", task.parse_attempts],
+        ["finishedAt", "完成时间", task.parse_finished_at ? new Date(task.parse_finished_at).toLocaleString("zh-CN") : ""],
+        ["renderResult", "渲染结果", status === "done" ? `${Number(task.webp_count || 0)} 个 WebP` : ""],
+        ["parseError", "失败原因", parseError],
+      ],
+    },
   };
+  if (!canQueueAction(item)) item.checked = false;
+  return item;
 }
 
 function canQueueAction(item) {
   return (item.queueKind === "raw" && item.status === "pending")
-    || (item.queueKind === "database" && item.status === "error");
+    || (item.queueKind === "database" && item.status === "error" && !isRawSourceMissing(item));
 }
 
 function syncLocalFileStatus(tasks) {
@@ -722,7 +756,7 @@ async function refreshParseQueue() {
       databaseItems.push(databaseTaskToQueueItem(task, previous.get(id)));
     });
     databaseParsedTotal.value = databaseItems.filter(item => item.status === "done").length;
-    rows.push(...databaseItems.filter(item => item.status !== "done"));
+    rows.push(...databaseItems);
   } else {
     rows.push(...parseQueue.value.filter(item => item.queueKind === "database"));
   }
@@ -884,6 +918,7 @@ async function run(f) {
         duration: 4500,
       });
       await refreshParseQueue();
+      selected.value = `database:${f.fileUuid}`;
       tab.value = "parse";
       return;
     }
@@ -910,6 +945,7 @@ async function run(f) {
     f.status = "done";
     selected.value = f.id;
     await refreshParseQueue();
+    selected.value = `database:${f.fileUuid}`;
     tab.value = "parse";
   } catch (err) {
     const msg = err?.message || "失败";
@@ -1259,6 +1295,7 @@ tbody td {
 tbody tr:last-child td { border-bottom: none; }
 
 tbody tr:not(.hl):hover td:not(.pin-l):not(.pin-r) { background: rgba(128, 128, 128, 0.05); }
+tbody tr.record-row { cursor: pointer; }
 tbody tr.done { cursor: pointer; }
 tbody tr.done:not(.hl):hover td:not(.pin-l):not(.pin-r) { background: var(--field); }
 tbody tr.hl td:not(.pin-l):not(.pin-r) { background: var(--accent-soft); }

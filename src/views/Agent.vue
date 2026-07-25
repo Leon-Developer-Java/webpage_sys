@@ -82,6 +82,15 @@
                 </div>
               </div>
             </div>
+            <AgentNowcastCard
+              v-if="m.nowcast"
+              :state="m.nowcast"
+              @change="save"
+            />
+            <AgentNowcastAnalysisCard
+              v-if="m.nowcastAnalysis"
+              :analysis="m.nowcastAnalysis"
+            />
           </div>
         </div>
       </div>
@@ -129,6 +138,8 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { ArrowRight, Plus } from "@element-plus/icons-vue";
 import { chatStream, withToken } from "../api.js";
 import { renderMarkdown } from "../markdown.js";
+import AgentNowcastAnalysisCard from "../components/AgentNowcastAnalysisCard.vue";
+import AgentNowcastCard from "../components/AgentNowcastCard.vue";
 import ToolCallCard from "../components/ToolCallCard.vue";
 import WorkbenchPanel from "../components/WorkbenchPanel.vue";
 
@@ -144,7 +155,7 @@ function initSessions() {
     msgs: [{
       id: "0",
       role: "assistant",
-      content: "您好！当前数据库已连接，WRF / ERA5 / 雷达外推 / 葵花云图模型均在线。\n\n请问有什么需要？可以直接提问，或使用下方快捷指令调用气象模型。",
+      content: "您好！我是短临降水预报智能体，可以从数据库自动选择最新连续5帧雷达数据，并在您确认后预测未来两小时降水回波。任务完成后还可以继续询问结果趋势、降水信号或要求生成逐帧表格。\n\n你可以直接说：“使用最新雷达数据预测未来两小时”。",
       toolCalls: [],
     }],
   }];
@@ -162,12 +173,12 @@ const editingId = ref(null);
 const editTitle = ref("");
 
 const cur = computed(() => sessions.value.find(s => s.id === activeId.value));
-const quickChips = ["/调用模型", "/查询数据", "/生成图表", "/生成报告"];
+const quickChips = ["使用最新雷达数据预测未来两小时", "评价刚才的预报结果", "把结果整理成表格"];
 
 const infoIdx = ref(0);
 const infoItems = computed(() => [
-  "claude-sonnet-4-6",
-  "上下文 200K tokens",
+  "DeepSeek 自然语言理解",
+  "短临降水预报 · 未来120分钟",
   `${sessions.value.length} 个会话`,
   `${sessions.value.reduce((a, s) => a + s.msgs.length, 0)} 条消息`,
   "流式输出 · SSE",
@@ -231,7 +242,7 @@ function newSession() {
     msgs: [{
       id: crypto.randomUUID(),
       role: "assistant",
-      content: "您好！当前数据库已连接，可用模型：WRF、ERA5、雷达外推、葵花云图。请问有什么需要？",
+      content: "您好！当前智能体只提供短临降水预报。你可以让我运行预报，也可以在任务完成后询问结果趋势、降水信号或生成逐帧表格。",
       toolCalls: [],
     }],
   };
@@ -241,10 +252,19 @@ function newSession() {
 }
 
 function appendMsg(role, content) {
-  const m = { id: crypto.randomUUID(), role, content, toolCalls: [], images: [], paramPrompt: null, streaming: role === "assistant" };
+  const m = { id: crypto.randomUUID(), role, content, toolCalls: [], images: [], paramPrompt: null, nowcast: null, nowcastAnalysis: null, streaming: role === "assistant" };
   cur.value.msgs.push(m);
   scrollBottom();
   return cur.value.msgs[cur.value.msgs.length - 1];
+}
+
+function latestNowcastRunId() {
+  for (let index = cur.value.msgs.length - 1; index >= 0; index -= 1) {
+    const message = cur.value.msgs[index];
+    const runId = message.nowcast?.task?.run_id || message.nowcastAnalysis?.run_id;
+    if (/^run_[A-Za-z0-9]+$/.test(String(runId || ""))) return runId;
+  }
+  return "";
 }
 
 function applyToolEvent(msg, ev) {
@@ -285,12 +305,26 @@ async function send() {
   try {
     for await (const ev of chatStream(
       cur.value.msgs.slice(0, -1).map(m => ({ role: m.role, content: m.content })),
-      {}
+      {
+        session_id: cur.value.id,
+        nowcast_run_id: latestNowcastRunId(),
+      }
     )) {
       if (ev.type === "text") aiMsg.content += ev.value;
       else if (ev.type === "tool") applyToolEvent(aiMsg, ev);
       else if (ev.type === "image") aiMsg.images.push({ url: ev.url, caption: ev.caption });
       else if (ev.type === "need_params") aiMsg.paramPrompt = { model: ev.model, modelName: ev.model_name, fields: ev.fields };
+      else if (ev.type === "nowcast_confirmation") {
+        aiMsg.nowcast = {
+          confirmation: ev,
+          task: null,
+          result: null,
+          collapsed: false,
+        };
+      }
+      else if (ev.type === "nowcast_analysis") {
+        aiMsg.nowcastAnalysis = ev.analysis;
+      }
       else if (ev.type === "error") aiMsg.content += `\n⚠️ ${ev.message}`;
       scrollBottom();
     }
