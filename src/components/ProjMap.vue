@@ -41,7 +41,7 @@ const NE_BORDER = "/ne_110m_admin_0_boundary_lines_land.geojson";
 
 // 底图瓦片：默认走国内可访问的高德源（{s} 为 1-4 子域名），OSM/ArcGIS 保留供外网环境使用
 const TILE_URLS = {
-  "矢量底图": "https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}",
+  "矢量底图": "https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=7&x={x}&y={y}&z={z}",
   "影像底图": "https://webst0{s}.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}",
   "地形晕渲": "https://tile.opentopomap.org/{z}/{x}/{y}.png",
   "全球境界": "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
@@ -59,6 +59,7 @@ let baseBox = [-Math.PI, -HALF_PI, Math.PI, HALF_PI];
 let center = [0, 0], scale = 1.6, aspect = 1;
 let viewLon = LON0, orthoLat = ORTHO_LAT0;
 let dragging = false, lastX = 0, lastY = 0, ro;
+let needsInitialFit = true;
 
 function centerLon() { return (PROJ[props.projection] ?? 0) === 5 ? viewLon : LON0; }
 let mosaicToken = 0, mosaicTimer = 0, animRAF = 0, applyingSync = false, dataTextureToken = 0;
@@ -416,9 +417,8 @@ function makeTexture(source, slot, lonBox, merc) {
   if (!gl) return;
   const tex = slot === 0 ? (baseTex || gl.createTexture()) : (dataTex || gl.createTexture());
   gl.bindTexture(gl.TEXTURE_2D, tex);
-  // 注意：不要启用 UNPACK_FLIP_Y_WEBGL。底图是行 0 = 北、行 N-1 = 南的 web mercator 瓦片，
-  // shader 的 lat→bv 映射也按这个方向写，开启翻转后底图被上下颠倒并与 baseBox 的 mercY 范围错位，
-  // 表现为"高德瓦片加载失败时整张地图被白色空白纹理覆盖"——和用户看到的"地图全白"完全一致。
+  // HTMLImageElement 的首行对应北侧，shader 的 Web Mercator v 坐标也从北向南递增。
+  // 保持默认上传方向，避免底图上下颠倒。
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
@@ -499,7 +499,7 @@ function buildMosaic() {
       jobs.push(loadTile(z, tx, ty).then(img => { if (img) ctx.drawImage(img, (tx - X0) * 256, (ty - Y0) * 256); }));
   Promise.all(jobs).then(() => {
     if (token !== mosaicToken) return;
-    makeTexture(cv, 0, [X0 / n, mercY(vb.mxLa), (X1 + 1) / n, mercY(vb.mnLa)], true);
+    makeTexture(cv, 0, [X0 / n, Y0 / n, (X1 + 1) / n, (Y1 + 1) / n], true);
     render();
   });
 }
@@ -563,6 +563,10 @@ function resize() {
   const w = box.value.clientWidth, h = box.value.clientHeight, dpr = devicePixelRatio || 1;
   canvas.value.width = w * dpr; canvas.value.height = h * dpr;
   aspect = w / h;
+  if (needsInitialFit) {
+    fitView();
+    needsInitialFit = false;
+  }
   gl.viewport(0, 0, canvas.value.width, canvas.value.height);
   if (computedTileUrl.value) scheduleMosaic();
   render();
@@ -656,7 +660,6 @@ onMounted(() => {
   gl.enable(gl.BLEND);
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
   aspect = box.value.clientWidth / box.value.clientHeight;
-  fitView();
   if (computedTileUrl.value) scheduleMosaic();
   if (props.vector) loadVectors();
   if (dataRef.value?.src) loadDataTexture(dataRef.value, ++dataTextureToken);
