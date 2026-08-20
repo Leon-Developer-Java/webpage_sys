@@ -35,12 +35,14 @@ const RA = [1.0000, 0.9986, 0.9954, 0.9900, 0.9822, 0.9730, 0.9600, 0.9427, 0.92
 const RB = [0.0000, 0.0620, 0.1240, 0.1860, 0.2480, 0.3100, 0.3720, 0.4340, 0.4958, 0.5571, 0.6176, 0.6769, 0.7346, 0.7903, 0.8435, 0.8936, 0.9394, 0.9761, 1.0000];
 
 const MAXZ = 19;
-const NE_COAST = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_110m_coastline.geojson";
-const NE_BORDER = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_110m_admin_0_boundary_lines_land.geojson";
+// 海岸线/国界线本地化（public/ 下，不依赖外网 GitHub）
+const NE_COAST = "/ne_110m_coastline.geojson";
+const NE_BORDER = "/ne_110m_admin_0_boundary_lines_land.geojson";
 
+// 底图瓦片：默认走国内可访问的高德源（{s} 为 1-4 子域名），OSM/ArcGIS 保留供外网环境使用
 const TILE_URLS = {
-  "矢量底图": "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-  "影像底图": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+  "矢量底图": "https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}",
+  "影像底图": "https://webst0{s}.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}",
   "地形晕渲": "https://tile.opentopomap.org/{z}/{x}/{y}.png",
   "全球境界": "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
 };
@@ -414,6 +416,9 @@ function makeTexture(source, slot, lonBox, merc) {
   if (!gl) return;
   const tex = slot === 0 ? (baseTex || gl.createTexture()) : (dataTex || gl.createTexture());
   gl.bindTexture(gl.TEXTURE_2D, tex);
+  // 注意：不要启用 UNPACK_FLIP_Y_WEBGL。底图是行 0 = 北、行 N-1 = 南的 web mercator 瓦片，
+  // shader 的 lat→bv 映射也按这个方向写，开启翻转后底图被上下颠倒并与 baseBox 的 mercY 范围错位，
+  // 表现为"高德瓦片加载失败时整张地图被白色空白纹理覆盖"——和用户看到的"地图全白"完全一致。
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
@@ -494,13 +499,15 @@ function buildMosaic() {
       jobs.push(loadTile(z, tx, ty).then(img => { if (img) ctx.drawImage(img, (tx - X0) * 256, (ty - Y0) * 256); }));
   Promise.all(jobs).then(() => {
     if (token !== mosaicToken) return;
-    makeTexture(cv, 0, [X0 / n, Y0 / n, (X1 + 1) / n, (Y1 + 1) / n], true);
+    makeTexture(cv, 0, [X0 / n, mercY(vb.mxLa), (X1 + 1) / n, mercY(vb.mnLa)], true);
     render();
   });
 }
 
 function loadTile(z, x, y) {
-  const url = computedTileUrl.value.replace("{z}", z).replace("{y}", y).replace("{x}", x);
+  const subs = ["1", "2", "3", "4"];
+  let url = computedTileUrl.value.replace("{z}", z).replace("{y}", y).replace("{x}", x);
+  if (url.includes("{s}")) url = url.replace("{s}", subs[(x + y + z) % 4]);
   if (tileCache.has(url)) return Promise.resolve(tileCache.get(url));
   return new Promise(resolve => {
     const img = new Image();
