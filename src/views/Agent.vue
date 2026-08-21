@@ -1,11 +1,15 @@
-<template>
+﻿<template>
   <div class="agent">
-    <div class="sidebar glass">
+    <div :class="['sidebar glass', { collapsed: leftCollapsed }]">
+      <button class="side-toggle left" type="button" @click="leftCollapsed = !leftCollapsed">
+        {{ leftCollapsed ? '>' : '<' }}
+      </button>
+      <template v-if="!leftCollapsed">
       <button class="new-btn" @click="newSession">
-        <el-icon><Plus /></el-icon>新建对话
+        <el-icon><Plus /></el-icon>鏂板缓瀵硅瘽
       </button>
       <div class="hist-list">
-        <div class="hist-sep">历史对话</div>
+        <div class="hist-sep">鍘嗗彶瀵硅瘽</div>
         <div
           v-for="s in sessions" :key="s.id"
           :class="['hist-item', { on: s.id === activeId }]"
@@ -24,7 +28,7 @@
             <div v-else class="hi-title">{{ s.title }}</div>
             <div class="hi-date">{{ fmtDay(s.createdAt) }}</div>
           </div>
-          <button class="hi-menu-btn" @click.stop="openMenu(s.id, $event)">···</button>
+          <button class="hi-menu-btn" @click.stop="openMenu(s.id, $event)">路路路</button>
         </div>
       </div>
       <div class="sb-foot">
@@ -35,12 +39,13 @@
           </Transition>
         </div>
       </div>
+      </template>
     </div>
 
     <div class="chat glass">
       <div class="chat-head">
         <span class="ch-title">{{ cur.title }}</span>
-        <span class="badge">数据库已连接</span>
+        <span class="badge">鏁版嵁搴撳凡杩炴帴</span>
       </div>
       <div class="msgs" ref="msgsEl">
         <div
@@ -54,15 +59,65 @@
             <span v-if="m.role === 'user'" class="plain">{{ m.content }}</span>
             <span v-else class="md" v-html="renderMarkdown(m.content)"></span><span v-if="m.streaming" class="cursor"></span>
             <ToolCallCard v-for="tc in (m.toolCalls ?? [])" :key="tc.name" :tc="tc" />
+            <div v-if="(m.processEvents ?? []).length" class="agent-process">
+              <div class="ap-head">
+                <span>Agent 过程</span>
+                <b>{{ m.processEvents.length }} 步</b>
+              </div>
+              <div v-for="(ev, index) in m.processEvents" :key="index" class="ap-item">
+                <div class="ap-title">
+                  <span>{{ processTitle(ev) }}</span>
+                  <b :class="['ap-status', processStatusClass(ev)]">{{ processStatus(ev) }}</b>
+                </div>
+                <p v-if="ev.summary">{{ ev.summary }}</p>
+                <div v-if="ev.guardrail && Object.keys(ev.guardrail).length" class="guardrail-box">
+                  <div class="guardrail-row">
+                    <span>Guardrail</span>
+                    <b :class="ev.guardrail.allowed ? 'ok' : 'blocked'">{{ ev.guardrail.allowed ? '通过' : '阻止' }}</b>
+                  </div>
+                  <div class="mini-grid">
+                    <span>风险</span><b>{{ ev.guardrail.risk_level || 'unknown' }}</b>
+                    <span>需确认</span><b>{{ ev.guardrail.requires_confirmation ? '是' : '否' }}</b>
+                    <span>已确认</span><b>{{ ev.guardrail.confirmed ? '是' : '否' }}</b>
+                  </div>
+                  <ul v-if="(ev.guardrail.blockers ?? []).length">
+                    <li v-for="item in ev.guardrail.blockers" :key="item">{{ item }}</li>
+                  </ul>
+                </div>
+                <div v-if="(ev.plan?.steps ?? []).length" class="plan-box">
+                  <div class="plan-title">鎵ц璁″垝</div>
+                  <ol>
+                    <li v-for="step in ev.plan.steps" :key="step">{{ step }}</li>
+                  </ol>
+                </div>
+                <div v-if="canConfirmAction(ev)" class="action-confirm-box">
+                  <div>
+                    <b>需要确认</b>
+                    <span>{{ ev.action.confirm_prompt || '确认后执行该 Action' }}</span>
+                  </div>
+                  <button
+                    class="action-confirm-btn"
+                    type="button"
+                    :disabled="streaming || ev.confirming || ev.confirmed"
+                    @click="confirmAction(ev)"
+                  >
+                    {{ ev.confirmed ? '已提交' : ev.confirming ? '提交中' : '确认执行' }}
+                  </button>
+                </div>
+                <div v-if="(ev.sources ?? []).length" class="source-line">
+                  鏉ユ簮锛歿{ compactSources(ev.sources) }}
+                </div>
+              </div>
+            </div>
             <a
               v-for="(im, i) in (m.images ?? [])" :key="i"
               :href="withToken(im.url)" target="_blank" class="msg-img-link"
             >
-              <img :src="withToken(im.url)" :alt="im.caption || '生成图像'" class="msg-img" />
+              <img :src="withToken(im.url)" :alt="im.caption || '鐢熸垚鍥惧儚'" class="msg-img" />
               <span v-if="im.caption" class="msg-img-cap">{{ im.caption }}</span>
             </a>
             <div v-if="m.paramPrompt" class="pc">
-              <div class="pc-head">补全参数 · {{ m.paramPrompt.modelName }}</div>
+              <div class="pc-head">琛ュ叏鍙傛暟 路 {{ m.paramPrompt.modelName }}</div>
               <div v-for="f in m.paramPrompt.fields" :key="f.name" class="pc-field">
                 <div class="pc-label">{{ f.label }}<span v-if="f.required" class="pc-req">*</span></div>
                 <div v-if="(f.options || []).length" class="pc-opts">
@@ -74,11 +129,11 @@
                 <div class="pc-input-row">
                   <input
                     class="pc-input" v-model="paramDraft[f.name]"
-                    :placeholder="f.placeholder || ('输入' + f.label)"
+                    :placeholder="f.placeholder || ('杈撳叆' + f.label)"
                     :disabled="streaming"
                     @keydown.enter.prevent="answerParam(f, paramDraft[f.name])"
                   />
-                  <button class="pc-ok" :disabled="streaming" @click="answerParam(f, paramDraft[f.name])">确定</button>
+                  <button class="pc-ok" :disabled="streaming" @click="answerParam(f, paramDraft[f.name])">纭畾</button>
                 </div>
               </div>
             </div>
@@ -103,7 +158,7 @@
             class="input-box"
             v-model="inputText"
             rows="1"
-            placeholder="输入问题，或点击快捷指令…"
+            placeholder="输入问题，或点击快捷指令..."
             @keydown.enter.exact.prevent="send"
           ></textarea>
           <button
@@ -117,7 +172,12 @@
       </div>
     </div>
 
-    <WorkbenchPanel @cmd="runCommand" />
+    <div :class="['workbench-shell', { collapsed: rightCollapsed }]">
+      <button class="side-toggle right" type="button" @click="rightCollapsed = !rightCollapsed">
+        {{ rightCollapsed ? '<' : '>' }}
+      </button>
+      <WorkbenchPanel v-if="!rightCollapsed" @cmd="runCommand" />
+    </div>
   </div>
 
   <teleport to="body">
@@ -127,14 +187,14 @@
       :style="{ top: ddPos.top, left: ddPos.left }"
       @click.stop
     >
-      <button class="hi-dd-item" @click="startRename(menuId)">改名</button>
-      <button class="hi-dd-item hi-dd-del" @click="deleteSession(menuId); menuId = null">删除</button>
+      <button class="hi-dd-item" @click="startRename(menuId)">鏀瑰悕</button>
+      <button class="hi-dd-item hi-dd-del" @click="deleteSession(menuId); menuId = null">鍒犻櫎</button>
     </div>
   </teleport>
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ArrowRight, Plus } from "@element-plus/icons-vue";
 import { chatStream, withToken } from "../api.js";
 import { renderMarkdown } from "../markdown.js";
@@ -155,7 +215,7 @@ function initSessions() {
     msgs: [{
       id: "0",
       role: "assistant",
-      content: "您好！我是短临降水预报智能体，可以从数据库自动选择最新连续5帧雷达数据，并在您确认后预测未来两小时降水回波。任务完成后还可以继续询问结果趋势、降水信号或要求生成逐帧表格。\n\n你可以直接说：“使用最新雷达数据预测未来两小时”。",
+      content: "您好，我是智慧气象智能体。您可以让我查询数据、调用 adapter 解析文件、运行分析逻辑，或对需要确认的 Action 进行预演和执行。",
       toolCalls: [],
     }],
   }];
@@ -171,14 +231,16 @@ const menuId = ref(null);
 const ddPos = ref({ top: "0px", left: "0px" });
 const editingId = ref(null);
 const editTitle = ref("");
+const leftCollapsed = ref(localStorage.getItem("agent_left_collapsed") === "1");
+const rightCollapsed = ref(localStorage.getItem("agent_right_collapsed") === "1");
 
 const cur = computed(() => sessions.value.find(s => s.id === activeId.value));
-const quickChips = ["使用最新雷达数据预测未来两小时", "评价刚才的预报结果", "把结果整理成表格"];
+const quickChips = ["查看数据库里最新的 WRF 解析任务", "统计最新 WRF T2 按分辨率分组", "重试解析失败任务"];
 
 const infoIdx = ref(0);
 const infoItems = computed(() => [
   "DeepSeek 自然语言理解",
-  "短临降水预报 · 未来120分钟",
+  "Agent 工具调用与过程展示",
   `${sessions.value.length} 个会话`,
   `${sessions.value.reduce((a, s) => a + s.msgs.length, 0)} 条消息`,
   "流式输出 · SSE",
@@ -197,7 +259,7 @@ function fmtDay(ts) {
   if (!ts) return '';
   const d = new Date(ts);
   const today = new Date();
-  if (d.toDateString() === today.toDateString()) return '今天';
+  if (d.toDateString() === today.toDateString()) return '浠婂ぉ';
   return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
@@ -242,7 +304,7 @@ function newSession() {
     msgs: [{
       id: crypto.randomUUID(),
       role: "assistant",
-      content: "您好！当前智能体只提供短临降水预报。你可以让我运行预报，也可以在任务完成后询问结果趋势、降水信号或生成逐帧表格。",
+      content: "您好，当前智能体可查询数据、调用工具、展示执行过程，并在需要时等待您确认 Action。",
       toolCalls: [],
     }],
   };
@@ -252,7 +314,7 @@ function newSession() {
 }
 
 function appendMsg(role, content) {
-  const m = { id: crypto.randomUUID(), role, content, toolCalls: [], images: [], paramPrompt: null, nowcast: null, nowcastAnalysis: null, streaming: role === "assistant" };
+  const m = { id: crypto.randomUUID(), role, content, toolCalls: [], processEvents: [], images: [], paramPrompt: null, nowcast: null, nowcastAnalysis: null, streaming: role === "assistant" };
   cur.value.msgs.push(m);
   scrollBottom();
   return cur.value.msgs[cur.value.msgs.length - 1];
@@ -270,19 +332,101 @@ function latestNowcastRunId() {
 function applyToolEvent(msg, ev) {
   let tc = msg.toolCalls.find(t => t.name === ev.name);
   if (!tc) {
-    tc = { name: ev.name, label: ev.label ?? "", progress: 0, result: "" };
+    tc = { name: ev.name, label: ev.label ?? "", status: ev.status ?? "", progress: 0, result: "" };
     msg.toolCalls.push(tc);
   }
+  if (ev.status != null) tc.status = ev.status;
   if (ev.label != null) tc.label = ev.label;
   if (ev.progress != null) tc.progress = ev.progress;
   if (ev.result != null) tc.result = ev.result;
+}
+
+function applyAnalysisResult(msg, ev) {
+  const item = {
+    name: ev.name,
+    label: ev.label,
+    status: ev.status,
+    summary: ev.summary,
+    guardrail: ev.guardrail || null,
+    plan: ev.plan || null,
+    action: ev.action || null,
+    sources: ev.sources || [],
+    warnings: ev.warnings || [],
+    records: ev.records || [],
+    timeRange: ev.time_range || null,
+    confirming: false,
+    confirmed: false,
+  };
+  msg.processEvents.push(item);
+  const tc = msg.toolCalls.find(t => t.name === ev.name);
+  if (tc) {
+    tc.analysis = item;
+    if (ev.summary) tc.result = ev.summary;
+  }
+}
+
+function processTitle(ev) {
+  if (ev.name === "run_action_dry_run") return "Action 预演";
+  if (ev.name === "run_action_confirmed") return "Action 执行";
+  if (ev.name === "portable_run_logic") return "业务逻辑";
+  if (ev.name?.startsWith?.("db_")) return "数据库分析";
+  return ev.label || ev.name || "分析结果";
+}
+
+function processStatus(ev) {
+  if (ev.guardrail?.allowed === false) return "已阻止";
+  if (ev.status === "ok") return "完成";
+  return ev.status || "完成";
+}
+
+function processStatusClass(ev) {
+  if (ev.guardrail?.allowed === false || ev.status === "blocked") return "blocked";
+  if (ev.status === "ok") return "ok";
+  return "";
+}
+
+function compactSources(sources) {
+  return sources.map(item => {
+    if (typeof item === "string") return item;
+    if (item.database) return [item.database, ...(item.tables || [])].join(" / ");
+    if (item.table) return [item.database, item.table].filter(Boolean).join(" / ");
+    if (item.meta_file) return item.meta_file;
+    return JSON.stringify(item);
+  }).join("；");
 }
 
 function runCommand(prompt) {
   inputText.value += prompt + ' ';
 }
 
-// 用户在补全卡里选择/输入参数：组成一条消息并重新发送
+function canConfirmAction(ev) {
+  return ev?.name === "run_action_dry_run"
+    && ev?.guardrail?.allowed === true
+    && ev?.guardrail?.requires_confirmation === true
+    && ev?.guardrail?.confirmed !== true
+    && ev?.action?.action_id
+    && ev?.action?.parameters;
+}
+
+async function confirmAction(ev) {
+  if (!canConfirmAction(ev) || streaming.value) return;
+  ev.confirming = true;
+  inputText.value = ev.action.confirm_prompt || buildConfirmPrompt(ev.action);
+  await send();
+  ev.confirming = false;
+  ev.confirmed = true;
+}
+
+function buildConfirmPrompt(action) {
+  if (action.action_id === "retry_failed_parse" && action.parameters?.file_uuid) {
+    return `确认重试解析 file_uuid ${action.parameters.file_uuid}`;
+  }
+  if (action.action_id === "parse_existing_file" && action.parameters?.file_path) {
+    return `确认解析 ${action.parameters.file_path}`;
+  }
+  return `确认执行 action ${action.action_id}`;
+}
+
 function answerParam(field, value) {
   const v = (value ?? "").toString().trim();
   if (!v || streaming.value) return;
@@ -312,6 +456,7 @@ async function send() {
     )) {
       if (ev.type === "text") aiMsg.content += ev.value;
       else if (ev.type === "tool") applyToolEvent(aiMsg, ev);
+      else if (ev.type === "analysis_result") applyAnalysisResult(aiMsg, ev);
       else if (ev.type === "image") aiMsg.images.push({ url: ev.url, caption: ev.caption });
       else if (ev.type === "need_params") aiMsg.paramPrompt = { model: ev.model, modelName: ev.model_name, fields: ev.fields };
       else if (ev.type === "nowcast_confirmation") {
@@ -325,11 +470,11 @@ async function send() {
       else if (ev.type === "nowcast_analysis") {
         aiMsg.nowcastAnalysis = ev.analysis;
       }
-      else if (ev.type === "error") aiMsg.content += `\n⚠️ ${ev.message}`;
+      else if (ev.type === "error") aiMsg.content += `\n鈿狅笍 ${ev.message}`;
       scrollBottom();
     }
   } catch (e) {
-    aiMsg.content += `\n⚠️ 连接智能体后端失败：${e.message}`;
+    aiMsg.content += `\n鈿狅笍 杩炴帴鏅鸿兘浣撳悗绔け璐ワ細${e.message}`;
   }
   aiMsg.streaming = false;
   streaming.value = false;
@@ -337,6 +482,8 @@ async function send() {
 }
 
 function onDocClick() { menuId.value = null; }
+watch(leftCollapsed, value => localStorage.setItem("agent_left_collapsed", value ? "1" : "0"));
+watch(rightCollapsed, value => localStorage.setItem("agent_right_collapsed", value ? "1" : "0"));
 onMounted(() => {
   document.addEventListener("click", onDocClick);
   tickTimer = setInterval(() => infoIdx.value++, 3000);
@@ -353,15 +500,80 @@ onBeforeUnmount(() => {
   gap: 10px;
   padding: 10px;
   overflow: hidden;
+  position: relative;
 }
 
-/* ── sidebar ── */
+/* 鈹€鈹€ sidebar 鈹€鈹€ */
 .sidebar {
+  position: relative;
   width: 196px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  transition: width .18s ease, padding .18s ease, border-color .18s ease;
+}
+
+.sidebar.collapsed {
+  width: 42px;
+  padding: 0;
+  border-color: rgba(78, 161, 255, .22);
+}
+
+.workbench-shell {
+  position: relative;
+  width: 220px;
+  flex-shrink: 0;
+  display: flex;
+  min-width: 0;
+  transition: width .18s ease;
+}
+
+.workbench-shell.collapsed {
+  width: 42px;
+}
+
+.workbench-shell :deep(.workbench) {
+  width: 100%;
+}
+
+.side-toggle {
+  position: absolute;
+  z-index: 20;
+  top: 50%;
+  width: 24px;
+  height: 52px;
+  transform: translateY(-50%);
+  border: 1px solid rgba(78, 161, 255, .28);
+  border-radius: 8px;
+  background: rgba(17, 27, 44, .92);
+  color: var(--accent);
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, .26);
+}
+
+.side-toggle:hover {
+  border-color: rgba(78, 161, 255, .55);
+  background: rgba(31, 48, 76, .98);
+}
+
+.side-toggle.left {
+  right: 8px;
+}
+
+.sidebar.collapsed .side-toggle.left {
+  right: 8px;
+}
+
+.side-toggle.right {
+  left: 8px;
+}
+
+.workbench-shell.collapsed .side-toggle.right {
+  left: 8px;
 }
 
 .new-btn {
@@ -380,6 +592,162 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 7px;
   transition: background 0.15s;
+}
+
+.agent-process {
+  display: grid;
+  gap: 9px;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid rgba(148, 163, 184, .18);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, .18);
+}
+
+.ap-head,
+.ap-title,
+.guardrail-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.ap-head {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.ap-head span,
+.plan-title {
+  color: #93c5fd;
+  font-weight: 700;
+}
+
+.ap-item {
+  display: grid;
+  gap: 7px;
+  padding: 9px;
+  border: 1px solid rgba(148, 163, 184, .16);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, .035);
+}
+
+.ap-title span {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.ap-status {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.ap-status.ok,
+.guardrail-row b.ok {
+  color: #22c55e;
+}
+
+.ap-status.blocked,
+.guardrail-row b.blocked {
+  color: #f87171;
+}
+
+.ap-item p {
+  margin: 0;
+  color: rgba(226, 232, 240, .86);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.guardrail-box,
+.plan-box {
+  display: grid;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid rgba(148, 163, 184, .16);
+  border-radius: 7px;
+  background: rgba(2, 6, 23, .16);
+}
+
+.guardrail-row {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.mini-grid {
+  display: grid;
+  grid-template-columns: repeat(3, auto 1fr);
+  gap: 6px 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.mini-grid b {
+  color: var(--text);
+}
+
+.guardrail-box ul,
+.plan-box ol {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.source-line {
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.action-confirm-box {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px;
+  border: 1px solid rgba(59, 130, 246, .28);
+  border-radius: 7px;
+  background: rgba(59, 130, 246, .08);
+}
+
+.action-confirm-box div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.action-confirm-box b {
+  color: #93c5fd;
+  font-size: 11px;
+}
+
+.action-confirm-box span {
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.action-confirm-btn {
+  flex: 0 0 auto;
+  min-height: 28px;
+  padding: 0 11px;
+  border: 1px solid rgba(96, 165, 250, .5);
+  border-radius: 7px;
+  background: rgba(37, 99, 235, .22);
+  color: #dbeafe;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.action-confirm-btn:disabled {
+  cursor: default;
+  opacity: .55;
 }
 .new-btn:hover { background: rgba(255, 255, 255, 0.16); }
 .new-btn .el-icon { color: var(--accent); font-size: 15px; }
@@ -499,7 +867,7 @@ onBeforeUnmount(() => {
 .tick-enter-from { opacity: 0; transform: translateY(8px); }
 .tick-leave-to   { opacity: 0; transform: translateY(-8px); }
 
-/* ── 三点下拉菜单（teleport 到 body）── */
+/* 鈹€鈹€ 涓夌偣涓嬫媺鑿滃崟锛坱eleport 鍒?body锛夆攢鈹€ */
 .hi-dd {
   position: fixed;
   z-index: 300;
@@ -530,7 +898,7 @@ onBeforeUnmount(() => {
 .hi-dd-del { color: #ef4444; }
 .hi-dd-del:hover { background: rgba(239, 68, 68, 0.12); }
 
-/* ── chat ── */
+/* 鈹€鈹€ chat 鈹€鈹€ */
 .chat {
   flex: 1;
   min-width: 0;
@@ -596,7 +964,7 @@ onBeforeUnmount(() => {
 .bub-ai { background: var(--field); border: 1px solid var(--border); border-radius: 4px 13px 13px 13px; }
 .bub-u  { background: rgba(78, 161, 255, 0.13); border: 1px solid rgba(78, 161, 255, 0.22); border-radius: 13px 4px 13px 13px; }
 
-/* ── Markdown ── */
+/* 鈹€鈹€ Markdown 鈹€鈹€ */
 .md { white-space: normal; }
 .md :deep(> *:first-child) { margin-top: 0; }
 .md :deep(> *:last-child) { margin-bottom: 0; }
@@ -641,12 +1009,12 @@ onBeforeUnmount(() => {
 }
 @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
 
-/* ── 生成图像 ── */
+/* 鈹€鈹€ 鐢熸垚鍥惧儚 鈹€鈹€ */
 .msg-img-link { display: block; margin-top: 8px; text-decoration: none; }
 .msg-img { display: block; max-width: 100%; border-radius: 8px; border: 1px solid var(--border); }
 .msg-img-cap { display: block; margin-top: 4px; font-size: 11px; color: var(--muted); }
 
-/* ── 参数补全卡 ── */
+/* 鈹€鈹€ 鍙傛暟琛ュ叏鍗?鈹€鈹€ */
 .pc {
   margin-top: 8px;
   padding: 10px 12px;
@@ -680,7 +1048,7 @@ onBeforeUnmount(() => {
 }
 .pc-ok:disabled { opacity: 0.5; cursor: default; }
 
-/* ── input ── */
+/* 鈹€鈹€ input 鈹€鈹€ */
 .input-area {
   flex-shrink: 0;
   padding: 10px 14px 14px;
