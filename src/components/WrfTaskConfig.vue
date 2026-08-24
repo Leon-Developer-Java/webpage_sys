@@ -1,7 +1,7 @@
 <template>
   <section class="task-config">
     <header class="panel-head">
-      <div><span>NEW WRF RUN</span><h2>新建模拟任务</h2></div>
+      <div><span>{{ retryTaskId ? 'RESTART WRF TASK' : 'NEW WRF RUN' }}</span><h2>{{ retryTaskId ? `调整参数 · 第 ${Number(attemptNo || 1) + 1} 次尝试` : '新建模拟任务' }}</h2></div>
       <div class="head-actions"><el-tag>GFS · HPC</el-tag><el-button text @click="emit('cancel')">取消</el-button></div>
     </header>
 
@@ -104,7 +104,7 @@
 
     <footer class="config-footer">
       <div><b>预计 {{ form.domains.length }} 个嵌套域</b><span>{{ form.startTime }} 至 {{ form.endTime }} · UTC</span></div>
-      <el-button type="primary" size="large" :loading="submitting" @click="submit">提交至超算并行队列（最多 {{ maxConcurrentTasks }} 个）</el-button>
+      <el-button type="primary" size="large" :loading="submitting" @click="submit">{{ retryTaskId ? '确认参数并重新运行原任务' : `提交至超算并行队列（最多 ${maxConcurrentTasks} 个）` }}</el-button>
     </footer>
   </section>
 </template>
@@ -116,7 +116,13 @@ import { createWrfRecommendation, getWrfRecommendation } from "../api.js";
 import ProjMap from "./ProjMap.vue";
 import WrfDomainEditor from "./WrfDomainEditor.vue";
 
-const props = defineProps({ options: Object, submitting: Boolean });
+const props = defineProps({
+  options: Object,
+  submitting: Boolean,
+  initialRequest: Object,
+  retryTaskId: { type: String, default: "" },
+  attemptNo: { type: Number, default: 1 },
+});
 const emit = defineEmits(["submit", "cancel"]);
 const theme = inject("theme", ref(true));
 
@@ -158,6 +164,7 @@ const assimilationOptions = computed(() => props.options?.assimilation_schemes |
 const physicsPresets = computed(() => props.options?.physics_presets || { "默认通用": fallbackPhysics });
 const selectablePhysicsPresets = computed(() => {
   const values = { ...physicsPresets.value };
+  if (form.preset && !values[form.preset]) values[form.preset] = form.physics;
   if (recommendation.value && form.preset && !values[form.preset]) values[form.preset] = recommendation.value.physics;
   return values;
 });
@@ -189,8 +196,27 @@ const physicsFields = [
 
 watch(() => props.options, value => {
   if (!value) return;
+  if (props.initialRequest) return;
   resetDomains();
   applyPreset();
+}, { immediate: true });
+watch(() => props.initialRequest, value => {
+  if (!value) return;
+  const inputTime = raw => String(raw || "").replace(/Z$/, "").slice(0, 16);
+  form.startTime = inputTime(value.start_time);
+  form.endTime = inputTime(value.end_time);
+  form.center = { lat: Number(value.center?.lat), lon: Number(value.center?.lon) };
+  form.interval = Number(value.forecast_interval_hours || 1);
+  form.assimilation = value.assimilation_scheme || "off";
+  form.forecastFocus = value.forecast_focus || "general";
+  form.preset = value.physics?.preset || "默认通用";
+  form.physics = { ...fallbackPhysics, ...(value.physics || {}) };
+  form.spinupMode = value.spinup?.mode || "off";
+  form.spinupHours = Number(value.spinup?.hours || 0);
+  form.domains = (value.domains || fallbackDomains.slice(0, 2)).map(item => ({ ...item }));
+  domainCount.value = form.domains.length;
+  activeDomain.value = 0;
+  recommendation.value = null;
 }, { immediate: true });
 watch(() => form.interval, () => {
   if (form.spinupMode === "custom" && !availableSpinupHours.value.includes(Number(form.spinupHours))) {

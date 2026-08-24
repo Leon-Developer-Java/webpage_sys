@@ -62,8 +62,30 @@
             </template>
           </template>
 
-          <WrfTaskConfig v-else-if="workspaceView === 'new'" :options="options" :submitting="submitting" @submit="submitTask" @cancel="cancelConfig" />
-          <WrfTaskRun v-else :task="selectedTask" :logs="logs" @cancel="cancelTask" @retry="retryTask" @retry-outputs="retryTaskOutputs" @render-partial="renderPartialTask" @result="showResult(selectedTask)" @back="showLatestResult" />
+          <WrfTaskConfig
+            v-else-if="workspaceView === 'new'"
+            :options="options"
+            :submitting="submitting"
+            :initial-request="restartContext?.request"
+            :retry-task-id="restartContext?.taskId || ''"
+            :attempt-no="restartContext?.attemptNo || 1"
+            @submit="submitTask"
+            @cancel="cancelConfig"
+          />
+          <WrfTaskRun
+            v-else
+            :task="selectedTask"
+            :logs="logs"
+            :log-attempt-no="logAttemptNo"
+            @cancel="cancelTask"
+            @resume="resumeTask"
+            @edit-restart="editAndRestart"
+            @retry-outputs="retryTaskOutputs"
+            @render-partial="renderPartialTask"
+            @attempt-change="selectLogAttempt"
+            @result="showResult(selectedTask)"
+            @back="showLatestResult"
+          />
         </section>
 
         <aside class="right-sidebar">
@@ -137,8 +159,8 @@ import {
 } from "@element-plus/icons-vue";
 import {
   authenticateWrfHpc, cancelWrfTask, cleanupWrfGfs, createWrfTask, deleteWrfTask, getWrfDataStatus,
-  getWrfHealth, getWrfOptions, getWrfTaskLogs, listWrfTasks,
-  renderPartialWrfTask, retryWrfTask, retryWrfTaskOutputs, syncLatestWrfGfs,
+  getWrfHealth, getWrfOptions, getWrfTaskLogs, getWrfTaskRestartPlan, listWrfTasks,
+  renderPartialWrfTask, restartWrfTask, resumeWrfTask, retryWrfTaskOutputs, syncLatestWrfGfs,
 } from "../api.js";
 import ProjMap from "../components/ProjMap.vue";
 import WrfTaskConfig from "../components/WrfTaskConfig.vue";
@@ -148,7 +170,7 @@ import WrfResultLayer from "../components/WrfResultLayer.vue";
 const route = useRoute();
 const router = useRouter();
 const theme = inject("theme", ref(true));
-const FINAL = new Set(["succeeded", "partial_success", "failed", "cancelled"]);
+const FINAL = new Set(["succeeded", "partial_success", "failed", "waiting_restart", "cancelled"]);
 const sources = [
   { id: "gfs", name: "GFS 全球预报", description: "0.25° WRF 必需场，超算共享数据池", provider: "NOAA NOMADS", status: "available" },
   { id: "ecmwf", name: "ECMWF IFS", description: "欧洲中心全球预报资料", provider: "ECMWF Open Data", status: "planned" },
@@ -177,6 +199,8 @@ const selectedTaskId = ref("");
 const resultTaskId = ref("");
 const logs = ref("");
 const logOffset = ref(0);
+const logAttemptNo = ref(null);
+const restartContext = ref(null);
 const visualTimes = ref([]);
 const visualTimeIndex = ref(0);
 const visualInfo = ref(null);
@@ -212,7 +236,7 @@ const dockTitle = computed(() => ({ source: "数据源选择", proj: "投影方�
 function openTool(name) { if (dockOpen.value && tool.value === name) dockOpen.value = false; else { tool.value = name; dockOpen.value = true; } }
 function selectSource(source) { if (source.status !== "available") ElMessage.info(`${source.name} 尚未接入，当前仅支持 GFS`); }
 function isDisplayable(task) { return Boolean(task && ["succeeded", "partial_success"].includes(task.status)); }
-function taskStatus(value) { return ({ queued: "排队", prefetching: "准备数据", uploading: "准备超算", running: "运行", rendering: "渲染", succeeded: "成功", partial_success: "部分完成", failed: "失败", cancelled: "已取消", cancel_pending: "取消中", reconciling: "对账" })[value] || value; }
+function taskStatus(value) { return ({ queued: "排队", prefetching: "准备数据", uploading: "准备超算", running: "运行", rendering: "渲染", succeeded: "成功", partial_success: "部分完成", failed: "失败", waiting_restart: "待调整", paused_external: "等待认证", cancelled: "已取消", cancel_pending: "取消中", reconciling: "恢复连接" })[value] || value; }
 function poolStatus(value) { return ({ ready: "已就绪", downloading: "下载中", checking: "检查中", partial: "部分就绪", missing: "待下载", unavailable: "不可用", error: "异常", idle: "等待" })[value] || value || "等待"; }
 function cycleLabel(cycle) {
   const status = poolStatus(cycle?.status);
@@ -247,16 +271,17 @@ function syncRoute() {
     resetVisualization();
   }
 }
-function openNewTask() { stopPlayback(); routeTo("new"); }
+function openNewTask() { stopPlayback(); restartContext.value = null; routeTo("new"); }
 async function cancelConfig() {
-  try { await ElMessageBox.confirm("当前未提交的任务配置不会保存，确定返回可视化？", "离开配置", { type: "warning" }); showLatestResult(); } catch (error) { if (error !== "cancel" && error !== "close") ElMessage.error(error.message); }
+  try { await ElMessageBox.confirm("当前未提交的任务配置不会保存，确定返回可视化？", "离开配置", { type: "warning" }); restartContext.value = null; showLatestResult(); } catch (error) { if (error !== "cancel" && error !== "close") ElMessage.error(error.message); }
 }
 function showRun(task) { if (!task) return; selectedTaskId.value = task.id; resetLogs(); routeTo("run", task.id); }
 function showResult(task) { if (!isDisplayable(task)) return; resultTaskId.value = task.id; routeTo("result", task.id); }
 function showLatestResult() { const task = successfulTasks.value[0]; routeTo("result", task?.id || ""); }
 function openHistoryTask(task) { if (isDisplayable(task)) showResult(task); else showRun(task); }
 
-function resetLogs() { logs.value = ""; logOffset.value = 0; }
+function resetLogs(attemptNo = null) { logs.value = ""; logOffset.value = 0; logAttemptNo.value = attemptNo; }
+function selectLogAttempt(attemptNo) { resetLogs(Number(attemptNo)); refreshLogs(); }
 function resetVisualization() { stopPlayback(); visualTimes.value = []; visualTimeIndex.value = 0; visualInfo.value = null; }
 function onDisplayLoaded(payload) { visualTimes.value = Array.isArray(payload?.times) ? payload.times : []; setVisualTime(visualTimeIndex.value); }
 function onVariableChange(payload) { visualInfo.value = payload; if (Array.isArray(payload?.times)) { visualTimes.value = payload.times; setVisualTime(visualTimeIndex.value); } }
@@ -287,7 +312,7 @@ async function refreshAll(showMessage = false, includeRemote = hpcAuthenticated.
 async function refreshLogs() {
   if (!selectedTaskId.value) return;
   try {
-    const chunk = await getWrfTaskLogs(selectedTaskId.value, logOffset.value);
+    const chunk = await getWrfTaskLogs(selectedTaskId.value, logOffset.value, logAttemptNo.value);
     logs.value += chunk.text || "";
     if (logs.value.length > MAX_LOG_CHARS) logs.value = `… 已省略较早日志 …\n${logs.value.slice(-MAX_LOG_CHARS)}`;
     logOffset.value = chunk.offset || logOffset.value;
@@ -339,8 +364,25 @@ async function submitTask(payload) {
   submitting.value = true;
   try {
     await ensureHpcReady("认证并提交");
-    const task = await createWrfTask(payload);
-    ElMessage.success("WRF 任务已进入并行队列");
+    let task;
+    if (restartContext.value) {
+      const plan = await getWrfTaskRestartPlan(restartContext.value.taskId);
+      const paths = [
+        ...(plan.local_paths || []).map(path => `本地：${path}`),
+        ...(plan.remote_paths || []).map(path => `超算：${path}`),
+      ];
+      await ElMessageBox.confirm(
+        `将归档第 ${plan.attempt_no} 次尝试，并清理以下任务专属残片：\n\n${paths.join("\n")}\n\n共享 GFS 数据池和历史归档不会删除。`,
+        "确认调整参数并重新运行",
+        { type: "warning", confirmButtonText: "确认清理并重新运行", cancelButtonText: "返回修改" },
+      );
+      task = await restartWrfTask(plan.task_id, payload, plan.attempt_no);
+      restartContext.value = null;
+      ElMessage.success(`原任务已开始第 ${task.attempt_no} 次尝试`);
+    } else {
+      task = await createWrfTask(payload);
+      ElMessage.success("WRF 任务已进入并行队列");
+    }
     await refreshAll();
     showRun(task);
   } catch (error) {
@@ -355,9 +397,31 @@ async function cancelTask() {
     : `将取消任务 ${task.id} 的排队或超算准备，不会启动远端 WRF，是否继续？`;
   try { await ElMessageBox.confirm(message, "取消 WRF 任务", { type: "warning", confirmButtonText: "确认取消" }); await cancelWrfTask(task.id); ElMessage.success(launched ? "远端取消请求已转入后台处理" : "任务已取消"); await refreshAll(); } catch (error) { if (error !== "cancel" && error !== "close") ElMessage.error(error.message); }
 }
-async function retryTask() {
-  if (!selectedTask.value) return;
-  try { const task = await retryWrfTask(selectedTask.value.id); ElMessage.success("已创建新的重试任务"); await refreshAll(); showRun(task); } catch (error) { ElMessage.error(error.message); }
+async function editAndRestart() {
+  const task = selectedTask.value;
+  if (!task) return;
+  try {
+    await ensureHpcReady("认证并检查重跑路径");
+    const plan = await getWrfTaskRestartPlan(task.id);
+    if (!plan.can_restart) throw new Error(plan.reason || "当前任务不能清理重跑");
+    restartContext.value = {
+      taskId: task.id,
+      attemptNo: Number(task.attempt_no || 1),
+      request: JSON.parse(JSON.stringify(task.request || {})),
+    };
+    routeTo("new");
+  } catch (error) { ElMessage.error(error.message); }
+}
+async function resumeTask() {
+  const task = selectedTask.value;
+  if (!task) return;
+  try {
+    await ensureHpcReady("认证并继续任务", true);
+    const resumed = await resumeWrfTask(task.id);
+    ElMessage.success("已保留远端计算并开始从原阶段对账");
+    await refreshAll();
+    showRun(resumed);
+  } catch (error) { ElMessage.error(error.message); }
 }
 async function retryTaskOutputs() {
   if (!selectedTask.value) return;
@@ -437,7 +501,7 @@ onBeforeUnmount(() => { clearInterval(refreshTimer); stopPlayback(); });
 .picker button, .map-theme { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 10px 11px; border: 1px solid var(--border); border-radius: 9px; background: var(--field); color: var(--text); font: inherit; font-size: 11px; cursor: pointer; }.picker button.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }.map-theme { justify-content: center; gap: 7px; margin-top: 10px; }
 .studio-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 9px; }.content-row { flex: 1; min-height: 0; display: flex; gap: 10px; }.center-workspace { flex: 1; min-width: 0; position: relative; overflow: auto; border-radius: 14px; scrollbar-width: thin; }.workspace-head { padding: 14px 16px; border-bottom: 1px solid var(--border); }.workspace-head h2 { display: inline; margin: 0 9px 0 0; font-size: 18px; }.workspace-head small { color: var(--muted); font: 9px monospace; }.workspace-actions { display: flex; }.result-empty { height: calc(100% - 70px); min-height: 430px; display: grid; place-content: center; justify-items: center; gap: 9px; color: var(--muted); text-align: center; }.result-empty .el-icon { color: var(--accent); font-size: 38px; }.result-empty b { color: var(--text); font-size: 16px; }.result-empty span { font-size: 10px; }.result-toolbar { display: flex; justify-content: space-between; padding: 8px 12px; color: var(--muted); font-size: 10px; }.result-toolbar span { display: flex; align-items: center; gap: 6px; }.result-toolbar i { width: 7px; height: 7px; border-radius: 50%; background: #22c55e; }.result-toolbar b { color: var(--text); font: 10px monospace; }.visual-map { position: relative; height: calc(100% - 164px); min-height: 430px; margin: 0 10px; overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: #07101e; }.timebar { display: flex; align-items: center; gap: 7px; margin: 9px 10px 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--field); }.timebar :deep(.el-slider) { flex: 1; margin: 0 8px; }.timebar time { min-width: 138px; font: 9px monospace; }.timebar > span { min-width: 38px; color: var(--muted); font-size: 9px; text-align: right; }
 .right-sidebar { flex-shrink: 0; width: 272px; display: flex; flex-direction: column; gap: 9px; overflow-y: auto; scrollbar-width: none; }.side-card { padding: 12px; border-radius: 13px; }.side-card header { padding-bottom: 9px; border-bottom: 1px solid var(--border); }.side-card header h3 { font-size: 14px; }.side-card header > span { color: var(--muted); }.side-card header > i { width: 7px; height: 7px; border-radius: 50%; background: #94a3b8; }.side-card header > i.ready { background: #22c55e; }.side-card header > i.error { background: #ef4444; }.pool-provider { padding-top: 9px; }.provider-head { display: flex; justify-content: space-between; font-size: 10px; }.provider-head span { color: var(--muted); }.pool-provider article, .task-items article { position: relative; margin-top: 7px; padding: 9px; border: 1px solid var(--border); border-radius: 9px; background: var(--field); }.pool-provider article.target { border-color: #22c55e66; }.pool-provider article > div, .task-items article > div { display: flex; justify-content: space-between; gap: 6px; }.pool-provider article b, .task-items article b { font-size: 10px; }.pool-provider article span { color: #22c55e; font-size: 8px; }.pool-provider article span.downloading { color: #38bdf8; }.pool-provider article span.missing, .pool-provider article span.partial { color: #f59e0b; }.pool-provider article span.error { color: #f87171; }.pool-provider article p, .task-items article p { margin: 4px 0; overflow: hidden; color: var(--muted); font: 8px monospace; text-overflow: ellipsis; white-space: nowrap; }.pool-provider article p.download-message { white-space: normal; word-break: break-word; }.pool-provider article p.download-message.error { color: #f87171; }.pool-provider article small, .task-items article small { color: var(--muted); font-size: 8px; }.pool-provider article code { display: block; margin-top: 5px; overflow: hidden; color: #64748b; font-size: 7px; text-overflow: ellipsis; white-space: nowrap; }.pool-provider article em { display: block; margin-top: 5px; color: #f59e0b; font-size: 8px; font-style: normal; }.cycle-cleanup { margin-top: 6px; padding: 0; border: 0; background: transparent; color: #f87171; font-size: 8px; cursor: pointer; }.side-empty { padding: 15px 5px; color: var(--muted); font-size: 9px; text-align: center; }.cleanup-warning { display: grid; gap: 4px; margin-top: 8px; padding: 8px; border-radius: 8px; color: #f87171; background: #ef444414; font-size: 9px; }.cleanup-warning button, .side-action { border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }.side-action { width: 100%; margin-top: 7px; color: var(--accent); font-size: 9px; }.side-action:disabled, .cycle-cleanup:disabled { cursor: wait; opacity: .55; }
-.history-card { flex: 1; min-height: 220px; }.task-items { max-height: 240px; overflow-y: auto; scrollbar-width: thin; }.task-items article { cursor: pointer; }.task-items article:hover, .task-items article.selected { border-color: var(--accent); }.task-items article strong { color: var(--accent); font-size: 10px; }.mini-status { padding: 2px 5px; border-radius: 7px; color: #64748b; background: #64748b22; font-size: 8px; }.mini-status.succeeded { color: #22c55e; background: #22c55e18; }.mini-status.partial_success { color: #f59e0b; background: #f59e0b18; }.mini-status.failed, .mini-status.cancelled { color: #f87171; background: #ef444418; }.delete-task { position: absolute; right: 7px; bottom: 6px; border: 0; background: transparent; color: #f87171; font-size: 8px; cursor: pointer; }.new-task { width: 100%; margin-top: 8px; padding: 9px; border: 1px dashed #22c55e; border-radius: 9px; background: #22c55e0c; color: #22c55e; font-weight: 700; cursor: pointer; }
+.history-card { flex: 1; min-height: 220px; }.task-items { max-height: 240px; overflow-y: auto; scrollbar-width: thin; }.task-items article { cursor: pointer; }.task-items article:hover, .task-items article.selected { border-color: var(--accent); }.task-items article strong { color: var(--accent); font-size: 10px; }.mini-status { padding: 2px 5px; border-radius: 7px; color: #64748b; background: #64748b22; font-size: 8px; }.mini-status.succeeded { color: #22c55e; background: #22c55e18; }.mini-status.partial_success { color: #f59e0b; background: #f59e0b18; }.mini-status.failed, .mini-status.waiting_restart, .mini-status.cancelled { color: #f87171; background: #ef444418; }.mini-status.paused_external, .mini-status.reconciling { color: #f59e0b; background: #f59e0b18; }.delete-task { position: absolute; right: 7px; bottom: 6px; border: 0; background: transparent; color: #f87171; font-size: 8px; cursor: pointer; }.new-task { width: 100%; margin-top: 8px; padding: 9px; border: 1px dashed #22c55e; border-radius: 9px; background: #22c55e0c; color: #22c55e; font-weight: 700; cursor: pointer; }
 .status-footer { flex-shrink: 0; min-height: 58px; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 8px 13px; border-radius: 13px; }.footer-title { display: flex; align-items: center; gap: 9px; }.pulse { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; background: var(--accent-soft); }.pulse i, .footer-service i { width: 7px; height: 7px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 8px #22c55e; }.pulse.offline i, .footer-service.offline i { background: #ef4444; box-shadow: 0 0 8px #ef4444; }.footer-title div { display: grid; gap: 2px; }.footer-title b { font-size: 11px; }.footer-title small { max-width: 230px; overflow: hidden; color: var(--muted); font: 8px monospace; text-overflow: ellipsis; white-space: nowrap; }.workflow { display: flex; align-items: center; gap: 6px; }.workflow span { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 9px; }.workflow span i { display: grid; place-items: center; width: 18px; height: 18px; border: 1px solid var(--border); border-radius: 50%; font-style: normal; }.workflow span.done { color: var(--text); }.workflow span.done i { border-color: var(--accent); color: #fff; background: var(--accent); }.workflow span.active i { box-shadow: 0 0 8px var(--accent); }.workflow em { width: 24px; height: 1px; background: var(--border); }.footer-service { display: flex; align-items: center; gap: 6px; color: #22c55e; font-size: 9px; }.footer-service.offline { color: #f87171; }
 @media (max-width: 1250px) { .right-sidebar { width: 245px; }.tool-dock { width: 250px; }.workflow em { width: 12px; } }
 @media (max-width: 980px) { .tool-dock { position: absolute; top: 70px; bottom: 8px; left: 88px; z-index: 20; }.right-sidebar { width: 225px; }.workflow { display: none; } }
