@@ -106,7 +106,7 @@ const gfsDemandHint = computed(() => {
   return `${cycle} · 还差 ${remaining}/${total} 个任务时次 · ${waiting}`;
 });
 const stages = [
-  { key: "queue", label: "排队", min: 0 }, { key: "gfs", label: "GFS 数据", min: 5 },
+  { key: "queue", label: "调度", min: 0 }, { key: "gfs", label: "GFS 数据", min: 5 },
   { key: "prepare", label: "准备 tx-lab", min: 40 }, { key: "wrf", label: "WPS / WRF", min: 68 },
   { key: "render", label: "结果渲染", min: 88 }, { key: "done", label: "完成", min: 100 },
 ];
@@ -125,8 +125,8 @@ const attemptItems = computed(() => [
   { attempt_no: Number(props.task?.attempt_no || 1), status: props.task?.status || "queued" },
   ...(props.task?.attempts || []),
 ].sort((a, b) => Number(b.attempt_no) - Number(a.attempt_no)));
-function statusLabel(value) { return ({ queued: "排队中", prefetching: "准备数据", uploading: "准备 tx-lab", running: "运行中", rendering: "渲染中", succeeded: "已完成", partial_success: "部分完成", failed: "失败", waiting_restart: "待调整", paused_external: "等待连接", cancelled: "已取消", cancel_pending: "取消中", reconciling: "对账中" })[value] || value; }
-function stageLabel(value) { return ({ queued: "等待执行名额", retrying_outputs: "等待恢复结果下载", retrying_partial_render: "等待部分结果渲染", checking_remote_outputs: "确认远端 WRF 结果", selecting_cycle: "选择 GFS 00Z 周期", waiting_for_gfs_cache: "等待 tx-lab GFS 数据", checking_hpc_gfs: "校验 tx-lab GFS 数据池", waiting_for_hpc_gfs: "等待 tx-lab GFS 补齐", remote_gfs_ready: "tx-lab GFS 已就绪", preparing_hpc: "提交任务配置", running: "WPS / WRF 运行中", reconciling: "正在恢复 tx-lab 连接", paused_external: "等待重新连接 tx-lab", cancel_pending: "正在取消远端进程", cancelled: "任务已取消", downloading_outputs: "拉取 wrfout 结果", rendering: "生成 WebP", done: "任务完成", failed: "本次尝试已停止" })[value] || value || "等待开始"; }
+function statusLabel(value) { return ({ queued: "待调度", prefetching: "准备数据", uploading: "准备 tx-lab", running: "运行中", rendering: "渲染中", succeeded: "已完成", partial_success: "部分完成", failed: "失败", waiting_restart: "待调整", paused_external: "等待连接", cancelled: "已取消", cancel_pending: "取消中", reconciling: "对账中" })[value] || value; }
+function stageLabel(value) { return ({ queued: "等待动态调度", retrying_outputs: "等待恢复结果下载", retrying_partial_render: "等待部分结果渲染", checking_remote_outputs: "确认远端 WRF 结果", selecting_cycle: "选择 GFS 00Z 周期", waiting_for_gfs_cache: "等待 tx-lab GFS 数据", checking_hpc_gfs: "校验 tx-lab GFS 数据池", waiting_for_hpc_gfs: "等待 tx-lab GFS 补齐", remote_gfs_ready: "tx-lab GFS 已就绪", preparing_hpc: "提交任务配置", running: "WPS / WRF 运行中", reconciling: "正在恢复 tx-lab 连接", paused_external: "等待重新连接 tx-lab", cancel_pending: "正在取消远端进程", cancelled: "任务已取消", downloading_outputs: "拉取 wrfout 结果", rendering: "生成 WebP", done: "任务完成", failed: "本次尝试已停止" })[value] || value || "等待开始"; }
 function failureLabel(value) { return ({ external: "外部连接故障", configuration: "参数配置失败", model: "WPS / WRF 运行失败", data: "驱动数据异常", output: "结果恢复失败" })[value] || "任务异常"; }
 function failureAdvice(value) { return ({ resume: "不会清理远端计算；认证后从原阶段继续。", edit_and_restart: "返回配置页调整参数，确认任务专属路径后重新运行。", restart: "确认驱动数据和参数后，在原任务中重新运行。", retry_outputs: "远端计算结果将保留，只恢复下载与渲染。" })[value?.recommended_action] || "请根据日志确认后续操作。"; }
 function stageClass(min) { return { done: Number(props.task?.progress || 0) >= min, active: Number(props.task?.progress || 0) >= min && Number(props.task?.progress || 0) < (stages.find(item => item.min > min)?.min || 101) }; }

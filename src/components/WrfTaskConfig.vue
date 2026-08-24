@@ -2,7 +2,7 @@
   <section class="task-config">
     <header class="panel-head">
       <div><span>{{ retryTaskId ? 'RESTART WRF TASK' : 'NEW WRF RUN' }}</span><h2>{{ retryTaskId ? `调整参数 · 第 ${Number(attemptNo || 1) + 1} 次尝试` : '新建模拟任务' }}</h2></div>
-      <div class="head-actions"><el-tag>GFS · TX-LAB</el-tag><el-button text @click="emit('cancel')">取消</el-button></div>
+      <div class="head-actions"><el-tag>GFS · TX-LAB</el-tag><el-tag type="info" effect="plain">CPU 运行 · Spin-up {{ fixedSpinupHours }} 小时</el-tag><el-button text @click="emit('cancel')">取消</el-button></div>
     </header>
 
     <div class="config-grid">
@@ -16,25 +16,8 @@
             <el-form-item label="任务边界场间隔">
               <el-select v-model="form.interval"><el-option v-for="value in intervals" :key="value" :label="`${value} 小时`" :value="value" /></el-select>
             </el-form-item>
-            <el-form-item label="运行配置">
-              <el-select v-model="form.runtimeProfile">
-                <el-option label="CPU（默认）" value="cpu" />
-                <el-option label="GPU（失败自动回退 CPU）" value="gpu" />
-              </el-select>
-            </el-form-item>
             <el-form-item label="同化方案">
               <el-select v-model="form.assimilation"><el-option v-for="item in assimilationOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select>
-            </el-form-item>
-            <el-form-item label="预报关注点">
-              <el-select v-model="form.forecastFocus"><el-option v-for="item in focusOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select>
-            </el-form-item>
-            <el-form-item label="Spin-up">
-              <div :class="['spinup-control', { custom: form.spinupMode === 'custom' }]">
-                <el-select v-model="form.spinupMode">
-                  <el-option label="自动推荐" value="auto" /><el-option label="关闭（兼容旧任务）" value="off" /><el-option label="自定义" value="custom" />
-                </el-select>
-                <el-select v-if="form.spinupMode === 'custom'" v-model="form.spinupHours"><el-option v-for="value in availableSpinupHours" :key="value" :label="`${value} 小时`" :value="value" /></el-select>
-              </div>
             </el-form-item>
           </div>
 
@@ -114,7 +97,7 @@
 
     <footer class="config-footer">
       <div><b>预计 {{ form.domains.length }} 个嵌套域</b><span>{{ form.startTime }} 至 {{ form.endTime }} · UTC</span></div>
-      <el-button type="primary" size="large" :loading="submitting" @click="submit">{{ retryTaskId ? '确认参数并重新运行原任务' : `提交至 tx-lab 队列（最多 ${maxConcurrentTasks} 个）` }}</el-button>
+      <el-button type="primary" size="large" :loading="submitting" @click="submit">{{ retryTaskId ? '确认参数并重新运行原任务' : '提交至 tx-lab 动态调度' }}</el-button>
     </footer>
   </section>
 </template>
@@ -152,9 +135,7 @@ const later = new Date(now.getTime() + 6 * 3600 * 1000);
 
 const form = reactive({
   startTime: utcInput(now), endTime: utcInput(later), center: { lat: 32.048, lon: 118.825 },
-  interval: 1, assimilation: "off", preset: "默认通用", forecastFocus: "general",
-  runtimeProfile: "cpu",
-  spinupMode: "auto", spinupHours: 6,
+  interval: 1, assimilation: "off", preset: "默认通用",
   domains: fallbackDomains.slice(0, 2).map(item => ({ ...item })), physics: { ...fallbackPhysics },
 });
 const domainCount = ref(2);
@@ -164,10 +145,8 @@ const recommending = ref(false);
 const recommendation = ref(null);
 const recommendationInputSignature = ref("");
 let recommendationGeneration = 0;
-const intervals = computed(() => props.options?.forecast_intervals || [1, 3, 6, 12, 24]);
-const focusOptions = computed(() => props.options?.forecast_focuses || [{ value: "general", label: "通用预报" }]);
-const spinupHours = computed(() => props.options?.spinup_hours || [0, 3, 6, 12, 18, 24]);
-const availableSpinupHours = computed(() => spinupHours.value.filter(value => Number(value) % Number(form.interval) === 0));
+const intervals = computed(() => props.options?.forecast_intervals || [1, 3, 6]);
+const fixedSpinupHours = computed(() => Number(props.options?.capabilities?.fixed_spinup_hours || 6));
 const assimilationOptions = computed(() => props.options?.assimilation_schemes || [
   { value: "off", label: "关闭" }, { value: "fdda_weak", label: "弱网格松弛" },
   { value: "fdda_standard", label: "标准网格松弛" }, { value: "fdda_strong", label: "强网格松弛" },
@@ -182,13 +161,11 @@ const selectablePhysicsPresets = computed(() => {
 const recommendationSignature = computed(() => JSON.stringify({
   center: form.center,
   domains: form.domains,
-  forecastFocus: form.forecastFocus,
   startTime: form.startTime,
 }));
 const recommendationStale = computed(() => Boolean(
   recommendation.value && recommendationInputSignature.value !== recommendationSignature.value,
 ));
-const maxConcurrentTasks = computed(() => Number(props.options?.capabilities?.max_concurrent_tasks) || 1);
 const gfsBounds = computed(() => props.options?.capabilities?.gfs_bounds || [65, 5, 145, 60]);
 const domainCoverage = computed(() => {
   const outer = form.domains[0] || fallbackDomains[0];
@@ -237,23 +214,14 @@ watch(() => props.initialRequest, value => {
   form.endTime = inputTime(value.end_time);
   form.center = { lat: Number(value.center?.lat), lon: Number(value.center?.lon) };
   form.interval = Number(value.forecast_interval_hours || 1);
-  form.runtimeProfile = value.runtime_profile || "cpu";
   form.assimilation = value.assimilation_scheme || "off";
-  form.forecastFocus = value.forecast_focus || "general";
   form.preset = value.physics?.preset || "默认通用";
   form.physics = { ...fallbackPhysics, ...(value.physics || {}) };
-  form.spinupMode = value.spinup?.mode || "off";
-  form.spinupHours = Number(value.spinup?.hours || 0);
   form.domains = (value.domains || fallbackDomains.slice(0, 2)).map(item => ({ ...item }));
   domainCount.value = form.domains.length;
   activeDomain.value = 0;
   recommendation.value = null;
 }, { immediate: true });
-watch(() => form.interval, () => {
-  if (form.spinupMode === "custom" && !availableSpinupHours.value.includes(Number(form.spinupHours))) {
-    form.spinupHours = availableSpinupHours.value[0] ?? 0;
-  }
-});
 
 function resetDomains() {
   const defaults = props.options?.default_domains || fallbackDomains;
@@ -270,7 +238,7 @@ async function requestRecommendation() {
   try {
     const job = await createWrfRecommendation({
       center: { ...form.center }, domains: form.domains.map(item => ({ ...item })),
-      forecast_focus: form.forecastFocus, start_time: `${form.startTime}:00Z`,
+      start_time: `${form.startTime}:00Z`,
     });
     let current = job;
     for (let attempt = 0; attempt < 120 && !["succeeded", "failed"].includes(current.status); attempt += 1) {
@@ -297,8 +265,6 @@ function applyRecommendation() {
   const value = recommendation.value;
   form.physics = { ...value.physics };
   form.preset = value.physics?.preset || "规则推荐";
-  form.spinupMode = value.spinup?.mode || "custom";
-  form.spinupHours = Number(value.spinup?.hours || 0);
   form.assimilation = value.assimilation_scheme || "off";
   ElMessage.success("推荐参数已应用，提交前仍可继续调整");
 }
@@ -326,11 +292,8 @@ function submit() {
   emit("submit", {
     start_time: `${form.startTime}:00Z`, end_time: `${form.endTime}:00Z`, center: { ...form.center },
     forecast_interval_hours: form.interval,
-    runtime_profile: form.runtimeProfile,
     domains: form.domains.map((item, index) => ({ ...item, dy: item.dx, parent_id: index ? index : 0 })),
     physics: { preset: form.preset, ...form.physics }, assimilation_scheme: form.assimilation,
-    forecast_focus: form.forecastFocus,
-    spinup: { mode: form.spinupMode, hours: form.spinupMode === "off" ? 0 : form.spinupHours },
   });
 }
 
@@ -343,7 +306,6 @@ function validateForm() {
   if (spanHours > 30 * 24) return "模拟时间跨度不能超过 30 天";
   if (spanHours < interval) return "GFS 文件间隔不能大于模拟时长";
   if (start.getUTCHours() % interval || end.getUTCHours() % interval) return "开始和结束时刻必须与 GFS 文件间隔对齐";
-  if (form.spinupMode === "custom" && Number(form.spinupHours) % interval) return "自定义 Spin-up 必须与 GFS 文件间隔对齐";
   if (!domainCoverage.value.inside) return `D01（含 1° 缓冲）必须位于当前 GFS 覆盖 ${formatBounds(gfsBounds.value)} 内`;
   for (let index = 1; index < form.domains.length; index += 1) {
     const parent = form.domains[index - 1];
@@ -360,10 +322,7 @@ function validateForm() {
   if (allowedSurface && !allowedSurface.includes(Number(form.physics.sf_sfclay_physics))) return "边界层方案与近地层方案不兼容";
   if (Number(form.physics.sf_surface_physics) === 4 && Number(form.physics.num_land_cat) !== 21) return "Noah-MP 要求土地类型数为 21";
   if (Number(form.physics.sf_urban_physics) === 1 && ![2, 4].includes(Number(form.physics.sf_surface_physics))) return "UCM 城市冠层仅支持 Noah 或 Noah-MP 陆面方案";
-  const baseSpinup = ["convection", "urban", "snowfall"].includes(form.forecastFocus) || Math.min(...form.domains.map(domain => Number(domain.dx))) <= 3000 ? 12 : 6;
-  const autoSpinup = [6, 12, 18, 24].find(value => value >= baseSpinup && value % interval === 0) ?? 24;
-  const spinup = form.spinupMode === "off" ? 0 : form.spinupMode === "custom" ? Number(form.spinupHours) : autoSpinup;
-  const modelStart = new Date(start.getTime() - spinup * 3600000);
+  const modelStart = new Date(start.getTime() - fixedSpinupHours.value * 3600000);
   const cycleStart = new Date(modelStart); cycleStart.setUTCHours(0, 0, 0, 0);
   if ((end - cycleStart) / 3600000 + 6 > 72) return "模拟窗口、Spin-up 与 6 小时边界缓冲超出 GFS f000-f072";
   return "";
@@ -375,7 +334,7 @@ onBeforeUnmount(() => { recommendationGeneration += 1; });
 <style scoped>
 .task-config { min-height: 100%; display: flex; flex-direction: column; padding: 18px; color: var(--text); font-size: 13px; }
 .panel-head, .sub-head, .map-title, .config-footer { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
-.panel-head { padding-bottom: 14px; border-bottom: 1px solid var(--border); }.panel-head span { color: var(--accent); font-size: 11px; font-weight: 800; letter-spacing: 1.4px; }.panel-head h2 { margin: 4px 0 0; font-size: 20px; }.head-actions { display: flex; align-items: center; }
+.panel-head { padding-bottom: 14px; border-bottom: 1px solid var(--border); }.panel-head span { color: var(--accent); font-size: 11px; font-weight: 800; letter-spacing: 1.4px; }.panel-head h2 { margin: 4px 0 0; font-size: 20px; }.head-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
 .config-grid { display: grid; grid-template-columns: minmax(380px, .86fr) minmax(460px, 1.14fr); gap: 16px; padding: 16px 0; }.form-column, .map-column, .physics-panel { border: 1px solid var(--border); border-radius: 13px; background: var(--field); }.form-column { min-width: 0; padding: 14px; }.basic-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; }.basic-grid > :deep(.el-form-item) { min-width: 0; }.basic-grid :deep(.el-input), .basic-grid :deep(.el-input-number), .basic-grid :deep(.el-select) { width: 100%; min-width: 0; }.basic-grid :deep(.el-input__wrapper) { min-width: 0; padding-right: 9px; padding-left: 9px; }.basic-grid :deep(input[type="datetime-local"]) { width: 100%; min-width: 0; font-size: 12px; font-variant-numeric: tabular-nums; }
 .sub-head { margin: 5px 0 10px; padding-top: 12px; border-top: 1px solid var(--border); }.sub-head h3 { margin: 0; font-size: 14px; }.sub-head span { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; }.sub-head :deep(.el-select) { width: 88px; }
 .domain-cards { display: grid; grid-template-columns: 1fr; gap: 8px; }.domain-cards article { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 7px; padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--glass); cursor: pointer; }.domain-cards article.outer { grid-template-columns: repeat(3, minmax(0, 1fr)); }.domain-cards article.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-soft); }.domain-cards b { grid-column: 1/-1; color: var(--accent); font-size: 12px; }.domain-cards label { display: grid; gap: 3px; min-width: 0; color: var(--muted); font-size: 9px; }.domain-cards :deep(.el-input-number), .domain-cards :deep(.el-select) { width: 100%; }
@@ -383,7 +342,7 @@ onBeforeUnmount(() => { recommendationGeneration += 1; });
 .region-note { display: flex; justify-content: space-between; gap: 10px; margin: 0 0 8px; padding: 7px 9px; border-radius: 8px; color: var(--muted); background: #22c55e10; font-size: 11px; }.region-note b { color: #22c55e; }.region-note.invalid { color: #fca5a5; background: #ef444414; }.region-note.invalid b { color: #f87171; }
 .physics-panel { padding: 12px 14px; }.physics-head { margin: 0; padding: 0; border: 0; }.physics-actions { display: flex; align-items: center; }.physics-actions :deep(.el-select) { width: 150px; }.physics-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; padding-top: 12px; }.physics-grid label { display: grid; gap: 4px; color: var(--muted); font-size: 11px; }.physics-grid :deep(.el-input-number) { width: 100%; }
 .config-footer { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }.config-footer div { display: grid; gap: 3px; }.config-footer b { font-size: 13px; }.config-footer span { color: var(--muted); font-size: 11px; }.config-footer .el-button { min-width: 220px; }
-.spinup-control { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }.spinup-control.custom { grid-template-columns: repeat(2, minmax(0, 1fr)); }.recommendation-note { display: grid; grid-template-columns: minmax(160px, .7fr) minmax(320px, 2fr) auto; align-items: center; gap: 12px; margin-top: 10px; padding: 10px; border: 1px solid var(--accent); border-radius: 9px; background: var(--accent-soft); }.recommendation-note.stale { border-color: #f59e0b; background: #f59e0b14; }.recommendation-note.stale b { color: #f59e0b; }.recommendation-summary { display: grid; gap: 4px; }.recommendation-note b { color: var(--accent); font-size: 12px; }.recommendation-note span { color: var(--text); font-size: 11px; line-height: 1.45; }.recommendation-note ul { max-height: 84px; margin: 0; padding-left: 16px; overflow-y: auto; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.recommendation-note { display: grid; grid-template-columns: minmax(160px, .7fr) minmax(320px, 2fr) auto; align-items: center; gap: 12px; margin-top: 10px; padding: 10px; border: 1px solid var(--accent); border-radius: 9px; background: var(--accent-soft); }.recommendation-note.stale { border-color: #f59e0b; background: #f59e0b14; }.recommendation-note.stale b { color: #f59e0b; }.recommendation-summary { display: grid; gap: 4px; }.recommendation-note b { color: var(--accent); font-size: 12px; }.recommendation-note span { color: var(--text); font-size: 11px; line-height: 1.45; }.recommendation-note ul { max-height: 84px; margin: 0; padding-left: 16px; overflow-y: auto; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .domain-cards label { font-size: 11px; }
 .task-config :deep(.el-form-item__label) { color: var(--muted); font-size: 12px; line-height: 1.35; }
 @media (max-width: 1500px) { .config-grid { grid-template-columns: 1fr; }.physics-grid { grid-template-columns: repeat(3, 1fr); }.recommendation-note { grid-template-columns: 1fr auto; }.recommendation-note ul { grid-column: 1/-1; grid-row: 2; } }

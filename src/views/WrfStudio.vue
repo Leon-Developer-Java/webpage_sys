@@ -11,7 +11,7 @@
     <section v-if="dockOpen" class="tool-dock glass">
       <header><div><span>WRF 工作台</span><h3>{{ dockTitle }}</h3></div><el-icon @click="dockOpen = false"><Close /></el-icon></header>
       <template v-if="tool === 'source'">
-        <div class="service-summary" :class="{ offline: !serviceOnline }"><i></i><span>{{ serviceOnline ? `backend_wrf · 8007 · ${hpcModeLabel} · 最多 ${maxConcurrentTasks} 任务` : 'WRF 服务未连接' }}</span><button v-if="!serviceOnline" @click="refreshAll(true)">重试</button></div>
+        <div class="service-summary" :class="{ offline: !serviceOnline }"><i></i><span>{{ serviceOnline ? `backend_wrf · 8007 · ${hpcModeLabel}` : 'WRF 服务未连接' }}</span><button v-if="!serviceOnline" @click="refreshAll(true)">重试</button></div>
         <p v-if="serviceError" class="service-error">{{ txLabText(serviceError) }}</p>
         <p class="dock-hint">选择 WRF 驱动资料。当前版本仅开放 GFS 00Z，其他资料源保留扩展位置。</p>
         <div class="source-list">
@@ -91,56 +91,59 @@
         <aside class="right-sidebar">
           <section class="side-card glass data-pool">
             <header><div><span>FORECAST POOL</span><h3>预报数据池</h3></div><i :class="dataStatus?.status"></i></header>
-            <template v-if="hpcAuthenticated">
-              <div v-for="item in poolItems" :key="item.provider" class="pool-provider">
-                <div class="provider-head"><b>{{ item.label }}</b><span>{{ poolStatus(item.status) }}</span></div>
-                <small class="pool-scope">0.25° · 后台预取 · 保留 2 周期</small>
-                <article
-                  v-for="cycle in visiblePoolCycles(item)"
-                  :key="cycle.cycle"
-                  :class="{ target: cycle.target, 'task-required': cycle.task_required }"
-                >
-                  <div class="cycle-head"><b>{{ formatCycle(cycle.cycle) }}</b><span :class="cycle.status">{{ cycleLabel(cycle) }}</span></div>
-                  <small>{{ cycle.completed_files }}/{{ cycle.total_files }} 文件 · {{ formatBytes(cycle.size_bytes) }}</small>
-                  <div v-if="cycle.status === 'downloading' && cycle.partial_size_bytes" class="cycle-transfer">
-                    {{ formatBytes(cycle.partial_size_bytes) }} 下载中<template v-if="cycle.download_rate_bps >= 1024"> · {{ formatRate(cycle.download_rate_bps) }}</template>
-                  </div>
-                  <el-progress :percentage="cyclePercent(cycle)" :stroke-width="4" :show-text="false" />
-                  <div v-if="cycle.auto_cleanup_allowed || cycle.cleanup_allowed || (cycle.protected && !cycle.target)" class="cycle-actions">
-                    <em v-if="cycle.auto_cleanup_allowed">同步时自动清理</em>
-                    <button v-else-if="cycle.cleanup_allowed" class="cycle-cleanup" :disabled="gfsActionBusy" @click="confirmCleanupCycle(cycle)">人工清理</button>
-                    <em v-else-if="cycle.task_required">任务优先</em>
-                    <em v-else>近期保留</em>
-                  </div>
-                </article>
-                <div v-if="!item.cycles?.length" class="side-empty">{{ txLabText(dataStatus?.message) || 'tx-lab 数据池暂无周期' }}</div>
-              </div>
-              <button class="side-action" :disabled="gfsActionBusy" @click="syncLatestRemoteGfs">{{ gfsActionBusy ? '正在同步…' : (autoCleanupPending ? '自动清理并同步 00Z' : '同步最新 00Z') }}</button>
-            </template>
-            <template v-else>
-              <div class="side-empty">{{ txLabText(health?.hpc?.message) || 'tx-lab 系统盘数据池尚未就绪' }}</div>
-              <button class="side-action" @click="refreshHpcConnection">检查 tx-lab 连接</button>
-            </template>
+            <div class="side-card-body">
+              <template v-if="hpcAuthenticated">
+                <div v-for="item in poolItems" :key="item.provider" class="pool-provider">
+                  <div class="provider-head"><b>{{ item.label }}</b><span>{{ poolStatus(item.status) }}</span></div>
+                  <small class="pool-scope">0.25° · 后台预取 · 保留 2 周期</small>
+                  <article
+                    v-for="cycle in visiblePoolCycles(item)"
+                    :key="cycle.cycle"
+                    :class="{ target: cycle.target, 'task-required': cycle.task_required }"
+                  >
+                    <div class="cycle-head"><b>{{ formatCycle(cycle.cycle) }}</b><span :class="cycle.status">{{ cycleLabel(cycle) }}</span></div>
+                    <small>{{ cycle.completed_files }}/{{ cycle.total_files }} 文件 · {{ formatBytes(cycle.size_bytes) }}</small>
+                    <div v-if="cycle.status === 'downloading' && cycle.partial_size_bytes" class="cycle-transfer">
+                      {{ formatBytes(cycle.partial_size_bytes) }} 下载中<template v-if="cycle.download_rate_bps >= 1024"> · {{ formatRate(cycle.download_rate_bps) }}</template>
+                    </div>
+                    <el-progress :percentage="cyclePercent(cycle)" :stroke-width="4" :show-text="false" />
+                    <div v-if="cycle.auto_cleanup_allowed || cycle.cleanup_allowed || (cycle.protected && !cycle.target)" class="cycle-actions">
+                      <em v-if="cycle.auto_cleanup_allowed">同步时自动清理</em>
+                      <button v-else-if="cycle.cleanup_allowed" class="cycle-cleanup" :disabled="gfsActionBusy" @click="confirmCleanupCycle(cycle)">人工清理</button>
+                      <em v-else-if="cycle.task_required">任务优先</em>
+                      <em v-else>近期保留</em>
+                    </div>
+                  </article>
+                  <div v-if="!item.cycles?.length" class="side-empty">{{ txLabText(dataStatus?.message) || 'tx-lab 数据池暂无周期' }}</div>
+                </div>
+              </template>
+              <template v-else>
+                <div class="side-empty">{{ txLabText(health?.hpc?.message) || 'tx-lab 系统盘数据池尚未就绪' }}</div>
+              </template>
+            </div>
+            <div class="side-card-actions">
+              <button v-if="hpcAuthenticated" class="side-action" :disabled="gfsActionBusy" @click="syncLatestRemoteGfs">{{ gfsActionBusy ? '正在同步…' : (autoCleanupPending ? '自动清理并同步 00Z' : '同步最新 00Z') }}</button>
+              <button v-else class="side-action" @click="refreshHpcConnection">检查 tx-lab 连接</button>
+            </div>
           </section>
 
           <section class="side-card glass history-card">
-            <header><div><span>HISTORY</span><h3>历史任务</h3></div><span>{{ historyTasks.length }}</span></header>
+            <header><div><span>HISTORY</span><h3>历史任务</h3></div><span class="panel-count">{{ historyTasks.length }}</span></header>
             <div class="task-items">
-              <article v-for="task in visibleHistoryTasks" :key="task.id" :class="{ selected: task.id === activeTaskId }" :title="task.id" @click="openHistoryTask(task)">
+              <article v-for="task in historyTasks" :key="task.id" :class="{ selected: task.id === activeTaskId }" :title="task.id" @click="openHistoryTask(task)">
                 <div><b>{{ taskDateRange(task) }}</b><span :class="['mini-status', task.status]">{{ taskStatus(task.status) }}</span></div>
                 <small>{{ task.request?.domains?.length || 0 }} 域 · {{ formatCycle(task.runtime?.gfs_cycle) || '周期待定' }}</small>
                 <button class="delete-task" title="删除本地任务数据" aria-label="删除本地任务数据" @click.stop="confirmDelete(task)">×</button>
               </article>
               <div v-if="!historyTasks.length" class="side-empty">暂无历史任务</div>
             </div>
-            <button v-if="historyTasks.length > 2" class="history-toggle" @click="historyExpanded = !historyExpanded">{{ historyExpanded ? '收起' : `查看其余 ${historyTasks.length - 2} 条` }}</button>
             <button class="new-task" @click="openNewTask">＋ 新建任务</button>
           </section>
 
           <section class="side-card glass running-card">
-            <header><div><span>RUNNING</span><h3>正在进行</h3></div><span>{{ runningTasks.length }}</span></header>
+            <header><div><span>RUNNING</span><h3>正在进行</h3></div><span class="panel-count">{{ runningTasks.length }}</span></header>
             <div class="task-items">
-              <article v-for="task in visibleRunningTasks" :key="task.id" :class="{ selected: task.id === selectedTaskId }" :title="task.id" @click="showRun(task)">
+              <article v-for="task in runningTasks" :key="task.id" :class="{ selected: task.id === selectedTaskId }" :title="task.id" @click="showRun(task)">
                 <div><b>{{ taskStatus(task.status) }}</b><strong>{{ task.progress || 0 }}%</strong></div>
                 <small>{{ taskStage(task.stage) }}</small><el-progress :percentage="task.progress || 0" :stroke-width="3" :show-text="false" />
               </article>
@@ -153,7 +156,7 @@
       <footer class="status-footer glass">
         <div class="footer-title"><span :class="['pulse', { offline: !serviceOnline }]"><i></i></span><div><b>WRF 数值预报工作台</b><small>{{ footerTaskSummary }}</small></div></div>
         <div class="workflow"><span class="done"><i>1</i>选择数据源</span><em></em><span :class="{ done: !!activeTaskId || !!resultTaskId, active: workspaceView === 'new' }"><i>2</i>配置任务</span><em></em><span :class="{ done: isDisplayable(selectedTask), active: workspaceView === 'run' && !isDisplayable(selectedTask) }"><i>3</i>tx-lab 运行</span><em></em><span :class="{ done: !!resultTaskId, active: workspaceView === 'result' && !!resultTaskId }"><i>4</i>查看结果</span></div>
-        <div :class="['footer-service', { offline: !serviceOnline }]"><i></i>{{ serviceOnline ? `${hpcModeLabel} ${health?.hpc?.status || 'checking'} · ${activeTaskCount}/${maxConcurrentTasks}` : '服务离线' }}</div>
+        <div :class="['footer-service', { offline: !serviceOnline }]"><i></i>{{ serviceOnline ? `${hpcModeLabel} ${health?.hpc?.status || 'checking'}${activeTaskCount ? ` · ${activeTaskCount} 个任务` : ''}` : '服务离线' }}</div>
       </footer>
     </main>
   </div>
@@ -205,7 +208,6 @@ const tasks = ref([]);
 const serviceError = ref("");
 const submitting = ref(false);
 const gfsActionBusy = ref(false);
-const historyExpanded = ref(false);
 const selectedTaskId = ref(initialWorkspaceView === "run" ? String(route.query.task_id || "") : "");
 const resultTaskId = ref("");
 const logs = ref("");
@@ -228,18 +230,15 @@ const serviceOnline = computed(() => health.value?.status === "online" && !servi
 const selectedTask = computed(() => tasks.value.find(task => task.id === selectedTaskId.value) || null);
 const successfulTasks = computed(() => tasks.value.filter(task => isDisplayable(task)));
 const historyTasks = computed(() => tasks.value.filter(task => FINAL.has(task.status)));
-const visibleHistoryTasks = computed(() => historyExpanded.value ? historyTasks.value : historyTasks.value.slice(0, 2));
 const runningTasks = computed(() => tasks.value.filter(task => !FINAL.has(task.status)));
-const visibleRunningTasks = computed(() => runningTasks.value.slice(0, 2));
 const activeTaskId = computed(() => selectedTaskId.value || resultTaskId.value || health.value?.active_task_id || "");
 const hpcModeLabel = computed(() => health.value?.hpc?.connection_mode === "direct" ? "tx-lab 直连" : "远端连接");
 const hpcAuthenticated = computed(() => health.value?.hpc?.status === "ready");
 const activeTaskCount = computed(() => Number(health.value?.active_task_count) || 0);
-const maxConcurrentTasks = computed(() => Number(health.value?.max_concurrent_tasks || options.value?.capabilities?.max_concurrent_tasks) || 1);
 const footerTaskSummary = computed(() => {
   if (selectedTaskId.value || resultTaskId.value) return selectedTaskId.value || resultTaskId.value;
-  if (activeTaskCount.value) return `${activeTaskCount.value}/${maxConcurrentTasks.value} 个任务执行中`;
-  return `GFS 00Z 驱动 · 最多 ${maxConcurrentTasks.value} 任务并行`;
+  if (activeTaskCount.value) return `${activeTaskCount.value} 个任务执行中`;
+  return "GFS 00Z 驱动 · 动态调度就绪";
 });
 const currentVisualTime = computed(() => visualTimes.value[visualTimeIndex.value] || "");
 const poolItems = computed(() => {
@@ -254,15 +253,14 @@ const dockTitle = computed(() => ({ source: "数据源选择", proj: "投影方�
 function openTool(name) { if (dockOpen.value && tool.value === name) dockOpen.value = false; else { tool.value = name; dockOpen.value = true; } }
 function selectSource(source) { if (source.status !== "available") ElMessage.info(`${source.name} 尚未接入，当前仅支持 GFS`); }
 function isDisplayable(task) { return Boolean(task && ["succeeded", "partial_success"].includes(task.status)); }
-function taskStatus(value) { return ({ queued: "排队", prefetching: "准备数据", uploading: "准备 tx-lab", running: "运行", rendering: "渲染", succeeded: "成功", partial_success: "部分完成", failed: "失败", waiting_restart: "待调整", paused_external: "等待连接", cancelled: "已取消", cancel_pending: "取消中", reconciling: "恢复连接" })[value] || value; }
-function taskStage(value) { return ({ queued: "等待执行名额", selecting_cycle: "选择 GFS 00Z 周期", checking_hpc_gfs: "校验 tx-lab GFS 数据池", waiting_for_hpc_gfs: "等待 tx-lab GFS 补齐", remote_gfs_ready: "tx-lab GFS 已就绪", preparing_hpc: "提交任务配置", running: "WPS / WRF 运行中", downloading_outputs: "拉取 wrfout 结果", rendering: "生成 WebP", done: "任务完成", failed: "本次尝试已停止" })[value] || value || "等待开始"; }
+function taskStatus(value) { return ({ queued: "待调度", prefetching: "准备数据", uploading: "准备 tx-lab", running: "运行", rendering: "渲染", succeeded: "成功", partial_success: "部分完成", failed: "失败", waiting_restart: "待调整", paused_external: "等待连接", cancelled: "已取消", cancel_pending: "取消中", reconciling: "恢复连接" })[value] || value; }
+function taskStage(value) { return ({ queued: "等待动态调度", selecting_cycle: "选择 GFS 00Z 周期", checking_hpc_gfs: "校验 tx-lab GFS 数据池", waiting_for_hpc_gfs: "等待 tx-lab GFS 补齐", remote_gfs_ready: "tx-lab GFS 已就绪", preparing_hpc: "提交任务配置", running: "WPS / WRF 运行中", downloading_outputs: "拉取 wrfout 结果", rendering: "生成 WebP", done: "任务完成", failed: "本次尝试已停止" })[value] || value || "等待开始"; }
 function txLabText(value) { return String(value || "").replaceAll("超算", "tx-lab"); }
 function poolStatus(value) { return ({ ready: "已就绪", downloading: "下载中", checking: "检查中", partial: "部分就绪", missing: "待下载", unavailable: "不可用", error: "需处理", idle: "等待" })[value] || value || "等待"; }
 function visiblePoolCycles(item) {
   const priority = cycle => cycle.task_required ? 0 : cycle.status === "downloading" ? 1 : cycle.prefetch_target ? 2 : cycle.retained ? 3 : 4;
   return [...(item?.cycles || [])]
-    .sort((left, right) => priority(left) - priority(right) || String(right.cycle).localeCompare(String(left.cycle)))
-    .slice(0, 2);
+    .sort((left, right) => priority(left) - priority(right) || String(right.cycle).localeCompare(String(left.cycle)));
 }
 function cycleNeedsCleanup(cycle) { return /CLEANUP_REQUIRED/i.test(String(cycle?.download_message || "")); }
 function cycleLabel(cycle) {
@@ -439,7 +437,7 @@ async function submitTask(payload) {
       ElMessage.success(`原任务已开始第 ${task.attempt_no} 次尝试`);
     } else {
       task = await createWrfTask(payload);
-      ElMessage.success("WRF 任务已进入并行队列");
+      ElMessage.success("WRF 任务已开始动态并行调度");
     }
     await refreshAll();
     showRun(task);
@@ -452,7 +450,7 @@ async function cancelTask() {
   const launched = Boolean(task.runtime?.remote_pid);
   const message = launched
     ? `将终止任务 ${task.id} 对应的 tx-lab 远端进程，是否继续？`
-    : `将取消任务 ${task.id} 的排队或 tx-lab 准备，不会启动远端 WRF，是否继续？`;
+    : `将取消任务 ${task.id} 的动态调度或 tx-lab 准备，不会启动远端 WRF，是否继续？`;
   try { await ElMessageBox.confirm(message, "取消 WRF 任务", { type: "warning", confirmButtonText: "确认取消" }); await cancelWrfTask(task.id); ElMessage.success(launched ? "远端取消请求已转入后台处理" : "任务已取消"); await refreshAll(); } catch (error) { if (error !== "cancel" && error !== "close") ElMessage.error(error.message); }
 }
 async function editAndRestart() {
@@ -496,7 +494,7 @@ async function renderPartialTask() {
   try {
     await ElMessageBox.confirm("将跳过无法读取的 wrfout 帧，并在 scene.meta.json 中记录缺失时次和质量告警。是否继续？", "部分渲染", { type: "warning", confirmButtonText: "确认忽略不可读帧" });
     const task = await renderPartialWrfTask(selectedTask.value.id);
-    ElMessage.success("已加入部分渲染队列"); await refreshAll(); showRun(task);
+    ElMessage.success("已开始部分渲染动态调度"); await refreshAll(); showRun(task);
   } catch (error) { if (error !== "cancel" && error !== "close") ElMessage.error(error.message); }
 }
 async function confirmDelete(task) {
@@ -558,15 +556,15 @@ onBeforeUnmount(() => { clearInterval(refreshTimer); stopPlayback(); });
 .source-list, .picker { display: grid; gap: 8px; }.source-list > button { position: relative; display: flex; align-items: center; gap: 9px; min-height: 78px; padding: 11px; border: 1px solid var(--border); border-radius: 11px; background: var(--field); color: var(--text); text-align: left; }.source-list > button.selected { border-color: var(--accent); background: var(--accent-soft); }.source-list > button.disabled { opacity: .55; }.source-icon { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 9px; color: var(--accent); background: var(--accent-soft); }.source-copy { min-width: 0; display: grid; flex: 1; gap: 2px; }.source-copy b { font-size: 12px; }.source-copy small { color: var(--muted); font-size: 9px; line-height: 1.4; }.source-copy em { color: var(--accent); font-size: 8px; font-style: normal; }.source-state { position: absolute; top: 7px; right: 8px; color: var(--muted); font-size: 8px; }.source-state.available { color: #22c55e; }.source-note { display: flex; gap: 7px; margin-top: 10px; padding: 9px; border: 1px solid var(--border); border-radius: 9px; color: var(--muted); }.source-note .el-icon { flex-shrink: 0; color: var(--accent); }.source-note p { margin: 0; font-size: 9px; line-height: 1.5; }
 .picker button, .map-theme { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 10px 11px; border: 1px solid var(--border); border-radius: 9px; background: var(--field); color: var(--text); font: inherit; font-size: 11px; cursor: pointer; }.picker button.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }.map-theme { justify-content: center; gap: 7px; margin-top: 10px; }
 .studio-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 9px; }.content-row { flex: 1; min-height: 0; display: flex; gap: 10px; }.center-workspace { flex: 1; min-width: 0; position: relative; overflow: auto; border-radius: 14px; scrollbar-width: thin; }.workspace-head { padding: 14px 16px; border-bottom: 1px solid var(--border); }.workspace-head h2 { display: inline; margin: 0 9px 0 0; font-size: 18px; }.workspace-head small { color: var(--muted); font: 9px monospace; }.workspace-actions { display: flex; }.result-empty { height: calc(100% - 70px); min-height: 430px; display: grid; place-content: center; justify-items: center; gap: 9px; color: var(--muted); text-align: center; }.result-empty .el-icon { color: var(--accent); font-size: 38px; }.result-empty b { color: var(--text); font-size: 16px; }.result-empty span { font-size: 10px; }.result-toolbar { display: flex; justify-content: space-between; padding: 8px 12px; color: var(--muted); font-size: 10px; }.result-toolbar span { display: flex; align-items: center; gap: 6px; }.result-toolbar i { width: 7px; height: 7px; border-radius: 50%; background: #22c55e; }.result-toolbar b { color: var(--text); font: 10px monospace; }.visual-map { position: relative; height: calc(100% - 164px); min-height: 430px; margin: 0 10px; overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: #07101e; }.timebar { display: flex; align-items: center; gap: 7px; margin: 9px 10px 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--field); }.timebar :deep(.el-slider) { flex: 1; margin: 0 8px; }.timebar time { min-width: 138px; font: 9px monospace; }.timebar > span { min-width: 38px; color: var(--muted); font-size: 9px; text-align: right; }
-.right-sidebar { flex-shrink: 0; width: 272px; display: flex; flex-direction: column; align-self: flex-start; gap: 9px; max-height: 100%; overflow-y: auto; scrollbar-width: none; }.side-card { padding: 11px; border-radius: 13px; }.side-card header { padding-bottom: 8px; border-bottom: 1px solid var(--border); }.side-card header h3 { font-size: 14px; }.side-card header > span { color: var(--muted); }.side-card header > i { width: 7px; height: 7px; border-radius: 50%; background: #94a3b8; }.side-card header > i.ready { background: #22c55e; }.side-card header > i.error { background: #ef4444; }.pool-provider { padding-top: 8px; }.provider-head { display: flex; justify-content: space-between; font-size: 10px; }.provider-head span { color: var(--muted); }.pool-provider article, .task-items article { position: relative; margin-top: 6px; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--field); }.pool-provider article.target { border-color: #22c55e66; }.cycle-head, .task-items article > div { display: flex; align-items: center; justify-content: space-between; gap: 6px; }.pool-provider article b, .task-items article b { font-size: 10px; }.pool-provider article span { color: #22c55e; font-size: 8px; }.pool-provider article span.downloading { color: #38bdf8; }.pool-provider article span.missing, .pool-provider article span.partial { color: #f59e0b; }.pool-provider article span.error { color: #f87171; }.pool-provider article small, .task-items article small { display: block; margin-top: 4px; padding-right: 16px; overflow: hidden; color: var(--muted); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }.pool-provider article :deep(.el-progress), .running-card article :deep(.el-progress) { margin-top: 5px; }.cycle-actions { display: flex; align-items: center; min-height: 15px; margin-top: 3px; }.cycle-actions em { color: #f59e0b; font-size: 8px; font-style: normal; }.cycle-cleanup { padding: 0; border: 0; background: transparent; color: #f87171; font-size: 8px; cursor: pointer; }.side-empty { padding: 12px 5px; color: var(--muted); font-size: 9px; text-align: center; }.side-empty.compact { padding: 8px 4px 2px; }.cleanup-warning { display: grid; gap: 4px; margin-top: 8px; padding: 8px; border-radius: 8px; color: #f87171; background: #ef444414; font-size: 9px; }.cleanup-warning button, .side-action { border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }.side-action { width: 100%; margin-top: 6px; color: var(--accent); font-size: 9px; }.side-action:disabled, .cycle-cleanup:disabled { cursor: wait; opacity: .55; }
+.right-sidebar { flex-shrink: 0; width: 272px; height: 100%; min-height: 0; display: grid; grid-template-rows: minmax(0, 3fr) minmax(0, 4fr) minmax(0, 3fr); align-self: stretch; gap: 9px; overflow: hidden; }.side-card { min-height: 0; display: flex; flex-direction: column; padding: 11px; overflow: hidden; border-radius: 13px; }.side-card header { flex-shrink: 0; padding-bottom: 8px; border-bottom: 1px solid var(--border); }.side-card header h3 { font-size: 14px; }.side-card header > span { color: var(--muted); }.side-card header > .panel-count { min-width: 24px; padding: 3px 7px; border: 1px solid var(--border); border-radius: 999px; color: var(--text); background: var(--field); font-size: 10px; letter-spacing: 0; text-align: center; }.side-card header > i { width: 7px; height: 7px; border-radius: 50%; background: #94a3b8; }.side-card header > i.ready { background: #22c55e; box-shadow: 0 0 8px #22c55e88; }.side-card header > i.error { background: #ef4444; box-shadow: 0 0 8px #ef444466; }.side-card-body, .task-items { flex: 1; min-height: 0; padding-right: 3px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }.side-card-actions { flex-shrink: 0; margin-top: 7px; padding-top: 7px; border-top: 1px solid var(--border); }.pool-provider { padding-top: 8px; }.provider-head { display: flex; justify-content: space-between; font-size: 10px; }.provider-head span { color: var(--muted); }.pool-provider article, .task-items article { position: relative; margin-top: 6px; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--field); transition: border-color .16s ease, background .16s ease, transform .16s ease; }.pool-provider article.target { border-color: #22c55e66; }.cycle-head, .task-items article > div { display: flex; align-items: center; justify-content: space-between; gap: 6px; }.pool-provider article b, .task-items article b { font-size: 10px; }.pool-provider article span { color: #22c55e; font-size: 8px; }.pool-provider article span.downloading { color: #38bdf8; }.pool-provider article span.missing, .pool-provider article span.partial { color: #f59e0b; }.pool-provider article span.error { color: #f87171; }.pool-provider article small, .task-items article small { display: block; margin-top: 4px; padding-right: 16px; overflow: hidden; color: var(--muted); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }.pool-provider article :deep(.el-progress), .running-card article :deep(.el-progress) { margin-top: 5px; }.cycle-actions { display: flex; align-items: center; min-height: 15px; margin-top: 3px; }.cycle-actions em { color: #f59e0b; font-size: 8px; font-style: normal; }.cycle-cleanup { padding: 0; border: 0; background: transparent; color: #f87171; font-size: 8px; cursor: pointer; }.side-empty { display: grid; min-height: 54px; place-items: center; padding: 12px 5px; color: var(--muted); font-size: 9px; text-align: center; }.side-empty.compact { padding: 8px 4px 2px; }.cleanup-warning { display: grid; gap: 4px; margin-top: 8px; padding: 8px; border-radius: 8px; color: #f87171; background: #ef444414; font-size: 9px; }.cleanup-warning button, .side-action { border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }.side-action { width: 100%; min-height: 30px; margin: 0; padding: 6px 8px; border-radius: 7px; color: var(--accent); background: var(--accent-soft); font-size: 9px; text-align: center; }.side-action:hover { background: #3b82f626; }.side-action:disabled, .cycle-cleanup:disabled { cursor: wait; opacity: .55; }
 .cycle-transfer { margin-top: 4px; overflow: hidden; color: #38bdf8; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 .pool-scope { display: block; margin-top: 3px; color: var(--muted); font-size: 9px; }
 .pool-provider article.task-required { border-color: #60a5fa99; box-shadow: inset 2px 0 0 #60a5fa; }
-.history-card { min-height: 0; }.task-items { overflow-y: auto; scrollbar-width: thin; }.history-card .task-items { max-height: 270px; }.task-items article { cursor: pointer; }.task-items article:hover, .task-items article.selected { border-color: var(--accent); }.task-items article strong { color: var(--accent); font-size: 10px; }.mini-status { padding: 2px 5px; border-radius: 7px; color: #64748b; background: #64748b22; font-size: 8px; }.mini-status.succeeded { color: #22c55e; background: #22c55e18; }.mini-status.partial_success { color: #f59e0b; background: #f59e0b18; }.mini-status.failed, .mini-status.waiting_restart, .mini-status.cancelled { color: #f87171; background: #ef444418; }.mini-status.paused_external, .mini-status.reconciling { color: #f59e0b; background: #f59e0b18; }.delete-task { position: absolute; right: 7px; bottom: 6px; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: #f87171; font-size: 13px; line-height: 18px; cursor: pointer; }.delete-task:hover { background: #ef444418; }.history-toggle, .new-task { width: 100%; margin-top: 6px; border: 0; background: transparent; color: var(--muted); font-size: 9px; cursor: pointer; }.new-task { padding: 7px; border: 1px dashed #22c55e; border-radius: 8px; color: #22c55e; font-weight: 700; }.running-card .task-items article { padding-bottom: 8px; }
+.task-items article { cursor: pointer; }.task-items article:hover { border-color: #60a5fa88; transform: translateY(-1px); }.task-items article.selected { border-color: var(--accent); background: var(--accent-soft); }.task-items article strong { color: var(--accent); font-size: 10px; }.mini-status { padding: 2px 5px; border-radius: 7px; color: #64748b; background: #64748b22; font-size: 8px; }.mini-status.succeeded { color: #22c55e; background: #22c55e18; }.mini-status.partial_success { color: #f59e0b; background: #f59e0b18; }.mini-status.failed, .mini-status.waiting_restart, .mini-status.cancelled { color: #f87171; background: #ef444418; }.mini-status.paused_external, .mini-status.reconciling { color: #f59e0b; background: #f59e0b18; }.delete-task { position: absolute; right: 7px; bottom: 6px; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: #f87171; font-size: 13px; line-height: 18px; cursor: pointer; }.delete-task:hover { background: #ef444418; }.new-task { flex-shrink: 0; width: 100%; min-height: 31px; margin-top: 7px; padding: 7px; border: 1px dashed #22c55e; border-radius: 8px; background: #22c55e0b; color: #22c55e; font-size: 9px; font-weight: 700; cursor: pointer; }.new-task:hover { background: #22c55e18; }.running-card .task-items article { padding-bottom: 8px; }
 .status-footer { flex-shrink: 0; min-height: 58px; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 8px 13px; border-radius: 13px; }.footer-title { display: flex; align-items: center; gap: 9px; }.pulse { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; background: var(--accent-soft); }.pulse i, .footer-service i { width: 7px; height: 7px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 8px #22c55e; }.pulse.offline i, .footer-service.offline i { background: #ef4444; box-shadow: 0 0 8px #ef4444; }.footer-title div { display: grid; gap: 2px; }.footer-title b { font-size: 11px; }.footer-title small { max-width: 230px; overflow: hidden; color: var(--muted); font: 8px monospace; text-overflow: ellipsis; white-space: nowrap; }.workflow { display: flex; align-items: center; gap: 6px; }.workflow span { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 9px; }.workflow span i { display: grid; place-items: center; width: 18px; height: 18px; border: 1px solid var(--border); border-radius: 50%; font-style: normal; }.workflow span.done { color: var(--text); }.workflow span.done i { border-color: var(--accent); color: #fff; background: var(--accent); }.workflow span.active i { box-shadow: 0 0 8px var(--accent); }.workflow em { width: 24px; height: 1px; background: var(--border); }.footer-service { display: flex; align-items: center; gap: 6px; color: #22c55e; font-size: 9px; }.footer-service.offline { color: #f87171; }
 @media (max-width: 1250px) { .right-sidebar { width: 245px; }.tool-dock { width: 250px; }.workflow em { width: 12px; } }
 @media (max-width: 980px) { .tool-dock { position: absolute; top: 70px; bottom: 8px; left: 88px; z-index: 20; }.right-sidebar { width: 225px; }.workflow { display: none; } }
-@media (max-width: 760px) { .wrf-studio { height: auto; min-height: calc(100vh - 70px); overflow: visible; }.tool-rail { position: sticky; top: 70px; height: calc(100vh - 78px); }.studio-main, .content-row { min-height: 900px; }.content-row { flex-direction: column; }.right-sidebar { width: 100%; overflow: visible; }.center-workspace { min-height: 620px; }.status-footer { position: sticky; bottom: 0; }.timebar { flex-wrap: wrap; }.timebar time { min-width: 0; } }
+@media (max-width: 760px) { .wrf-studio { height: auto; min-height: calc(100vh - 70px); overflow: visible; }.tool-rail { position: sticky; top: 70px; height: calc(100vh - 78px); }.studio-main, .content-row { min-height: 900px; }.content-row { flex-direction: column; }.right-sidebar { width: 100%; height: auto; grid-template-rows: 280px 340px 280px; overflow: visible; }.center-workspace { min-height: 620px; }.status-footer { position: sticky; bottom: 0; }.timebar { flex-wrap: wrap; }.timebar time { min-width: 0; } }
 
 /* WRF 工作台的信息密度较高，但交互文字不应低于 11px。 */
 .tool-rail button, .dock-hint, .service-summary, .service-error,
