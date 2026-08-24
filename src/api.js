@@ -109,6 +109,7 @@ export async function authedFetch(url, options = {}) {
 export function withToken(url) {
   const value = String(url || "");
   if (!value.includes("/data/") && !value.includes("/outputs/")) return value;
+  if (/(?:[?&])token=/.test(value)) return value;
   return `${value}${value.includes("?") ? "&" : "?"}token=${encodeURIComponent(getToken())}`;
 }
 
@@ -116,6 +117,13 @@ function apiError(payload, fallback = "请求失败") {
   const detail = payload?.detail;
   if (typeof detail === "string") return detail;
   if (typeof detail?.message === "string") return detail.message;
+  if (Array.isArray(detail)) {
+    const messages = detail.map(item => {
+      const field = Array.isArray(item?.loc) ? item.loc.filter(part => part !== "body").join(".") : "";
+      return `${field ? `${field}：` : ""}${item?.msg || "参数不合法"}`;
+    }).filter(Boolean);
+    if (messages.length) return messages.join("；");
+  }
   if (typeof payload?.message === "string" && payload.message !== "success") return payload.message;
   return fallback;
 }
@@ -226,16 +234,29 @@ export function getWrfTask(taskId) {
   return wrfRequest(`/api/wrf/tasks/${encodeURIComponent(taskId)}`);
 }
 
-export function getWrfTaskLogs(taskId, after = 0) {
-  return wrfRequest(`/api/wrf/tasks/${encodeURIComponent(taskId)}/logs?after=${encodeURIComponent(after)}`);
+export function getWrfTaskLogs(taskId, after = 0, attemptNo = null) {
+  const attempt = attemptNo == null ? "" : `&attempt_no=${encodeURIComponent(attemptNo)}`;
+  return wrfRequest(`/api/wrf/tasks/${encodeURIComponent(taskId)}/logs?after=${encodeURIComponent(after)}${attempt}`);
 }
 
 export function cancelWrfTask(taskId) {
   return wrfRequest(`/api/wrf/tasks/${encodeURIComponent(taskId)}/cancel`, { method: "POST" });
 }
 
-export function retryWrfTask(taskId) {
-  return wrfRequest(`/api/wrf/tasks/${encodeURIComponent(taskId)}/retry`, { method: "POST" });
+export function getWrfTaskRestartPlan(taskId) {
+  return wrfRequest(`/api/wrf/tasks/${encodeURIComponent(taskId)}/restart-plan`);
+}
+
+export function restartWrfTask(taskId, request, attemptNo) {
+  return wrfRequest(`/api/wrf/tasks/${encodeURIComponent(taskId)}/restart`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ request, confirm_task_id: taskId, confirm_attempt: attemptNo }),
+  });
+}
+
+export function resumeWrfTask(taskId) {
+  return wrfRequest(`/api/wrf/tasks/${encodeURIComponent(taskId)}/resume`, { method: "POST" });
 }
 
 export function retryWrfTaskOutputs(taskId) {
@@ -441,6 +462,21 @@ export async function* chatStream(messages, context) {
   if (tail) yield JSON.parse(tail);
 }
 
+function abortError() {
+  return new DOMException("上传已取消", "AbortError");
+}
+
+async function checkedJson(response, fallback) {
+  let payload = null;
+  try { payload = await response.json(); } catch { /* 由下面统一提示 */ }
+  if (!response.ok || payload?.code !== 0) {
+    const error = new Error(apiError(payload, `${fallback}（HTTP ${response.status}）`));
+    error.status = response.status;
+    throw error;
+  }
+  return payload.data;
+}
+
 async function agentRequest(path, options = {}) {
   let response;
   try {
@@ -487,31 +523,31 @@ export async function getAgentNowcastResult(runId) {
 }
 
 // 分片上传 + 断点续传。文件唯一标识用组合键（文件名+大小+修改时间）。
-export async function uploadFileResumable(file, dataType, onProgress = () => {}) {
-  const fileId = `${file.name}-${file.size}-${file.lastModified}`;
+export async function uploadFileResumable(
+  file,
+  dataType,
+  onProgress = () => {},
+  { signal, collectionUuid = null, collectionRole = null } = {},
+) {
+  const baseFileId = `${file.name}-${file.size}-${file.lastModified}`;
+  const fileId = collectionUuid
+    ? `${baseFileId}-${collectionUuid}-${collectionRole || "member"}`
+    : baseFileId;
   const total = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
-
-  // 1. 查询已传分片，断点续传跳过
-  const statusRes = await authedFetch(
-    `${UPLOAD_BASE}/api/upload/status?file_id=${encodeURIComponent(fileId)}`
+  if (signal?.aborted) throw abortError();
+  const statusResponse = await authedFetch(
+    `${UPLOAD_BASE}/api/upload/status?file_id=${encodeURIComponent(fileId)}`,
+    { signal },
   );
-  const statusPayload = await statusRes.json();
-  if (!statusRes.ok || statusPayload.code !== 0) {
-    throw new Error(apiError(statusPayload, "上传状态读取失败"));
-  }
-  const { data } = statusPayload;
-  if (data?.completed) {
+  const status = await checkedJson(statusResponse, "上传状态读取失败");
+  if (status.completed) {
     onProgress(100);
-    return {
-      ...data.completed,
-      duplicate_content: true,
-      duplicate_reason: "existing_upload",
-    };
+    return status.completed;
   }
-  const done = new Set(data?.uploaded ?? []);
+  const done = new Set(status.uploaded ?? []);
 
-  // 2. 顺序上传缺失分片，按分片粒度聚合进度
   for (let i = 0; i < total; i++) {
+    if (signal?.aborted) throw abortError();
     if (!done.has(i)) {
       const blob = file.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
       const fd = new FormData();
@@ -519,23 +555,88 @@ export async function uploadFileResumable(file, dataType, onProgress = () => {})
       fd.append("chunk_index", i);
       fd.append("total_chunks", total);
       fd.append("chunk", blob);
-      const res = await authedFetch(`${UPLOAD_BASE}/api/upload/chunk`, { method: "POST", body: fd });
-      if (!res.ok) throw new Error(`分片 ${i} 上传失败`);
+      const response = await authedFetch(`${UPLOAD_BASE}/api/upload/chunk`, { method: "POST", body: fd, signal });
+      await checkedJson(response, `分片 ${i} 上传失败`);
     }
     onProgress(((i + 1) / total) * 100);
   }
 
-  // 3. 合并落盘
-  const res = await authedFetch(`${UPLOAD_BASE}/api/upload/complete`, {
+  if (signal?.aborted) throw abortError();
+  const response = await authedFetch(`${UPLOAD_BASE}/api/upload/complete`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ file_id: fileId, file_name: file.name, total_chunks: total, data_type: dataType }),
+    body: JSON.stringify({
+      file_id: fileId,
+      file_name: file.name,
+      total_chunks: total,
+      data_type: dataType,
+      collection_uuid: collectionUuid,
+      collection_role: collectionRole,
+    }),
+    signal,
   });
-  const payload = await res.json();
-  if (!res.ok || payload.code !== 0) {
-    throw new Error(typeof payload.detail === "string" ? payload.detail : "合并失败");
+  return checkedJson(response, "合并失败");
+}
+
+export async function prepareUploadCollections(files, dataType, { signal } = {}) {
+  const response = await authedFetch(`${UPLOAD_BASE}/api/upload/collections/prepare`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      data_type: dataType,
+      files: Array.from(files || []).map(file => ({
+        file_id: `${file.name}-${file.size}-${file.lastModified}`,
+        file_name: file.name,
+        file_size: file.size,
+        last_modified: file.lastModified || 0,
+      })),
+    }),
+    signal,
+  });
+  return checkedJson(response, "卫星集合准备失败");
+}
+
+export async function getUploadCollections({ limit = 100, offset = 0 } = {}) {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  const response = await authedFetch(`${UPLOAD_BASE}/api/upload/collections?${params}`);
+  return checkedJson(response, "卫星集合列表读取失败");
+}
+
+export async function getUploadCollection(collectionUuid) {
+  const response = await authedFetch(
+    `${UPLOAD_BASE}/api/upload/collections/${encodeURIComponent(collectionUuid)}`,
+  );
+  return checkedJson(response, "卫星集合详情读取失败");
+}
+
+export async function retryUploadCollection(collectionUuid) {
+  const response = await authedFetch(
+    `${UPLOAD_BASE}/api/upload/collections/${encodeURIComponent(collectionUuid)}/retry`,
+    { method: "POST" },
+  );
+  return checkedJson(response, "卫星集合重试失败");
+}
+
+export async function uploadFilesResumable(fileOrFiles, dataType, onProgress = () => {}, options = {}) {
+  const files = Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles];
+  const totalBytes = Math.max(1, files.reduce((sum, file) => sum + file.size, 0));
+  const progress = new Map(files.map(file => [file, 0]));
+  const receipts = new Array(files.length);
+  let nextIndex = 0;
+  async function worker() {
+    while (nextIndex < files.length) {
+      const index = nextIndex++;
+      const file = files[index];
+      receipts[index] = await uploadFileResumable(file, dataType, value => {
+        progress.set(file, value);
+        const loaded = files.reduce((sum, item) => sum + item.size * (progress.get(item) || 0) / 100, 0);
+        onProgress(Math.min(100, loaded / totalBytes * 100));
+      }, options);
+    }
   }
-  return payload.data;
+  await Promise.all(Array.from({ length: Math.min(2, files.length) }, worker));
+  onProgress(100);
+  return receipts;
 }
 
 export async function getUploadTasks({ limit = 100, offset = 0 } = {}) {
@@ -607,46 +708,79 @@ export async function getDisplayResource(resource) {
   return payload.data;
 }
 
-export async function uploadRawFiles(fileOrFiles, dataType, onProgress = () => {}) {
-  const body = new FormData();
-  const files = Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles];
-  if (files.length === 1) {
-    body.append("file", files[0]);
-  } else {
-    files.forEach(file => body.append("files", file));
-  }
-  body.append("business_type", dataType);
-  body.append("data_type", dataType);
+export async function ingestUploadedFiles(receipts, dataType, { action = "parse", overwrite = false } = {}) {
+  const response = await authedFetch(`${API_BASE}/api/files/ingest`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      tickets: receipts.map(item => item.ticket),
+      business_type: dataType,
+      action,
+      overwrite,
+    }),
+  });
+  return checkedJson(response, action === "raw" ? "raw 入库失败" : "解析失败");
+}
+
+function inferredUploadType(files) {
+  const names = files.map(file => String(file?.name || ""));
+  if (names.every(name => /FY3|FY-3/i.test(name))) return "FY3";
+  if (names.every(name => /^HS_H.*\.DAT(?:\.bz2)?$/i.test(name) || /Himawari|HSD/i.test(name))) return "Himawari";
+  const name = names[0] || "";
+  if (/ECMWF|\bIFS\b/i.test(name)) return "ECMWF";
+  const key = displayKeyFromFileName(name);
+  return ({ grib: "GFS", radar: "Radar", era5: "ERA5", wrf: "WRF", cma: "CMA", fy3: "FY3", himawari: "Himawari" })[key] || "";
+}
+
+async function directFileRequest(path, files, dataType, onProgress, { signal } = {}) {
   await ensureFreshToken();
+  const body = new FormData();
+  Array.from(files || []).forEach(file => body.append("files", file, file.name));
+  body.append("business_type", dataType);
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", `${API_BASE}/api/files/raw-upload`);
-    const token = getToken();
-    if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    const cancel = () => xhr.abort();
+    xhr.open("POST", `${API_BASE}${path}`);
+    xhr.setRequestHeader("Authorization", `Bearer ${getToken()}`);
     xhr.upload.onprogress = event => {
-      if (event.lengthComputable) onProgress(Math.min(100, event.loaded / event.total * 100));
+      if (event.lengthComputable) onProgress((event.loaded / event.total) * 100);
     };
-    xhr.onerror = () => reject(new Error("无法连接数据解析服务，请确认 backend_system 已启动。"));
-    xhr.onabort = () => reject(new Error("raw 上传已取消。"));
+    xhr.onerror = () => reject(new Error("无法连接数据处理服务，请确认 backend_system 已启动。"));
+    xhr.onabort = () => reject(abortError());
     xhr.onload = () => {
+      signal?.removeEventListener("abort", cancel);
       let payload = null;
-      try {
-        payload = JSON.parse(xhr.responseText || "null");
-      } catch {
-        reject(new Error(`raw 上传返回了无法解析的响应（HTTP ${xhr.status}）`));
+      try { payload = JSON.parse(xhr.responseText || "null"); } catch {
+        reject(new Error(`数据处理服务返回了无法解析的响应（HTTP ${xhr.status}）`));
         return;
       }
       if (xhr.status === 401) logout();
-      if (xhr.status === 403) ElMessage.warning("权限不足，请联系管理员开通");
       if (xhr.status < 200 || xhr.status >= 300 || payload?.code !== 0) {
-        reject(new Error(apiError(payload, "raw 上传失败")));
+        reject(new Error(apiError(payload, `文件处理失败（HTTP ${xhr.status}）`)));
         return;
       }
       onProgress(100);
       resolve(payload.data);
     };
+    if (signal?.aborted) {
+      reject(abortError());
+      return;
+    }
+    signal?.addEventListener("abort", cancel, { once: true });
     xhr.send(body);
   });
+}
+
+export async function parseFile(fileOrFiles, onProgress = () => {}, options = {}) {
+  const files = Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles];
+  const dataType = options.dataType || inferredUploadType(files);
+  if (!dataType) throw new Error("无法自动识别数据类型，请前往数据上传页选择类型。");
+  return directFileRequest("/api/files/parse", files, dataType, onProgress, options);
+}
+
+export async function uploadRawFiles(fileOrFiles, dataType, onProgress = () => {}, options = {}) {
+  const files = Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles];
+  return directFileRequest("/api/files/raw-upload", files, dataType, onProgress, options);
 }
 
 export async function getRawScenes(dataType) {
@@ -683,55 +817,74 @@ export async function updateDisplayFromRaw(dataType, { force = false, sceneIds =
   return result;
 }
 
-export async function startFY3ParseTask(sceneIds, { force = false } = {}) {
+export async function startSatelliteParseTask(dataType, sceneIds, { force = false } = {}) {
   const params = new URLSearchParams({ force: force ? "true" : "false" });
   Array.from(new Set(sceneIds || [])).filter(Boolean).forEach(sceneId => {
     params.append("scene_id", sceneId);
   });
-  const response = await authedFetch(`${API_BASE}/api/display/FY3/parse-tasks?${params}`, {
+  const response = await authedFetch(`${API_BASE}/api/display/${encodeURIComponent(dataType)}/parse-tasks?${params}`, {
     method: "POST",
   });
   const payload = await response.json();
   if (!response.ok || payload.code !== 0) {
-    throw new Error(apiError(payload, "FY-3 解析任务创建失败"));
+    throw new Error(apiError(payload, `${dataType} 解析任务创建失败`));
   }
   return payload.data;
 }
 
-export async function getFY3ParseTask(taskId) {
-  const response = await authedFetch(`${API_BASE}/api/display/FY3/parse-tasks/${encodeURIComponent(taskId)}`);
+export async function getSatelliteParseTask(dataType, taskId) {
+  const response = await authedFetch(`${API_BASE}/api/display/${encodeURIComponent(dataType)}/parse-tasks/${encodeURIComponent(taskId)}`);
   const payload = await response.json();
   if (!response.ok || payload.code !== 0) {
-    throw new Error(apiError(payload, "FY-3 解析任务读取失败"));
+    throw new Error(apiError(payload, `${dataType} 解析任务读取失败`));
   }
   return payload.data;
 }
 
-export async function listFY3ParseTasks({ activeOnly = false } = {}) {
+export async function listSatelliteParseTasks(dataType, { activeOnly = false } = {}) {
   const params = new URLSearchParams({ active_only: activeOnly ? "true" : "false" });
-  const response = await authedFetch(`${API_BASE}/api/display/FY3/parse-tasks?${params}`);
+  const response = await authedFetch(`${API_BASE}/api/display/${encodeURIComponent(dataType)}/parse-tasks?${params}`);
   const payload = await response.json();
   if (!response.ok || payload.code !== 0) {
-    throw new Error(apiError(payload, "FY-3 解析任务列表读取失败"));
+    throw new Error(apiError(payload, `${dataType} 解析任务列表读取失败`));
   }
   return payload.data;
 }
 
-export async function waitForFY3ParseTask(
-  taskId,
+export async function cancelSatelliteParseTask(dataType, taskId) {
+  const response = await authedFetch(`${API_BASE}/api/display/${encodeURIComponent(dataType)}/parse-tasks/${encodeURIComponent(taskId)}/cancel`, { method: "POST" });
+  const payload = await response.json();
+  if (!response.ok || payload.code !== 0) throw new Error(apiError(payload, "取消解析任务失败"));
+  return payload.data;
+}
+
+export async function retrySatelliteParseTask(dataType, taskId) {
+  const response = await authedFetch(`${API_BASE}/api/display/${encodeURIComponent(dataType)}/parse-tasks/${encodeURIComponent(taskId)}/retry`, { method: "POST" });
+  const payload = await response.json();
+  if (!response.ok || payload.code !== 0) throw new Error(apiError(payload, "重试解析任务失败"));
+  return payload.data;
+}
+
+export async function waitForSatelliteParseTask(
+  dataType, taskId,
   { onProgress = () => {}, intervalMs = 1000, timeoutMs = 60 * 60 * 1000 } = {},
 ) {
   const startedAt = Date.now();
   while (true) {
-    const task = await getFY3ParseTask(taskId);
+    const task = await getSatelliteParseTask(dataType, taskId);
     onProgress(task);
-    if (["completed", "partial", "failed"].includes(task.state)) return task;
+    if (["completed", "succeeded", "partial", "failed", "cancelled", "interrupted"].includes(task.state)) return task;
     if (Date.now() - startedAt >= timeoutMs) {
-      throw new Error("FY-3 解析仍在后台运行，请稍后在待解析队列查看结果。");
+      throw new Error(`${dataType} 解析仍在后台运行，请稍后在待解析队列查看结果。`);
     }
     await new Promise(resolve => globalThis.setTimeout(resolve, intervalMs));
   }
 }
+
+export function startFY3ParseTask(sceneIds, options = {}) { return startSatelliteParseTask("FY3", sceneIds, options); }
+export function getFY3ParseTask(taskId) { return getSatelliteParseTask("FY3", taskId); }
+export function listFY3ParseTasks(options = {}) { return listSatelliteParseTasks("FY3", options); }
+export function waitForFY3ParseTask(taskId, options = {}) { return waitForSatelliteParseTask("FY3", taskId, options); }
 
 export async function getHimawariAutoStatus() {
   const response = await authedFetch(`${API_BASE}/api/himawari/auto-status`);

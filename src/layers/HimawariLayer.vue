@@ -29,7 +29,7 @@
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import LayerCard from "../components/LayerCard.vue";
 import WebglLayer from "../components/WebglLayer.vue";
-import { authedFetch } from "../api";
+import { authedFetch, withToken } from "../api";
 
 const props = defineProps({
   src: String,
@@ -41,7 +41,7 @@ const props = defineProps({
   variantIndex: { type: Number, default: 0 },
   resolution: { type: String, default: "original" },
 });
-const emit = defineEmits(["display-loaded", "variable-change", "resolution-change"]);
+const emit = defineEmits(["display-loaded", "display-error", "variable-change", "resolution-change"]);
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8002";
 const flyToExtent = inject("flyToExtent", null);
@@ -238,10 +238,10 @@ function splitEnDescription(text) {
 function toPublicWebpUrl(value, apiBase) {
   const text = String(value || "").trim();
   if (!text || !/\.webp(\?.*)?$/i.test(text)) return "";
-  if (/^https?:\/\//i.test(text)) return text;
+  if (/^https?:\/\//i.test(text)) return withToken(text);
   const base = String(apiBase || "").replace(/\/$/, "");
-  if (text.startsWith("/")) return `${base}${text}`;
-  if (/^(data|static|assets)\//i.test(text)) return `${base}/${text}`;
+  if (text.startsWith("/")) return withToken(`${base}${text}`);
+  if (/^(data|static|assets)\//i.test(text)) return withToken(`${base}/${text}`);
   return "";
 }
 
@@ -324,7 +324,8 @@ async function loadHimawariDisplay() {
     emitSelectedVariableInfo();
     error.value = "";
   } catch (err) {
-    error.value = "Himawari 数据未加载";
+    error.value = err?.message || "Himawari 数据未加载";
+    emit("display-error", error.value);
     console.error(err);
   }
 }

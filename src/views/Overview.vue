@@ -152,6 +152,7 @@
               :variant-index="p.variantIndex"
               v-bind="layerProps(p.key)"
               @display-loaded="payload => onLayerDisplayLoaded(i, p.key, payload)"
+              @display-error="message => onLayerDisplayError(i, p.key, message)"
               @variable-change="payload => onLayerVariableChange(i, p.key, payload)"
             />
           </ProjMap>
@@ -186,6 +187,7 @@
       v-if="propsOpen"
       :meta="meta"
       :steps="processing"
+      :himawari-status="active === 'himawari' ? himawariStatus : null"
       closable
       @close="propsOpen = false"
     >
@@ -198,12 +200,17 @@
 </template>
 
 <script setup>
-import { computed, inject, onBeforeUnmount, provide, ref, watch } from "vue";
+import { computed, inject, onBeforeUnmount, onMounted, provide, ref, watch } from "vue";
 import { ElNotification } from "element-plus";
-import { ArrowLeft, ArrowRight, Check, CircleCheck, Close, Collection, Connection, DArrowLeft, DArrowRight, Document, Grid, Loading, MapLocation, Monitor, Moon, Operation, Position, RefreshRight, Sunny, VideoPlay, VideoPause } from "@element-plus/icons-vue";
+import { ArrowLeft, ArrowRight, Check, CircleCheck, Close, Collection, Connection, DArrowLeft, DArrowRight, DataAnalysis, Document, FolderOpened, Grid, Loading, MapLocation, Monitor, Moon, Operation, Position, RefreshRight, Sunny, VideoPlay, VideoPause } from "@element-plus/icons-vue";
 import {
   getDisplayResource,
   getDisplayResources,
+  getHimawariAutoStatus,
+  parseFile,
+  startSatelliteParseTask,
+  uploadRawFiles,
+  waitForSatelliteParseTask,
 } from "../api";
 import { preloadFrames } from "../utils/frameImageCache";
 import ProjMap from "../components/ProjMap.vue";
@@ -324,6 +331,8 @@ const resourceEndTime = ref("");
 const attributeFilters = ref({});
 const layerDisplays = ref({});
 const layerRefreshKeys = ref({himawari: 0, fy3: 0});
+const himawariStatus = ref(null);
+let himawariStatusTimer = null;
 const focusedFY3SceneId = ref("");
 const fy3FocusApplied = ref(false);
 const pendingHimawariSceneId = ref("");
@@ -662,6 +671,16 @@ function onLayerDisplayLoaded(paneIndex, key, payload) {
       cmaPlaybackWaiting.value = false;
     }
   }
+}
+
+function onLayerDisplayError(paneIndex, key, message) {
+  const text = String(message || "图层数据加载失败");
+  paneLabels.value = {...paneLabels.value, [paneIndex]: `${sources.find(item => item.key === key)?.btn || key} · 加载失败`};
+  if (paneIndex !== 0) return;
+  parseProcessing.value = [
+    {step: "读取展示数据", state: text, t: new Date().toLocaleTimeString(), ok: false},
+    {step: "前端展示", state: "请检查登录状态、后端服务或数据完整性", t: "", ok: false},
+  ];
 }
 
 function onLayerVariableChange(paneIndex, key, payload) {
@@ -1332,9 +1351,40 @@ watch(
 
 onBeforeUnmount(() => {
   clearInterval(animTimer);
+  if (himawariStatusTimer) clearInterval(himawariStatusTimer);
   cmaPlaybackWaiting.value = false;
   clearTimeout(switchingTimer);
 });
+
+async function refreshHimawariStatus() {
+  try {
+    himawariStatus.value = await getHimawariAutoStatus();
+  } catch (error) {
+    himawariStatus.value = {state: "error", last_error: error?.message || "自动处理状态读取失败"};
+  }
+}
+
+onMounted(() => {
+  refreshHimawariStatus();
+  himawariStatusTimer = window.setInterval(refreshHimawariStatus, 5000);
+});
+
+function businessTypeToLayerKey(type) {
+  const t = String(type || "").toUpperCase();
+
+  if (t === "GFS") return "gfs";
+  if (t === "ECMWF" || t === "EC" || t === "IFS") return "ecmwf";
+  // 历史兼容：旧接口仍返回 GFS/ECMWF 时，默认放到 GFS 页面。
+  if (t === "GFS/ECMWF" || t === "GRIB") return "gfs";
+  if (t === "ERA5") return "era5";
+  if (t === "CMA") return "cma";
+  if (t === "RADAR") return "radar";
+  if (t === "FY3" || t === "FY-3") return "fy3";
+  if (t === "HIMAWARI") return "himawari";
+  if (t === "WRF") return "wrf";
+
+  return active.value;
+}
 
 function extractOverviewGribFileName(value) {
   if (!value) return "";
@@ -2082,6 +2132,217 @@ function selectSource(key) {
   paneDisplays.value = {};
   paneParsed.value = {};
   if (dockOpen.value && tool.value === "select") refreshDataResources({ autoSelect: true });
+}
+
+function pickFile(i) {
+  selected.value = i;
+  resetTimebar();
+  active.value = files[i].key;
+  if (active.value === "fy3") {
+    focusedFY3SceneId.value = "";
+    fy3FocusApplied.value = false;
+  }
+  if (active.value === "himawari") pendingHimawariSceneId.value = "";
+  parsed.value = null;
+  parsedLayerKey.value = null;
+  parseProcessing.value = null;
+}
+
+function choose(e) {
+  file.value = Array.from(e.target.files || []);
+}
+
+function rawBusinessType(files) {
+  const names = files.map(item => String(item?.name || ""));
+  const isFY3 = name => /^FY3[A-Z]_MERSI_GBAL_L1_\d{8}_\d{4}_(?:1000M_MS|GEO1K_MS)\.HDF$/i.test(name);
+  const isHimawari = name => /^HS_H\d{2}_\d{8}_\d{4}_B\d{2}_[A-Z0-9]+_R\d{2}_S\d{4}\.DAT(?:_\d+)?(?:\.bz2)?$/i.test(name);
+
+  if (names.length && names.every(isFY3)) return "FY3";
+  if (names.length && names.every(isHimawari)) return "Himawari";
+  if (names.some(isFY3) || names.some(isHimawari)) {
+    throw new Error("FY-3、Himawari 原始文件不能与其他类型混合上传，请分别提交。");
+  }
+  return "";
+}
+
+async function parse() {
+  const uploadFiles = Array.isArray(file.value) ? file.value : [file.value].filter(Boolean);
+  if (!uploadFiles.length) return;
+
+  let rawType = "";
+  try {
+    rawType = rawBusinessType(uploadFiles);
+  } catch (err) {
+    parseProcessing.value = [
+      {step: "上传/读取", state: err?.message || "文件类型不一致", t: new Date().toLocaleTimeString(), ok: false},
+      {step: "解析", state: "未开始", t: "", ok: false},
+      {step: "渲染 WEBP", state: "未开始", t: "", ok: false},
+      {step: "前端展示", state: "未开始", t: "", ok: false},
+    ];
+    return;
+  }
+
+  if (rawType) {
+    let rawUploadSucceeded = false;
+    let uploadedFileCount = 0;
+    parseProcessing.value = [
+      {step: "上传/读取", state: "上传原始数据中", t: "", ok: false, running: true},
+      {step: "解析", state: "等待上传完成", t: "", ok: false},
+      {step: "渲染 WEBP", state: "等待解析", t: "", ok: false},
+      {step: "前端展示", state: "等待解析完成", t: "", ok: false},
+    ];
+
+    try {
+      const result = await uploadRawFiles(uploadFiles, rawType);
+      rawUploadSucceeded = true;
+      uploadedFileCount = Number(result.file_count || 0);
+      const scenes = Array.isArray(result?.scenes) ? result.scenes : [];
+      const readyScenes = scenes.filter(scene => scene?.complete);
+      const incompleteScenes = scenes.filter(scene => !scene?.complete);
+      if (!readyScenes.length) {
+        const detail = incompleteScenes
+          .map(scene => `${scene.scene_id} 缺少 ${(scene.missing || []).join("、")}`)
+          .join("；");
+        throw new Error(detail || "原始文件尚未组成完整场景");
+      }
+
+      parseProcessing.value = [
+        {step: "上传/读取", state: `成功：${uploadedFileCount} 个原始文件`, t: new Date().toLocaleTimeString(), ok: true},
+        {step: "解析", state: "解析中", t: "", ok: false, running: true},
+        {step: "渲染 WEBP", state: "等待解析", t: "", ok: false},
+        {step: "前端展示", state: "等待解析完成", t: "", ok: false},
+      ];
+
+      const sceneIds = readyScenes.map(scene => scene.scene_id).filter(Boolean);
+      let updateResult;
+      let taskState = "completed";
+      {
+        const task = await startSatelliteParseTask(rawType, sceneIds);
+        const finishedTask = await waitForSatelliteParseTask(rawType, task.task_id, {
+          onProgress(current) {
+            const progress = Number(current?.progress || 0).toFixed(1);
+            const detail = [current?.current_scene, current?.current_band].filter(Boolean).join(" · ");
+            parseProcessing.value = [
+              {step: "上传/读取", state: `成功：${uploadedFileCount} 个原始文件`, t: new Date().toLocaleTimeString(), ok: true},
+              {step: "解析", state: `${progress}%${detail ? ` · ${detail}` : ""}`, t: "后台任务", ok: false, running: true},
+              {step: "渲染 WEBP", state: "随波段生成", t: "", ok: false, running: true},
+              {step: "前端展示", state: "等待任务完成", t: "", ok: false},
+            ];
+          },
+        });
+        taskState = finishedTask.state;
+        updateResult = finishedTask.result || {};
+        if (["failed", "interrupted", "cancelled"].includes(taskState) || (!updateResult.results?.length && finishedTask.error)) {
+          throw new Error(finishedTask.error || `${rawType} 解析任务未完成`);
+        }
+      }
+
+      const completedIds = (updateResult.results || [])
+        .filter(item => item?.status === "ok" || item?.status === "cached")
+        .map(item => item.scene_id)
+        .filter(Boolean);
+      const displayableIds = Array.isArray(updateResult.displayable_scene_ids)
+        ? updateResult.displayable_scene_ids
+        : (updateResult.results || [])
+          .filter(item => (item?.status === "ok" || item?.status === "cached") && item?.displayable !== false)
+          .map(item => item.scene_id)
+          .filter(Boolean);
+      const noCoverageIds = Array.isArray(updateResult.no_coverage_scene_ids)
+        ? updateResult.no_coverage_scene_ids
+        : completedIds.filter(sceneId => !displayableIds.includes(sceneId));
+      const focusedSceneId = displayableIds.at(-1) || completedIds.at(-1) || sceneIds.at(-1) || "";
+      const layerKey = businessTypeToLayerKey(rawType);
+
+      parsed.value = null;
+      parsedLayerKey.value = null;
+      resetTimebar();
+      active.value = layerKey;
+      if (layerKey === "himawari") pendingHimawariSceneId.value = focusedSceneId;
+      if (layerKey === "fy3") {
+        focusedFY3SceneId.value = focusedSceneId;
+        fy3FocusApplied.value = false;
+      }
+      layerRefreshKeys.value = {
+        ...layerRefreshKeys.value,
+        [layerKey]: (layerRefreshKeys.value[layerKey] || 0) + 1,
+      };
+      parseProcessing.value = [
+        {step: "上传/读取", state: `成功：${uploadedFileCount} 个原始文件`, t: new Date().toLocaleTimeString(), ok: true},
+        {
+          step: "解析",
+          state: `${taskState === "partial" ? "部分完成" : "成功"}：${completedIds.length || readyScenes.length} 个场景${noCoverageIds.length ? `，${noCoverageIds.length} 个无区域覆盖` : ""}`,
+          t: new Date().toLocaleTimeString(),
+          ok: taskState !== "partial",
+        },
+        {step: "渲染 WEBP", state: displayableIds.length ? "成功" : "无有效覆盖图像", t: new Date().toLocaleTimeString(), ok: Boolean(displayableIds.length)},
+        {step: "前端展示", state: focusedSceneId ? `显示 ${focusedSceneId}` : "无可展示场景", t: "实时", ok: Boolean(focusedSceneId)},
+      ];
+    } catch (err) {
+      console.error("raw 上传或解析失败：", err);
+      parseProcessing.value = [
+        {
+          step: "上传/读取",
+          state: rawUploadSucceeded ? `成功：${uploadedFileCount} 个原始文件` : (err?.message || "上传失败"),
+          t: new Date().toLocaleTimeString(),
+          ok: rawUploadSucceeded,
+        },
+        {
+          step: "解析",
+          state: rawUploadSucceeded ? (err?.message || "解析失败") : "未开始",
+          t: rawUploadSucceeded ? new Date().toLocaleTimeString() : "",
+          ok: false,
+        },
+        {step: "渲染 WEBP", state: "未生成", t: "", ok: false},
+        {step: "前端展示", state: "未生成", t: "", ok: false},
+      ];
+    }
+    return;
+  }
+
+  parseProcessing.value = [
+    {step: "上传/读取", state: "本地文件", t: new Date().toLocaleTimeString(), ok: true},
+    {step: "解析", state: "解析中", t: "", ok: false, running: true},
+    {step: "渲染 WEBP", state: "等待", t: "", ok: false},
+    {step: "前端展示", state: "等待", t: "", ok: false},
+  ];
+
+  try {
+    const result = await parseFile(uploadFiles);
+
+    const businessType =
+        result?.business_type ||
+        result?.data_type ||
+        result?.meta?.business_type ||
+        result?.meta?.data_type;
+
+    const layerKey = businessTypeToLayerKey(businessType);
+    if (layerKey === "radar") {
+      layerDisplays.value = {...layerDisplays.value, radar: null};
+    }
+
+    parsed.value = result;
+    parsedLayerKey.value = layerKey;
+    resetTimebar();
+    active.value = layerKey;
+
+    parseProcessing.value = [
+      {step: "上传/读取", state: "成功", t: new Date().toLocaleTimeString(), ok: true},
+      {step: "解析", state: "成功", t: new Date().toLocaleTimeString(), ok: true},
+      {step: "渲染 WEBP", state: "成功", t: new Date().toLocaleTimeString(), ok: true},
+      {step: "前端展示", state: "完成", t: "实时", ok: true},
+    ];
+
+    setTimeIndex(0);
+  } catch (err) {
+    console.error("解析失败：", err);
+
+    parseProcessing.value = [
+      {step: "上传/读取", state: "成功", t: new Date().toLocaleTimeString(), ok: true},
+      {step: "解析", state: err?.message || "失败", t: new Date().toLocaleTimeString(), ok: false},
+      {step: "渲染 WEBP", state: "未完成", t: "", ok: false},
+      {step: "前端展示", state: "未完成", t: "", ok: false},
+    ];
+  }
 }
 
 watch(active, () => {

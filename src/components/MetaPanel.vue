@@ -23,20 +23,21 @@
           <div ref="chartEl" class="stat-chart-body"></div>
         </section>
 
-        <section v-if="himawariStatus" class="auto-box">
-          <div class="auto-head">
-            <h4>自动处理</h4>
-            <b :class="['auto-state', statusClass]">{{ statusLabel }}</b>
-          </div>
-          <dl class="auto-list">
-            <template v-for="row in statusRows" :key="row.key">
-              <dt>{{ row.label }}</dt>
-              <dd>{{ row.value }}</dd>
-            </template>
-          </dl>
-          <p v-if="firstErrorText" class="auto-error">{{ firstErrorText }}</p>
-        </section>
       </template>
+
+      <section v-if="himawariStatus" class="auto-box">
+        <div class="auto-head">
+          <h4>Himawari 自动处理</h4>
+          <b :class="['auto-state', statusClass]">{{ statusLabel }}</b>
+        </div>
+        <dl class="auto-list">
+          <template v-for="row in statusRows" :key="row.key">
+            <dt>{{ row.label }}</dt>
+            <dd>{{ row.value }}</dd>
+          </template>
+        </dl>
+        <p v-if="firstErrorText" class="auto-error">{{ firstErrorText }}</p>
+      </section>
     </div>
   </aside>
 </template>
@@ -244,13 +245,23 @@ const statusClass = computed(() => {
 });
 
 const statusRows = computed(() => {
+  const status = props.himawariStatus || {};
   return [
     ["download_scene", "正在下载", formatActiveItems(activeDownloads.value)],
     ["parse_scene", "正在解析", formatActiveItems(activeParses.value)],
+    ["last_finished", "最近完成", formatStatusTime(status.last_finished_at)],
+    ["next_run", "下次检查", formatStatusTime(status.next_run_at)],
+    ["interval", "检查间隔", status.config?.download_interval_seconds ? `${status.config.download_interval_seconds} 秒` : ""],
   ]
       .filter(([, , value]) => value !== undefined && value !== null && value !== "")
       .map(([key, label, value]) => ({key, label, value}));
 });
+
+function formatStatusTime(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString("zh-CN", {hour12: false});
+}
 
 const activeDownloads = computed(() => {
   const status = props.himawariStatus || {};

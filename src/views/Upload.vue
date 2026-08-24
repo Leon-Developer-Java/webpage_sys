@@ -18,8 +18,8 @@
       >
         <el-icon class="dz-icon"><Upload /></el-icon>
         <p class="dz-title">拖拽文件到此处，或<em>点击选择</em></p>
-        <small class="dz-hint">支持 .cinrad / .nc / .grib2 / .hsd 等格式，可多选</small>
-        <input ref="input" type="file" multiple hidden @change="onPick" />
+        <small class="dz-hint">支持雷达 CINRAD/NetCDF、GRIB2、FY-3 HDF、Himawari DAT(.bz2) 与 WRF NetCDF；单次最多并行上传 2 个文件</small>
+        <input ref="input" type="file" multiple hidden accept=".cinrad,.nc,.grib,.grib2,.grb,.grb2,.hdf,.hdf5,.dat,.bz2" @change="onPick" />
       </div>
 
       <div class="file-section glass">
@@ -114,6 +114,7 @@
                 </td>
                 <td class="pin-r">
                   <span :class="['badge', f.status]">{{ STATUS[f.status] }}</span>
+                  <button v-if="['queued', 'uploading'].includes(f.status)" class="row-cancel" @click.stop="cancelFileUpload(f)">取消</button>
                 </td>
               </tr>
             </tbody>
@@ -201,17 +202,17 @@
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { ElNotification } from "element-plus";
 import { DataAnalysis, Delete, Upload, WarningFilled } from "@element-plus/icons-vue";
+import { ElNotification } from "element-plus";
 import MetaPanel from "../components/MetaPanel.vue";
 import {
   getRawScenes,
-  listFY3ParseTasks,
-  startFY3ParseTask,
-  updateDisplayFromRaw,
+  listSatelliteParseTasks,
+  prepareUploadCollections,
+  retryUploadCollection,
+  startSatelliteParseTask,
   uploadFileResumable,
-  uploadRawFiles,
-  waitForFY3ParseTask,
+  waitForSatelliteParseTask,
   getUploadTasks,
   retryUploadTask,
 } from "../api.js";
@@ -224,12 +225,15 @@ const tab = ref("upload");
 const dlgVisible = ref(false);
 const missingTypeFiles = ref([]);
 const pendingUpload = ref([]);
+const uploadQueue = [];
+const uploadControllers = new Map();
+let activeUploadCount = 0;
 let queueTimer = null;
 
 // GFS 与 ECMWF 必须分开。不能再使用合并入口，否则 ECMWF 可能会被落入 GFS 目录。
 const TYPES = ["ERA5", "GFS", "ECMWF", "CMA", "雷达", "葵花", "FY-3", "WRF"];
-const STATUS = { pending: "待上传", uploading: "上传中", done: "完成", error: "失败" };
-const PARSE_STATUS = { pending: "待解析", parsing: "解析中", done: "已解析", error: "失败" };
+const STATUS = { pending: "待上传", queued: "排队中", uploading: "上传中", done: "完成", error: "失败", cancelled: "已取消" };
+const PARSE_STATUS = { pending: "待解析", parsing: "解析中", done: "已解析", error: "不完整" };
 
 const parseQueue = ref([]);
 const databaseTaskTotal = ref(0);
@@ -238,6 +242,7 @@ const databaseParsedTotal = ref(0);
 function parseStatusText(file) {
   if (isRawSourceMissing(file)) return "原文件缺失";
   if (file?.rawStatus === "no_coverage") return "无区域覆盖";
+  if (file?.rawStatus === "waiting_collection") return "等待集合完整";
   if (file?.status === "parsing" && Number.isFinite(Number(file?.progress))) {
     return `解析中 ${Number(file.progress).toFixed(1)}%`;
   }
@@ -590,7 +595,6 @@ function addFiles(list) {
   }
 }
 
-
 function normalizeDataTypeForBackend(dataType, fileName = "") {
   const raw = String(dataType || "").trim();
   const upper = raw.toUpperCase();
@@ -612,7 +616,7 @@ function normalizeDataTypeForBackend(dataType, fileName = "") {
   return raw;
 }
 
-function isRawFirstType(dataType) {
+function isSatelliteCollectionType(dataType) {
   return ["FY3", "Himawari"].includes(normalizeDataTypeForBackend(dataType));
 }
 
@@ -663,13 +667,17 @@ function rawSceneToQueueItem(scene) {
 }
 
 function databaseTaskToQueueItem(task, previous = {}) {
-  const statusMap = { pending: "pending", running: "parsing", success: "done", failed: "error" };
+  const statusMap = { waiting_collection: "pending", pending: "pending", running: "parsing", success: "done", failed: "error" };
   const status = statusMap[task.parse_status] || "error";
   const parseError = task.parse_error || "";
+  const collection = task.collection || null;
+  const collectionMissing = Array.isArray(collection?.missing_roles) ? collection.missing_roles : [];
   const item = {
     id: `database:${task.file_uuid}`,
     queueKind: "database",
     fileUuid: task.file_uuid,
+    collectionUuid: task.collection_uuid || null,
+    collectionStatus: collection?.status || null,
     name: task.file_name,
     fmt: task.file_type || "—",
     size: Number.isFinite(Number(task.file_size)) ? fmtSize(Number(task.file_size)) : "—",
@@ -678,6 +686,7 @@ function databaseTaskToQueueItem(task, previous = {}) {
     status,
     rawStatus: task.parse_status,
     parseError,
+    missing: collectionMissing,
     defaultWebpUrl: task.default_webp_url,
     checked: previous.checked || false,
     meta: {
@@ -687,10 +696,14 @@ function databaseTaskToQueueItem(task, previous = {}) {
       level: "上传任务",
       range: status === "done" ? "已进入可展示数据目录" : "私有 raw 存储",
       grid: status === "done" ? `${Number(task.webp_count || 0)} 个 WebP` : "—",
-      missing: isRawSourceMissing({queueKind: "database", parseError}) ? "原始文件不在本机" : "—",
+      missing: isRawSourceMissing({queueKind: "database", parseError})
+        ? "原始文件不在本机"
+        : collectionMissing.length ? collectionMissing.join("、") : "—",
       status: parseStatusText({queueKind: "database", status, rawStatus: task.parse_status, parseError}),
       extraRows: [
         ["fileUuid", "任务 ID", task.file_uuid],
+        ["collectionUuid", "集合 ID", task.collection_uuid || ""],
+        ["collectionMissing", "集合缺失成员", collectionMissing.join("、")],
         ["parseAttempts", "解析次数", task.parse_attempts],
         ["finishedAt", "完成时间", task.parse_finished_at ? new Date(task.parse_finished_at).toLocaleString("zh-CN") : ""],
         ["renderResult", "渲染结果", status === "done" ? `${Number(task.webp_count || 0)} 个 WebP` : ""],
@@ -704,7 +717,12 @@ function databaseTaskToQueueItem(task, previous = {}) {
 
 function canQueueAction(item) {
   return (item.queueKind === "raw" && item.status === "pending")
-    || (item.queueKind === "database" && item.status === "error" && !isRawSourceMissing(item));
+    || (
+      item.queueKind === "database"
+      && item.status === "error"
+      && !isRawSourceMissing(item)
+      && (!item.collectionUuid || item.collectionStatus === "failed")
+    );
 }
 
 function syncLocalFileStatus(tasks) {
@@ -741,11 +759,12 @@ function syncLocalFileStatus(tasks) {
 
 async function refreshParseQueue() {
   const previous = new Map(parseQueue.value.map(item => [item.id, item]));
-  const [databaseGroup, himawariGroup, fy3Group, activeTasksGroup] = await Promise.allSettled([
+  const [databaseGroup, himawariGroup, fy3Group, fy3TasksGroup, himawariTasksGroup] = await Promise.allSettled([
     getUploadTasks(),
     getRawScenes("Himawari"),
     getRawScenes("FY3"),
-    listFY3ParseTasks({activeOnly: true}),
+    listSatelliteParseTasks("FY3", {activeOnly: true}),
+    listSatelliteParseTasks("Himawari", {activeOnly: true}),
   ]);
   const rows = [];
   const databaseItems = [];
@@ -773,8 +792,8 @@ async function refreshParseQueue() {
       if (item.status !== "done") rows.push(item);
     });
   });
-
-  const activeTasks = activeTasksGroup.status === "fulfilled" ? (activeTasksGroup.value.tasks || []) : [];
+  const activeTasks = [fy3TasksGroup, himawariTasksGroup]
+    .flatMap(group => group.status === "fulfilled" ? (group.value.tasks || []) : []);
   const activeByScene = new Map();
   activeTasks.forEach(task => {
     (task.scene_ids || []).forEach(sceneId => activeByScene.set(`${task.business_type}:${sceneId}`, task));
@@ -818,70 +837,40 @@ async function switchTab(nextTab) {
     tab.value = nextTab;
   }
 }
-
 async function run(f) {
   f.status = "uploading";
   f.percent = 0;
   const uploadType = normalizeDataTypeForBackend(f.dataType, f.name);
-  const rawFirst = isRawFirstType(uploadType);
+  const collectionUpload = isSatelliteCollectionType(uploadType);
   f.steps = [
     { label: "上传", state: "上传中 0%", t: "", ok: false, running: true },
-    { label: "解析", state: rawFirst ? "进入待解析队列" : "待解析", t: "", ok: false, running: false },
-    { label: "渲染 WEBP", state: rawFirst ? "等待 update" : "等待", t: "", ok: false, running: false },
+    { label: "解析", state: collectionUpload ? "等待集合完整" : "待解析", t: "", ok: false, running: false },
+    { label: "渲染 WEBP", state: "等待", t: "", ok: false, running: false },
     { label: "前端展示", state: "等待", t: "", ok: false, running: false },
   ];
 
+  const controller = new AbortController();
+  uploadControllers.set(f.id, controller);
   try {
-    const uploadData = rawFirst
-      ? await uploadRawFiles(f.raw, uploadType, p => {
-          f.percent = p;
-          f.steps[0].state = `上传中 ${Math.floor(p)}%`;
-        })
-      : await uploadFileResumable(f.raw, uploadType, p => {
-          f.percent = p;
-          f.steps[0].state = `上传中 ${Math.floor(p)}%`;
-        });
-    if (rawFirst) {
-      f.percent = 100;
-    }
+    const uploadData = await uploadFileResumable(f.raw, uploadType, p => {
+      f.percent = p;
+      f.steps[0].state = `上传中 ${Math.floor(p)}%`;
+    }, {
+      signal: controller.signal,
+      collectionUuid: f.collectionAssignment?.collection_uuid || null,
+      collectionRole: f.collectionAssignment?.role || null,
+    });
 
     f.steps[0].ok = true;
     f.steps[0].running = false;
     f.steps[0].state = "成功";
     f.steps[0].t = now();
-
-    if (rawFirst) {
-      f.steps[1].ok = true;
-      f.steps[1].running = false;
-      f.steps[1].state = "已入队";
-      f.steps[1].t = now();
-      f.steps[2].state = "等待 update";
-      f.steps[3].state = "待解析完成";
-      f.meta = {
-        file: f.name,
-        element: uploadType,
-        time: "—",
-        level: "raw 原始数据",
-        range: "已保存到后端 raw 目录",
-        grid: "待解析",
-        missing: "待 update 检查",
-        unit: "—",
-        vars: "—",
-        steps: "—",
-        status: "raw 已保存，未生成 WebP",
-        quality: "待解析",
-        alert: uploadData.message || "raw 文件已保存，未触发解析",
-      };
-      f.uploadResult = uploadData;
-      f.status = "done";
-      selected.value = f.id;
-      await refreshParseQueue();
-      tab.value = "parse";
-      return;
-    }
-
     f.fileUuid = uploadData.file_uuid;
     if (uploadData.duplicate_content) {
+      const duplicateCollection = uploadData.collection || null;
+      const duplicateMissing = Array.isArray(duplicateCollection?.missing_roles)
+        ? duplicateCollection.missing_roles
+        : [];
       const parsedDuplicate = uploadData.parse_status === "success";
       const failedDuplicate = uploadData.parse_status === "failed";
       f.steps[1].ok = parsedDuplicate;
@@ -897,15 +886,17 @@ async function run(f) {
         element: uploadType,
         time: "—",
         level: "重复数据",
-        range: "复用已有数据记录",
+        range: duplicateCollection ? `集合 ${duplicateCollection.scene_key}` : "复用已有数据记录",
         grid: parsedDuplicate ? "无需重复解析" : "沿用原解析任务",
-        missing: "—",
+        missing: duplicateMissing.length ? duplicateMissing.join("、") : "—",
         unit: "—",
         vars: "—",
         steps: "—",
         status: "检测到重复数据",
         quality: parsedDuplicate ? "已复用" : "复用任务中",
-        alert: "该数据已存在，系统已复用已有记录或解析结果。",
+        alert: duplicateCollection
+          ? `集合 ${duplicateCollection.collection_uuid}`
+          : "该数据已存在，系统已复用已有记录或解析结果。",
       };
       f.uploadResult = uploadData;
       f.status = "done";
@@ -922,24 +913,31 @@ async function run(f) {
       tab.value = "parse";
       return;
     }
+    const collection = uploadData.collection || null;
+    const missingRoles = Array.isArray(collection?.missing_roles) ? collection.missing_roles : [];
+    const waitingCollection = uploadData.parse_status === "waiting_collection" || collection?.status === "collecting";
     f.steps[1].running = uploadData.parse_status === "running";
-    f.steps[1].state = uploadData.parse_status === "running" ? "解析中" : "等待 Worker";
+    f.steps[1].state = waitingCollection
+      ? `等待集合完整（缺 ${missingRoles.length}）`
+      : uploadData.parse_status === "running" ? "解析中" : "等待 Worker";
     f.steps[2].state = "等待 Adapter";
     f.steps[3].state = "待解析完成";
     f.meta = {
       file: f.name,
       element: uploadType,
       time: "—",
-      level: "原始单文件",
-      range: "私有 raw 存储",
+      level: collectionUpload ? "卫星场景集合成员" : "原始单文件",
+      range: collectionUpload ? `集合 ${collection?.scene_key || "—"}` : "私有 raw 存储",
       grid: "待解析",
-      missing: "待 Adapter 检查",
+      missing: missingRoles.length ? missingRoles.join("、") : "待 Adapter 检查",
       unit: "—",
       vars: "—",
       steps: "—",
-      status: "已上传，等待自动解析",
+      status: waitingCollection ? "已上传，等待集合其余成员" : "已上传，等待自动解析",
       quality: "待解析",
-      alert: uploadData.duplicate_content ? "检测到相同内容，将复用已有解析结果" : `任务 ${uploadData.file_uuid}`,
+      alert: collectionUpload
+        ? `集合 ${collection?.collection_uuid || f.collectionAssignment?.collection_uuid || "—"}`
+        : `任务 ${uploadData.file_uuid}`,
     };
     f.uploadResult = uploadData;
     f.status = "done";
@@ -948,7 +946,8 @@ async function run(f) {
     selected.value = `database:${f.fileUuid}`;
     tab.value = "parse";
   } catch (err) {
-    const msg = err?.message || "失败";
+    const cancelled = err?.name === "AbortError" || controller.signal.aborted;
+    const msg = cancelled ? "已由用户取消，可重新选择后断点续传" : (err?.message || "失败");
 
     const runningStep = f.steps.find(s => s.running);
     if (runningStep) {
@@ -961,9 +960,75 @@ async function run(f) {
       f.steps[0].state = msg;
     }
 
-    f.status = "error";
-    console.error("上传或解析失败：", err);
+    f.status = cancelled ? "cancelled" : "error";
+    if (!cancelled) console.error("上传或解析失败：", err);
+  } finally {
+    uploadControllers.delete(f.id);
   }
+}
+
+async function queueUploads(items) {
+  const pending = items.filter(file => file.status === "pending");
+  const satelliteGroups = new Map();
+  pending.forEach(file => {
+    const type = normalizeDataTypeForBackend(file.dataType, file.name);
+    if (!isSatelliteCollectionType(type)) return;
+    if (!satelliteGroups.has(type)) satelliteGroups.set(type, []);
+    satelliteGroups.get(type).push(file);
+  });
+  const rejected = new Set();
+  await Promise.all([...satelliteGroups.entries()].map(async ([type, group]) => {
+    try {
+      const prepared = await prepareUploadCollections(group.map(file => file.raw), type);
+      const assignments = new Map((prepared.assignments || []).map(item => [item.file_id, item]));
+      group.forEach(file => {
+        const fileId = `${file.name}-${file.raw.size}-${file.raw.lastModified}`;
+        const assignment = assignments.get(fileId);
+        if (!assignment) throw new Error(`${file.name} 未返回集合角色`);
+        file.collectionAssignment = assignment;
+      });
+    } catch (error) {
+      group.forEach(file => {
+        rejected.add(file.id);
+        file.checked = false;
+        file.status = "error";
+        file.steps = [{ label: "集合准备", state: error?.message || "集合准备失败", t: now(), ok: false, running: false }];
+      });
+      console.error("卫星集合准备失败：", error);
+    }
+  }));
+  pending.forEach(f => {
+    if (rejected.has(f.id)) return;
+    if (f.status !== "pending") return;
+    f.checked = false;
+    f.status = "queued";
+    uploadQueue.push(f);
+  });
+  pumpUploadQueue();
+}
+
+function pumpUploadQueue() {
+  while (activeUploadCount < 2 && uploadQueue.length) {
+    const file = uploadQueue.shift();
+    if (!file || file.status !== "queued") continue;
+    activeUploadCount += 1;
+    run(file).finally(() => {
+      activeUploadCount -= 1;
+      pumpUploadQueue();
+    });
+  }
+}
+
+function cancelFileUpload(file) {
+  const controller = uploadControllers.get(file.id);
+  if (controller) {
+    controller.abort();
+    return;
+  }
+  const index = uploadQueue.findIndex(item => item.id === file.id);
+  if (index >= 0) uploadQueue.splice(index, 1);
+  file.status = "cancelled";
+  file.steps = [{label: "上传", state: "已在开始前取消", t: now(), ok: false, running: false}];
 }
 
 function toggleAll(e) {
@@ -1005,10 +1070,7 @@ function uploadChecked() {
   const withoutType = sel.filter(f => !f.dataType);
 
   if (withoutType.length === 0) {
-    withType.forEach(f => {
-      f.checked = false;
-      run(f);
-    });
+    queueUploads(withType);
     return;
   }
 
@@ -1018,10 +1080,7 @@ function uploadChecked() {
 }
 
 function doUpload() {
-  pendingUpload.value.forEach(f => {
-    f.checked = false;
-    run(f);
-  });
+  queueUploads(pendingUpload.value);
 
   pendingUpload.value = [];
   missingTypeFiles.value = [];
@@ -1044,6 +1103,8 @@ async function parsePqChecked() {
 
   const rawRows = selectedRows.filter(f => f.queueKind === "raw");
   const databaseRows = selectedRows.filter(f => f.queueKind === "database");
+  const collectionIds = [...new Set(databaseRows.map(row => row.collectionUuid).filter(Boolean))];
+  const singleDatabaseRows = databaseRows.filter(row => !row.collectionUuid);
   const scenesByType = new Map();
   rawRows.forEach(row => {
     const type = normalizeDataTypeForBackend(row.dataType);
@@ -1059,17 +1120,14 @@ async function parsePqChecked() {
   try {
     const [outcomes] = await Promise.all([
       Promise.all([...scenesByType.entries()].map(async ([type, sceneIds]) => {
-        if (type !== "FY3") {
-          return {type, result: await updateDisplayFromRaw(type, {sceneIds})};
-        }
-        const task = await startFY3ParseTask(sceneIds);
+        const task = await startSatelliteParseTask(type, sceneIds);
         selectedRows.forEach(row => {
-          if (row.dataType === "FY3" && sceneIds.includes(row.sceneId)) row.taskId = task.task_id;
+          if (row.dataType === type && sceneIds.includes(row.sceneId)) row.taskId = task.task_id;
         });
-        const finished = await waitForFY3ParseTask(task.task_id, {
+        const finished = await waitForSatelliteParseTask(type, task.task_id, {
           onProgress(current) {
             selectedRows.forEach(row => {
-              if (row.dataType !== "FY3" || !(current.scene_ids || []).includes(row.sceneId)) return;
+              if (row.dataType !== type || !(current.scene_ids || []).includes(row.sceneId)) return;
               row.status = "parsing";
               row.rawStatus = current.stage;
               row.progress = Number(current.progress || 0);
@@ -1079,10 +1137,13 @@ async function parsePqChecked() {
             });
           },
         });
-        if (finished.state === "failed") throw new Error(finished.error || "FY-3 解析任务失败");
+        if (["failed", "interrupted", "cancelled"].includes(finished.state)) throw new Error(finished.error || `${type} 解析任务未完成`);
         return {type, task: finished, result: finished.result || {}};
       })),
-      Promise.all(databaseRows.map(row => retryUploadTask(row.fileUuid))),
+      Promise.all([
+        ...singleDatabaseRows.map(row => retryUploadTask(row.fileUuid)),
+        ...collectionIds.map(collectionUuid => retryUploadCollection(collectionUuid)),
+      ]),
     ]);
     await refreshParseQueue();
     outcomes.forEach(outcome => {
@@ -1124,6 +1185,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  uploadControllers.forEach(controller => controller.abort());
   if (queueTimer) window.clearInterval(queueTimer);
 });
 </script>
@@ -1348,9 +1410,22 @@ input[type="checkbox"] { cursor: pointer; accent-color: var(--accent); }
 
 .badge { display: inline-block; font-size: 10px; padding: 2px 7px; border-radius: 6px; white-space: nowrap; }
 .badge.pending { border: 1px solid var(--border); color: var(--muted); }
+.badge.queued { background: rgba(245, 158, 11, 0.14); color: #f59e0b; }
 .badge.uploading { background: var(--accent-soft); color: var(--accent); }
 .badge.done { background: rgba(52, 211, 153, 0.15); color: var(--ok); }
 .badge.error { background: rgba(239, 68, 68, 0.15); color: #ef4444; }
+.badge.cancelled { border: 1px solid var(--border); color: var(--muted); }
+.row-cancel {
+  margin-left: 5px;
+  padding: 1px 5px;
+  border: 1px solid rgba(239, 68, 68, 0.55);
+  border-radius: 5px;
+  background: transparent;
+  color: #ef4444;
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
 
 .req { color: #ef4444; margin-left: 2px; font-weight: 700; }
 
