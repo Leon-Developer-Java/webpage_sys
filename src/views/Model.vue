@@ -106,7 +106,7 @@
         </label>
         <div v-else class="gfs-auto-source">
           <el-icon><CircleCheck /></el-icon>
-          <div><b>GFS 自动数据源已启用</b><span>每6小时下载 NOAA GFS 区域预报；新周期继承上一状态，缺失时自动回算。</span></div>
+          <div><b>GFS 自动数据源已启用</b><span>每6小时下载 NOAA GFS 预报；新周期继承上一状态，缺失时自动回算。</span></div>
         </div>
         <div v-if="!isIcing || icingSource === 'upload'" class="list-head">
           <span>已选文件 · {{ isIcing ? `${files.length}（1个合并文件或连续 GFS 序列）` : `${files.length}/${requiredFileCount}` }}</span>

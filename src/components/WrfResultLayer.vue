@@ -25,7 +25,7 @@
     </label>
     <div class="lc-row"><span>时次</span><b>{{ currentFrame?.time || '—' }}</b></div>
     <div v-if="meta?.quality?.status === 'partial'" class="lc-warning">
-      部分结果：排除 {{ meta.quality.excluded_frames?.length || 0 }} 个坏帧，缺失时次已记录在元数据中。
+      部分结果：排除 {{ meta.quality.unreadable_frames?.length || meta.quality.excluded_frames?.length || 0 }} 个不可读帧，缺失时次已记录在元数据中。
     </div>
     <div v-if="error" class="lc-error">{{ error }}</div>
   </LayerCard>

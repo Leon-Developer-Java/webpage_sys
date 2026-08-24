@@ -666,6 +666,10 @@ function rawSceneToQueueItem(scene) {
   };
 }
 
+function databaseQueueItemId(fileUuid, collectionUuid = null) {
+  return collectionUuid ? `database-collection:${collectionUuid}` : `database:${fileUuid}`;
+}
+
 function databaseTaskToQueueItem(task, previous = {}) {
   const statusMap = { waiting_collection: "pending", pending: "pending", running: "parsing", success: "done", failed: "error" };
   const status = statusMap[task.parse_status] || "error";
@@ -673,7 +677,7 @@ function databaseTaskToQueueItem(task, previous = {}) {
   const collection = task.collection || null;
   const collectionMissing = Array.isArray(collection?.missing_roles) ? collection.missing_roles : [];
   const item = {
-    id: `database:${task.file_uuid}`,
+    id: databaseQueueItemId(task.file_uuid, task.collection_uuid),
     queueKind: "database",
     fileUuid: task.file_uuid,
     collectionUuid: task.collection_uuid || null,
@@ -710,6 +714,75 @@ function databaseTaskToQueueItem(task, previous = {}) {
         ["parseError", "失败原因", parseError],
       ],
     },
+  };
+  if (!canQueueAction(item)) item.checked = false;
+  return item;
+}
+
+function databaseCollectionToQueueItem(tasks, previous = {}) {
+  const collection = tasks[0]?.collection || {};
+  const leader = tasks.find(task => task.file_uuid === collection.leader_file_uuid)
+    || tasks.find(task => Number(task.webp_count || 0) > 0)
+    || tasks[0];
+  const statusMap = { collecting: "pending", ready: "pending", running: "parsing", success: "done", failed: "error" };
+  const status = statusMap[collection.status] || databaseTaskToQueueItem(leader).status;
+  const rawStatusMap = { collecting: "waiting_collection", ready: "pending", running: "running", success: "success", failed: "parse_error" };
+  const members = Array.isArray(collection.members) ? collection.members : tasks;
+  const totalBytes = members.reduce((sum, member) => sum + (Number(member.file_size) || 0), 0);
+  const receivedCount = Number(collection.received_count ?? members.length);
+  const expectedCount = Number(collection.expected_count ?? receivedCount);
+  const collectionMissing = Array.isArray(collection.missing_roles) ? collection.missing_roles : [];
+  const parseError = collection.parse_error
+    || tasks.find(task => task.parse_error)?.parse_error
+    || "";
+  const webpCount = Number(leader?.webp_count || 0);
+  const item = {
+    id: databaseQueueItemId(leader?.file_uuid, collection.collection_uuid || leader?.collection_uuid),
+    queueKind: "database",
+    fileUuid: leader?.file_uuid,
+    collectionUuid: collection.collection_uuid || leader?.collection_uuid,
+    collectionStatus: collection.status || null,
+    name: collection.scene_key || leader?.file_name || "卫星场景集合",
+    fmt: "集合",
+    size: totalBytes > 0 ? fmtSize(totalBytes) : `${receivedCount} 个文件`,
+    uploaded: collection.create_time ? new Date(collection.create_time).toLocaleString("zh-CN") : "—",
+    dataType: collection.data_type || leader?.data_type,
+    status,
+    rawStatus: rawStatusMap[collection.status] || leader?.parse_status,
+    parseError,
+    missing: collectionMissing,
+    defaultWebpUrl: leader?.default_webp_url,
+    checked: previous.checked || false,
+    meta: {
+      file: collection.scene_key || leader?.file_name || "卫星场景集合",
+      element: collection.data_type || leader?.data_type || "—",
+      time: collection.create_time ? new Date(collection.create_time).toLocaleString("zh-CN") : "—",
+      level: "卫星场景集合",
+      range: status === "done" ? "已进入可展示数据目录" : "私有 raw 存储",
+      grid: status === "done" ? `${webpCount} 个 WebP` : "—",
+      missing: isRawSourceMissing({queueKind: "database", parseError})
+        ? "原始文件不在本机"
+        : collectionMissing.length ? collectionMissing.join("、") : "无",
+      unit: "—",
+      vars: `${receivedCount} / ${expectedCount} 个成员`,
+      steps: `${receivedCount} / ${expectedCount} 个成员`,
+      status: parseStatusText({queueKind: "database", status, rawStatus: rawStatusMap[collection.status], parseError}),
+      extraRows: [
+        ["collectionUuid", "集合 ID", collection.collection_uuid || leader?.collection_uuid || ""],
+        ["leaderFileUuid", "主任务 ID", leader?.file_uuid || ""],
+        ["collectionMembers", "集合成员", `${receivedCount} / ${expectedCount}`],
+        ["collectionMissing", "集合缺失成员", collectionMissing.join("、")],
+        ["parseAttempts", "解析次数", collection.parse_attempts ?? leader?.parse_attempts],
+        ["finishedAt", "完成时间", collection.finished_at ? new Date(collection.finished_at).toLocaleString("zh-CN") : ""],
+        ["renderResult", "渲染结果", status === "done" ? `${webpCount} 个 WebP` : ""],
+        ["parseError", "失败原因", parseError],
+      ],
+    },
+    steps: [
+      {label: "上传集合", state: `${receivedCount} / ${expectedCount} 个成员`, t: "", ok: receivedCount === expectedCount},
+      {label: "解析", state: parseStatusText({status, rawStatus: rawStatusMap[collection.status]}), t: "", ok: status === "done", running: status === "parsing"},
+      {label: "渲染 WEBP", state: status === "done" ? `${webpCount} 个 WebP` : "等待", t: "", ok: status === "done"},
+    ],
   };
   if (!canQueueAction(item)) item.checked = false;
   return item;
@@ -760,7 +833,7 @@ function syncLocalFileStatus(tasks) {
 async function refreshParseQueue() {
   const previous = new Map(parseQueue.value.map(item => [item.id, item]));
   const [databaseGroup, himawariGroup, fy3Group, fy3TasksGroup, himawariTasksGroup] = await Promise.allSettled([
-    getUploadTasks(),
+    getUploadTasks({limit: 200}),
     getRawScenes("Himawari"),
     getRawScenes("FY3"),
     listSatelliteParseTasks("FY3", {activeOnly: true}),
@@ -768,12 +841,28 @@ async function refreshParseQueue() {
   ]);
   const rows = [];
   const databaseItems = [];
+  const databaseMemberItems = [];
   if (databaseGroup.status === "fulfilled") {
-    databaseTaskTotal.value = Number(databaseGroup.value.total || 0);
+    const collectionGroups = new Map();
+    const standaloneTasks = [];
     (databaseGroup.value.items || []).forEach(task => {
-      const id = `database:${task.file_uuid}`;
+      databaseMemberItems.push(databaseTaskToQueueItem(task));
+      if (!task.collection_uuid) {
+        standaloneTasks.push(task);
+        return;
+      }
+      if (!collectionGroups.has(task.collection_uuid)) collectionGroups.set(task.collection_uuid, []);
+      collectionGroups.get(task.collection_uuid).push(task);
+    });
+    standaloneTasks.forEach(task => {
+      const id = databaseQueueItemId(task.file_uuid);
       databaseItems.push(databaseTaskToQueueItem(task, previous.get(id)));
     });
+    collectionGroups.forEach(tasks => {
+      const id = databaseQueueItemId(tasks[0]?.file_uuid, tasks[0]?.collection_uuid);
+      databaseItems.push(databaseCollectionToQueueItem(tasks, previous.get(id)));
+    });
+    databaseTaskTotal.value = databaseItems.length;
     databaseParsedTotal.value = databaseItems.filter(item => item.status === "done").length;
     rows.push(...databaseItems);
   } else {
@@ -811,7 +900,7 @@ async function refreshParseQueue() {
     }
   });
   parseQueue.value = rows.sort((a, b) => String(b.uploaded || b.sceneId).localeCompare(String(a.uploaded || a.sceneId)));
-  syncLocalFileStatus(databaseItems);
+  syncLocalFileStatus(databaseMemberItems);
 }
 
 async function switchTab(nextTab) {
@@ -909,7 +998,7 @@ async function run(f) {
         duration: 4500,
       });
       await refreshParseQueue();
-      selected.value = `database:${f.fileUuid}`;
+      selected.value = databaseQueueItemId(f.fileUuid, duplicateCollection?.collection_uuid || uploadData.collection_uuid);
       tab.value = "parse";
       return;
     }
@@ -943,7 +1032,7 @@ async function run(f) {
     f.status = "done";
     selected.value = f.id;
     await refreshParseQueue();
-    selected.value = `database:${f.fileUuid}`;
+    selected.value = databaseQueueItemId(f.fileUuid, collection?.collection_uuid || uploadData.collection_uuid);
     tab.value = "parse";
   } catch (err) {
     const cancelled = err?.name === "AbortError" || controller.signal.aborted;
