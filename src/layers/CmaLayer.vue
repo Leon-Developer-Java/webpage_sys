@@ -20,7 +20,7 @@
 <script setup>
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import LayerCard from "../components/LayerCard.vue";
-import { authedFetch } from "../api";
+import { authedFetch, withToken } from "../api";
 
 const props = defineProps({
   levelIndex: { type: Number, default: 0 },
@@ -157,8 +157,8 @@ function displayElementName(item, gridLike = null, unit = "") {
 
 function apiUrl(path) {
   if (!path) return "";
-  if (/^https?:\/\//i.test(path)) return path;
-  return new URL(path, `${API_BASE}/`).toString();
+  const url = /^https?:\/\//i.test(path) ? path : new URL(path, `${API_BASE}/`).toString();
+  return withToken(url);
 }
 
 function displayImagePath(data) {

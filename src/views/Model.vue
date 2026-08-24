@@ -385,7 +385,7 @@
             <section class="result-section"><h4><i>1</i>数据概况</h4><div class="overview-list"><p><span>预报要素</span><b>{{ fieldInfo.name_zh }}</b><small>{{ fieldInfo.unit }}</small></p><p><span>预报范围</span><b>{{ compactTimeRange }}</b></p><p><span>空间范围</span><b>{{ spatialDescription }}</b></p></div></section>
             <section class="result-section"><h4><i>2</i>当前要素</h4><div class="valid-time"><span>当前预报时次</span><b>{{ activeTimeFull }}</b><small>第 {{ activeIndex + 1 }}/{{ frames.length }} 小时 · {{ activeFrame?.active_grid_cells || 0 }} 个覆冰网格<template v-if="activeFrame?.melting_grid_cells"> · {{ activeFrame.melting_grid_cells }} 个消融网格</template></small></div><div class="summary-list"><p><span>厚度口径</span><b>从初始时刻起算的净冰厚</b></p><p><span>当前最大净冰厚</span><b>{{ number(activeFrame?.max_net_ice_thickness_mm) }} mm</b></p><p><span>轻/中/重/严重</span><b>{{ activeLevelCounts[1] || 0 }} / {{ activeLevelCounts[2] || 0 }} / {{ activeLevelCounts[3] || 0 }} / {{ activeLevelCounts[4] || 0 }}</b></p></div></section>
             <section class="result-section"><h4><i>3</i>解释说明</h4><p class="field-explain">{{ fieldInfo.description }}</p></section>
-            <section class="result-section"><h4><i>4</i>数据质量与来源</h4><div class="quality-tags"><span :class="qualityClass(quality.time_continuity)">时间连续</span><span :class="qualityClass(quality.variable_consistency)">变量完整</span></div><div class="run-info"><p><span>数据来源</span><b>{{ provenance.source || '用户上传数据' }}</b></p><p><span>初始状态</span><b>{{ icingInitializationText }}</b></p><p><span>空间坐标</span><b>{{ spatialExtentText }}</b></p><p><span>模型版本</span><b>{{ result.model_version }}</b></p></div></section>
+            <section class="result-section"><h4><i>4</i>数据质量与来源</h4><div class="quality-tags"><span :class="qualityClass(quality.time_continuity)">时间连续</span><span :class="qualityClass(quality.variable_consistency)">变量完整</span></div><div class="run-info"><p><span>数据来源</span><b>{{ provenance.source || '用户上传数据' }}</b></p><p><span>初始状态</span><b>{{ icingInitializationText }}</b></p><p><span>空间坐标</span><b>{{ spatialExtentText }}</b></p><p><span>有效网格</span><b>{{ Number(quality.valid_grid_percent ?? 0).toFixed(3) }}%</b></p><p v-if="Number(quality.masked_grid_cells) > 0"><span>缺失掩膜</span><b>{{ quality.masked_grid_cells }} 个网格</b></p></div><small v-if="quality.warnings?.length" class="quality-warning">{{ quality.warnings.join('；') }}</small></section>
           </template>
           <div v-else class="metrics-empty">
             <el-icon><DataAnalysis /></el-icon>
@@ -555,7 +555,9 @@ const icingLegendGradient = computed(() => {
 });
 const icingLegendTicks = computed(() => {
   const ticks = result.value?.colorbar?.ticks;
-  return Array.isArray(ticks) && ticks.length ? ticks : [0, 1, 2, 3, 4, 5];
+  const values = Array.isArray(ticks) && ticks.length ? ticks : [0, 3, 6, 9, 12, 15];
+  const overflow = result.value?.colorbar?.overflow_label;
+  return overflow ? values.map((value, index) => index === values.length - 1 ? overflow : value) : values;
 });
 const dockTitle = computed(() => ({ model: "模型选择", file: "任务数据", proj: "投影方式", base: "底图图层" })[tool.value]);
 const frames = computed(() => Array.isArray(result.value?.frames) ? result.value.frames : []);
