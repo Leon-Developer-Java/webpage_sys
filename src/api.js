@@ -6,7 +6,8 @@ const UPLOAD_BASE = import.meta.env.VITE_UPLOAD_BASE ?? "http://127.0.0.1:8003";
 const AGENT_BASE = import.meta.env.VITE_AGENT_BASE ?? "http://127.0.0.1:8004";
 const AUTH_BASE = import.meta.env.VITE_AUTH_BASE ?? "http://127.0.0.1:8005";
 const MODEL_BASE = import.meta.env.VITE_MODEL_BASE ?? "http://127.0.0.1:8006";
-const ERA5_HISTORY_BASE = import.meta.env.VITE_ERA5_HISTORY_API_BASE ?? "http://127.0.0.1:8010";
+const ERA5_HISTORY_BASE = import.meta.env.VITE_ERA5_HISTORY_API_BASE
+  ?? (import.meta.env.DEV ? "http://127.0.0.1:8010" : "");
 const WRF_BASE = import.meta.env.VITE_WRF_BASE ?? "http://127.0.0.1:8007";
 const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB
 
