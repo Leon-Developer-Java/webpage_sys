@@ -24,15 +24,24 @@
           <span>DATASET</span>
           <strong>{{ display?.dataset_id || "等待首次更新" }}</strong>
           <dl>
-            <div><dt>范围</dt><dd>全球</dd></div>
-            <div><dt>时间分辨率</dt><dd>1 小时</dd></div>
-            <div><dt>时次数量</dt><dd>{{ times.length || 24 }}</dd></div>
+            <div><dt>范围</dt><dd>{{ coverageLabel }}</dd></div>
+            <div><dt>空间分辨率</dt><dd>{{ resolutionLabel }}</dd></div>
+            <div><dt>网格尺寸</dt><dd>{{ spatialGridSize }}</dd></div>
+            <div><dt>坐标系统</dt><dd>{{ display?.spatial?.crs || "EPSG:4326" }}</dd></div>
+            <div><dt>时间分辨率</dt><dd>{{ temporalIntervalLabel }}</dd></div>
+            <div><dt>数据完整性</dt><dd :class="['quality-value', { complete: dataComplete }]">{{ qualityLabel }}</dd></div>
           </dl>
         </div>
       </aside>
 
       <section class="map-stage panel">
-        <ProjMap :grid="true" :dark="true" :vector="false" projection="等经纬">
+        <ProjMap
+          :grid="true"
+          :dark="true"
+          :vector="false"
+          basemap="矢量底图"
+          projection="等经纬"
+        >
           <WebglLayer
             v-if="currentImageUrl"
             :src="currentImageUrl"
@@ -41,11 +50,11 @@
         </ProjMap>
 
         <div class="map-chrome map-top-left">
-          <span>GLOBAL · 0.25°</span>
+          <span>{{ mapCoverageLabel }}</span>
           <strong>{{ currentVariableLabel }}</strong>
         </div>
         <div class="map-chrome map-top-right">
-          <span>UTC</span>
+          <span>{{ display?.temporal?.timezone || "UTC" }}</span>
           <strong>{{ currentTimeText }}</strong>
         </div>
 
@@ -90,8 +99,61 @@
           <div><span>变量代码</span><strong>{{ selectedVariable.toUpperCase() || "—" }}</strong></div>
           <div><span>单位</span><strong>{{ formatUnit(currentLayer?.unit) || "—" }}</strong></div>
           <div><span>网格尺寸</span><strong>{{ gridSize }}</strong></div>
-          <div><span>覆盖范围</span><strong>90°S — 90°N</strong></div>
+          <div><span>覆盖范围</span><strong>{{ extentLabel }}</strong></div>
         </div>
+
+        <section class="statistics-card">
+          <div class="statistics-title">
+            <span>CURRENT FRAME</span>
+            <small>{{ currentFrameStats ? "逐时统计" : "暂无统计" }}</small>
+          </div>
+          <div v-if="currentFrameStats" class="statistics-grid">
+            <div><span>最小值</span><strong>{{ formatStatistic(currentFrameStats.min, currentLayer?.unit) }}</strong></div>
+            <div><span>最大值</span><strong>{{ formatStatistic(currentFrameStats.max, currentLayer?.unit) }}</strong></div>
+            <div><span>平均值</span><strong>{{ formatStatistic(currentFrameStats.mean, currentLayer?.unit) }}</strong></div>
+            <div><span>面积加权均值</span><strong>{{ formatStatistic(currentFrameStats.area_weighted_mean, currentLayer?.unit) }}</strong></div>
+            <div><span>标准差</span><strong>{{ formatStatistic(currentFrameStats.std, currentLayer?.unit) }}</strong></div>
+            <div><span>缺测率</span><strong>{{ formatPercent(currentFrameStats.missing_ratio) }}</strong></div>
+          </div>
+          <div v-if="currentFrameStats" class="extreme-list">
+            <div><span>最低值位置</span><strong>{{ formatLocation(currentFrameStats.min_location) }}</strong></div>
+            <div><span>最高值位置</span><strong>{{ formatLocation(currentFrameStats.max_location) }}</strong></div>
+          </div>
+          <p v-else>当前数据版本未包含逐时统计，地图和时间轴仍可正常使用。</p>
+        </section>
+
+        <section class="statistics-card">
+          <div class="statistics-title">
+            <span>DAILY SUMMARY</span>
+            <small>{{ currentDailyStats?.time_count ? `${currentDailyStats.time_count} 时次` : "暂无统计" }}</small>
+          </div>
+          <div v-if="currentDailyStats" class="statistics-grid">
+            <div><span>当日最低</span><strong>{{ formatStatistic(currentDailyStats.min, currentLayer?.unit) }}</strong></div>
+            <div><span>当日最高</span><strong>{{ formatStatistic(currentDailyStats.max, currentLayer?.unit) }}</strong></div>
+            <div><span>当日平均</span><strong>{{ formatStatistic(currentDailyStats.mean, currentLayer?.unit) }}</strong></div>
+            <div><span>缺测率</span><strong>{{ formatPercent(currentDailyStats.missing_ratio) }}</strong></div>
+          </div>
+          <div v-if="currentDailyStats" class="extreme-list">
+            <div><span>最低值时刻</span><strong>{{ formatFrameTime(currentDailyStats.min_time) }}</strong></div>
+            <div><span>最高值时刻</span><strong>{{ formatFrameTime(currentDailyStats.max_time) }}</strong></div>
+          </div>
+          <p v-else>旧版数据可能没有每日统计，重新解析的新数据会自动显示。</p>
+        </section>
+
+        <section v-if="showWindStatistics" class="statistics-card wind-card">
+          <div class="statistics-title">
+            <span>10M WIND SPEED</span>
+            <small>{{ formatUnit(windDerived?.unit) }}</small>
+          </div>
+          <div v-if="currentWindStats" class="statistics-grid">
+            <div><span>平均风速</span><strong>{{ formatStatistic(currentWindStats.mean, windDerived?.unit) }}</strong></div>
+            <div><span>最大风速</span><strong>{{ formatStatistic(currentWindStats.max, windDerived?.unit) }}</strong></div>
+            <div><span>静风区域</span><strong>{{ formatPercent(currentWindStats.calm_below_0_5_ratio) }}</strong></div>
+            <div><span>强风区域</span><strong>{{ formatPercent(currentWindStats.strong_above_10_ratio) }}</strong></div>
+            <div><span>大风区域</span><strong>{{ formatPercent(currentWindStats.gale_above_17_2_ratio) }}</strong></div>
+          </div>
+          <p v-else>当前数据版本未包含派生风速统计。</p>
+        </section>
         <div class="update-card">
           <span>最近检查</span>
           <strong>{{ formatDateTime(status?.last_checked_at) }}</strong>
@@ -149,7 +211,6 @@ import {
   era5HistoryAssetUrl,
   getEra5HistoryDisplay,
   getEra5HistoryStatus,
-  triggerEra5HistoryUpdate,
 } from "../api";
 
 const display = ref(null);
@@ -171,11 +232,43 @@ const currentLayer = computed(() => display.value?.variable_layers?.[selectedVar
 const currentVariable = computed(() => variables.value.find(item => item.name === selectedVariable.value));
 const currentVariableLabel = computed(() => variableName(selectedVariable.value, currentVariable.value?.label));
 const currentImageUrl = computed(() => era5HistoryAssetUrl(currentLayer.value?.webp_urls?.[frameIndex.value]));
+const currentFrameStats = computed(() => currentLayer.value?.frame_stats?.[frameIndex.value] || null);
+const currentDailyStats = computed(() => currentLayer.value?.daily_stats || null);
+const windDerived = computed(() => display.value?.derived_variables?.ws10 || null);
+const currentWindStats = computed(() => windDerived.value?.frame_stats?.[frameIndex.value] || null);
+const showWindStatistics = computed(() => ["u10", "v10"].includes(selectedVariable.value) && windDerived.value);
 const currentTimeText = computed(() => formatFullTime(times.value[frameIndex.value]));
 const currentHourLabel = computed(() => times.value.length ? `${hourOf(times.value[frameIndex.value])}:00` : "--:--");
 const gridSize = computed(() => currentLayer.value?.width && currentLayer.value?.height
   ? `${currentLayer.value.width} × ${currentLayer.value.height}`
   : "—");
+const coverageLabel = computed(() => display.value?.spatial?.coverage === "global" ? "全球" : display.value?.spatial?.coverage || "全球");
+const resolutionLabel = computed(() => {
+  const spatial = display.value?.spatial;
+  if (!spatial?.longitude_resolution || !spatial?.latitude_resolution) return "0.25° × 0.25°";
+  return `${formatNumber(spatial.longitude_resolution, 3)}° × ${formatNumber(spatial.latitude_resolution, 3)}°`;
+});
+const spatialGridSize = computed(() => {
+  const spatial = display.value?.spatial;
+  return spatial?.width && spatial?.height ? `${spatial.width} × ${spatial.height}` : gridSize.value;
+});
+const temporalIntervalLabel = computed(() => {
+  const interval = display.value?.temporal?.interval_hours;
+  return interval ? `${interval} 小时` : "1 小时";
+});
+const dataComplete = computed(() => display.value?.quality_summary?.all_frames_complete ?? display.value?.temporal?.complete ?? false);
+const qualityLabel = computed(() => {
+  const quality = display.value?.quality_summary;
+  if (!quality) return "待确认";
+  const counts = `${quality.actual_time_count}/${quality.expected_time_count} · ${quality.actual_variable_count}/${quality.expected_variable_count}`;
+  return quality.all_frames_complete ? `完整 · ${counts}` : `不完整 · ${counts}`;
+});
+const mapCoverageLabel = computed(() => `${String(display.value?.spatial?.coverage || "GLOBAL").toUpperCase()} · ${resolutionLabel.value.split(" × ")[0]}`);
+const extentLabel = computed(() => {
+  const extent = display.value?.spatial?.extent || display.value?.extent;
+  if (!Array.isArray(extent) || extent.length !== 4) return "90°S — 90°N";
+  return `${formatCoordinate(extent[0], "lon")} — ${formatCoordinate(extent[2], "lon")} · ${formatCoordinate(extent[1], "lat")} — ${formatCoordinate(extent[3], "lat")}`;
+});
 const errorTitle = computed(() => status.value?.display_available ? "历史图层暂时无法读取" : "暂无可展示的历史数据");
 const statusTone = computed(() => status.value?.running ? "running" : status.value?.state === "error" ? "warning" : "ready");
 const statusLabel = computed(() => {
@@ -195,16 +288,6 @@ const phaseLabel = computed(() => ({
   promoting: "正在发布数据",
   cleanup: "正在清理旧数据",
 })[status.value?.current_phase] || "正在更新数据");
-
-async function triggerPageUpdate() {
-  updateError.value = "";
-  try {
-    const run = await triggerEra5HistoryUpdate();
-    status.value = run.status || status.value;
-  } catch (requestError) {
-    updateError.value = requestError.message || "自动检查 ERA5 更新失败，可稍后重新进入页面重试。";
-  }
-}
 
 async function loadData() {
   if (loading.value) return;
@@ -318,6 +401,39 @@ function formatUnit(value) {
   return unit;
 }
 
+function formatNumber(value, digits = 2) {
+  if (value === null || value === undefined || value === "" || !Number.isFinite(Number(value))) return "—";
+  return Number(value).toLocaleString("zh-CN", { maximumFractionDigits: digits });
+}
+
+function formatStatistic(value, unit) {
+  const formatted = formatNumber(value);
+  return formatted === "—" ? formatted : `${formatted} ${formatUnit(unit)}`.trim();
+}
+
+function formatPercent(value) {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return "—";
+  return `${formatNumber(Number(value) * 100, 2)}%`;
+}
+
+function formatCoordinate(value, axis) {
+  if (!Number.isFinite(Number(value))) return "—";
+  const number = Number(value);
+  if (number === 0) return "0°";
+  const suffix = axis === "lat" ? (number > 0 ? "N" : "S") : (number > 0 ? "E" : "W");
+  return `${formatNumber(Math.abs(number), 2)}°${suffix}`;
+}
+
+function formatLocation(location) {
+  if (!location) return "—";
+  return `${formatCoordinate(location.longitude, "lon")}, ${formatCoordinate(location.latitude, "lat")}`;
+}
+
+function formatFrameTime(value) {
+  if (!value) return "—";
+  return `${hourOf(value)}:00 UTC`;
+}
+
 function variableName(name, fallback) {
   return ({ t2m: "2 米气温", sp: "地表气压", u10: "10 米纬向风", v10: "10 米经向风" })[name] || fallback || name || "ERA5";
 }
@@ -335,7 +451,7 @@ watch([playing, speed], restartPlayback);
 watch(selectedVariable, preloadNearby);
 
 onMounted(() => {
-  void loadData().then(triggerPageUpdate);
+  void loadData();
   pollTimer = setInterval(pollStatus, 15000);
 });
 
@@ -406,6 +522,7 @@ onBeforeUnmount(() => {
 .dataset-card dl div { display: flex; justify-content: space-between; padding: 6px 0; border-top: 1px solid var(--line); font-size: 9px; }
 .dataset-card dt { color: var(--text-dim); }
 .dataset-card dd { margin: 0; }
+.quality-value.complete { color: #48d9a1; }
 
 .map-stage { position: relative; min-width: 0; min-height: 0; overflow: hidden; border-radius: 12px; background: #071a2b; }
 .map-stage :deep(.projmap) { position: absolute; inset: 0; }
@@ -435,6 +552,21 @@ onBeforeUnmount(() => {
 .detail-list span, .detail-list strong { display: block; }
 .detail-list span { color: var(--text-dim); font-size: 9px; }
 .detail-list strong { margin-top: 4px; font-size: 11px; font-weight: 550; }
+.statistics-card { margin-top: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 9px; background: rgba(0,0,0,.13); }
+.statistics-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.statistics-title span { color: var(--cyan); font: 700 9px/1 ui-monospace, monospace; letter-spacing: .8px; }
+.statistics-title small { color: var(--text-dim); font-size: 8px; }
+.statistics-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; }
+.statistics-grid div { min-width: 0; padding: 7px; border-radius: 6px; background: rgba(255,255,255,.025); }
+.statistics-grid span, .statistics-grid strong { display: block; }
+.statistics-grid span { color: var(--text-dim); font-size: 8px; }
+.statistics-grid strong { margin-top: 4px; overflow: hidden; color: var(--text-main); font: 600 9px/1.25 ui-monospace, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.extreme-list { margin-top: 6px; }
+.extreme-list div { display: flex; justify-content: space-between; gap: 7px; padding: 5px 1px; border-top: 1px solid rgba(143,184,211,.09); font-size: 8px; }
+.extreme-list span { color: var(--text-dim); }
+.extreme-list strong { font-weight: 550; text-align: right; }
+.statistics-card p { margin: 0; color: var(--text-dim); font-size: 8px; line-height: 1.55; }
+.wind-card { border-color: rgba(85,184,255,.24); }
 .update-card { margin-top: auto; }
 .update-card strong { display: block; margin-top: 7px; font: 550 10px/1.4 ui-monospace, monospace; }
 .update-card p { margin: 8px 0 0; color: var(--text-dim); font-size: 9px; line-height: 1.55; }
