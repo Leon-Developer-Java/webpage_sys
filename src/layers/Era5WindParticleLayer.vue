@@ -14,15 +14,14 @@ import { createEra5WindParticleSystem } from "../utils/era5WindParticles";
 const props = defineProps({
   field: { type: Object, default: null },
   visible: { type: Boolean, default: true },
-  particleCount: { type: Number, default: 3_200 },
-  maxAge: { type: Number, default: 160 },
-  timeScale: { type: Number, default: 48_000 },
-  trailLength: { type: Number, default: 24 },
+  particleCount: { type: Number, default: 2_000 },
+  maxAge: { type: Number, default: 120 },
+  timeScale: { type: Number, default: 36_000 },
+  trailLength: { type: Number, default: 16 },
   framesPerSecond: { type: Number, default: 30 },
   maxDisplaySpeed: { type: Number, default: 30 },
-  opacity: { type: Number, default: 1 },
-  lineWidth: { type: Number, default: 2 },
-  headSize: { type: Number, default: 5.5 },
+  opacity: { type: Number, default: 0.94 },
+  lineWidth: { type: Number, default: 1.5 },
   speedColors: {
     type: Array,
     default: () => ["#2563eb", "#0891b2", "#16a34a", "#facc15", "#dc2626"],
@@ -59,14 +58,12 @@ const vertexShader = [
   "in vec2 aPosition;",
   "in float aStrength;",
   "in float aTrailAlpha;",
-  "uniform float uPointSize;",
   "out float vStrength;",
   "out float vTrailAlpha;",
   "void main() {",
   "  vStrength = aStrength;",
   "  vTrailAlpha = aTrailAlpha;",
   "  gl_Position = vec4(aPosition, 0.0, 1.0);",
-  "  gl_PointSize = uPointSize;",
   "}",
 ].join("\n");
 
@@ -82,7 +79,6 @@ const fragmentShader = [
   "uniform vec3 uColor3;",
   "uniform vec3 uColor4;",
   "uniform float uOpacity;",
-  "uniform float uPointMode;",
   "void main() {",
   "  float position = clamp(vStrength, 0.0, 1.0) * 4.0;",
   "  vec3 color;",
@@ -90,18 +86,8 @@ const fragmentShader = [
   "  else if (position < 2.0) color = mix(uColor1, uColor2, position - 1.0);",
   "  else if (position < 3.0) color = mix(uColor2, uColor3, position - 2.0);",
   "  else color = mix(uColor3, uColor4, position - 3.0);",
-  "  float visibility = mix(0.78, 1.0, clamp(vStrength, 0.0, 1.0));",
-  "  float alpha = clamp(vTrailAlpha * visibility * uOpacity, 0.0, 1.0);",
-  "  if (uPointMode > 0.5) {",
-  "    vec2 point = gl_PointCoord * 2.0 - 1.0;",
-  "    float radius = dot(point, point);",
-  "    if (radius > 1.0) discard;",
-  "    alpha *= pow(1.0 - radius, 0.42);",
-  "    color = mix(color, vec3(1.0), 0.38);",
-  "  } else {",
-  "    color = mix(color, vec3(1.0), 0.10);",
-  "  }",
-  "  frag = vec4(color, alpha);",
+  "  float visibility = mix(0.72, 1.0, clamp(vStrength, 0.0, 1.0));",
+  "  frag = vec4(color, clamp(vTrailAlpha * visibility * uOpacity, 0.0, 1.0));",
   "}",
 ].join("\n");
 
@@ -175,8 +161,6 @@ function initializeWebGl() {
         gl.getUniformLocation(program, `uColor${index}`),
       ),
       opacity: gl.getUniformLocation(program, "uOpacity"),
-      pointMode: gl.getUniformLocation(program, "uPointMode"),
-      pointSize: gl.getUniformLocation(program, "uPointSize"),
     };
     vertexBuffer = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
@@ -231,9 +215,9 @@ function rebuildParticleSystem() {
     return;
   }
   try {
-    const count = integerProp(props.particleCount, 3_200, 1, 20_000);
-    const maxAge = integerProp(props.maxAge, 160, 1, 65_535);
-    historySize = integerProp(props.trailLength, 24, 2, 32);
+    const count = integerProp(props.particleCount, 2_000, 1, 20_000);
+    const maxAge = integerProp(props.maxAge, 120, 1, 65_535);
+    historySize = integerProp(props.trailLength, 16, 2, 32);
     particleSystem = createEra5WindParticleSystem(props.field, {
       count,
       maxAge,
@@ -247,7 +231,7 @@ function rebuildParticleSystem() {
     projectedY = new Float32Array(historyValueCount);
     projectedVisible = new Uint8Array(historyValueCount);
     const maxSegments = count * (historySize - 1);
-    vertexData = new Float32Array((maxSegments * 2 + count) * 4);
+    vertexData = new Float32Array(maxSegments * 2 * 4);
     writeHistorySlot();
     allocateVertexBuffer();
     lastFrameAt = 0;
@@ -291,9 +275,7 @@ function updateProjectedHistory() {
 }
 
 function buildVertexData(width, height) {
-  if (!particleSystem || !vertexData || !width || !height) {
-    return { lineVertexCount: 0, headVertexOffset: 0, headVertexCount: 0 };
-  }
+  if (!particleSystem || !vertexData || !width || !height) return 0;
   updateProjectedHistory();
   const count = particleSystem.count;
   const maxSpeed = Math.max(0.001, Number(props.maxDisplaySpeed) || 30);
@@ -303,7 +285,7 @@ function buildVertexData(width, height) {
   for (let trailAge = 0; trailAge < historySize - 1; trailAge += 1) {
     const newerSlot = (historyCursor - trailAge + historySize) % historySize;
     const olderSlot = (newerSlot - 1 + historySize) % historySize;
-    const trailAlpha = Math.pow(1 - trailAge / historySize, 0.58);
+    const trailAlpha = Math.pow(1 - trailAge / historySize, 0.85);
     for (let particle = 0; particle < count; particle += 1) {
       const newerIndex = newerSlot * count + particle;
       const olderIndex = olderSlot * count + particle;
@@ -332,30 +314,14 @@ function buildVertexData(width, height) {
       vertexData[cursor++] = olderX / width * 2 - 1;
       vertexData[cursor++] = 1 - olderY / height * 2;
       vertexData[cursor++] = strength;
-      vertexData[cursor++] = trailAlpha * 0.90;
+      vertexData[cursor++] = trailAlpha * 0.82;
       vertexData[cursor++] = newerX / width * 2 - 1;
       vertexData[cursor++] = 1 - newerY / height * 2;
       vertexData[cursor++] = strength;
       vertexData[cursor++] = trailAlpha;
     }
   }
-  const lineVertexCount = cursor / 4;
-  const headVertexOffset = lineVertexCount;
-  const headSlot = historyCursor;
-  for (let particle = 0; particle < count; particle += 1) {
-    const index = headSlot * count + particle;
-    if (!historyGeneration[index] || !projectedVisible[index]) continue;
-    const strength = Math.min(1, Math.max(0.08, particleSystem.speed[particle] / maxSpeed));
-    vertexData[cursor++] = projectedX[index] / width * 2 - 1;
-    vertexData[cursor++] = 1 - projectedY[index] / height * 2;
-    vertexData[cursor++] = strength;
-    vertexData[cursor++] = 1;
-  }
-  return {
-    lineVertexCount,
-    headVertexOffset,
-    headVertexCount: cursor / 4 - headVertexOffset,
-  };
+  return cursor / 4;
 }
 
 function normalizedColor(value, fallback) {
@@ -399,14 +365,13 @@ function drawParticles() {
   const height = state?.height || canvas.value?.clientHeight || 0;
   if (!width || !height) return 0;
   resizeCanvas(width, height);
-  const drawCounts = buildVertexData(width, height);
-  const totalVertexCount = drawCounts.headVertexOffset + drawCounts.headVertexCount;
+  const vertexCount = buildVertexData(width, height);
 
   gl.clear(gl.COLOR_BUFFER_BIT);
-  if (!totalVertexCount) return 0;
+  if (!vertexCount) return 0;
   gl.useProgram(program);
   gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
-  gl.bufferSubData(gl.ARRAY_BUFFER, 0, vertexData.subarray(0, totalVertexCount * 4));
+  gl.bufferSubData(gl.ARRAY_BUFFER, 0, vertexData.subarray(0, vertexCount * 4));
   const stride = 4 * Float32Array.BYTES_PER_ELEMENT;
   gl.enableVertexAttribArray(locations.position);
   gl.vertexAttribPointer(locations.position, 2, gl.FLOAT, false, stride, 0);
@@ -432,43 +397,10 @@ function drawParticles() {
   palette.forEach((color, index) => {
     gl.uniform3f(locations.colors[index], color[0], color[1], color[2]);
   });
-  const opacity = Math.min(1, Math.max(0, Number(props.opacity) || 0));
-  const pixelRatio = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
-  const headSize = Math.min(12, Math.max(2, Number(props.headSize) || 5.5)) * pixelRatio;
+  gl.uniform1f(locations.opacity, Math.min(1, Math.max(0, Number(props.opacity) || 0)));
   gl.lineWidth(Math.min(4, Math.max(1, Number(props.lineWidth) || 1)));
-  gl.uniform1f(locations.pointMode, 0);
-  gl.uniform1f(locations.pointSize, 1);
-
-  if (drawCounts.lineVertexCount) {
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
-    gl.uniform1f(locations.opacity, opacity * 0.30);
-    gl.drawArrays(gl.LINES, 0, drawCounts.lineVertexCount);
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-    gl.uniform1f(locations.opacity, opacity);
-    gl.drawArrays(gl.LINES, 0, drawCounts.lineVertexCount);
-  }
-
-  if (drawCounts.headVertexCount) {
-    gl.uniform1f(locations.pointMode, 1);
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
-    gl.uniform1f(locations.pointSize, headSize * 1.8);
-    gl.uniform1f(locations.opacity, opacity * 0.42);
-    gl.drawArrays(
-      gl.POINTS,
-      drawCounts.headVertexOffset,
-      drawCounts.headVertexCount,
-    );
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-    gl.uniform1f(locations.pointSize, headSize);
-    gl.uniform1f(locations.opacity, opacity);
-    gl.drawArrays(
-      gl.POINTS,
-      drawCounts.headVertexOffset,
-      drawCounts.headVertexCount,
-    );
-  }
-  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-  return drawCounts.lineVertexCount / 2;
+  gl.drawArrays(gl.LINES, 0, vertexCount);
+  return vertexCount / 2;
 }
 
 function resizeCanvas(widthValue, heightValue) {
