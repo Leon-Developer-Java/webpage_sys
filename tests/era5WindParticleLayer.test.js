@@ -40,6 +40,10 @@ test("the standalone ERA5 WebGL particle component compiles as a Vue SFC", () =>
   assert.ok(script.content.includes("createEra5WindParticleSystem"));
   assert.ok(script.content.includes("speedColors"));
   assert.ok(script.content.includes("uColor4"));
+  assert.ok(script.content.includes("default: 2_000"));
+  assert.ok(script.content.includes("default: 16"));
+  assert.ok(script.content.includes("visibility = mix(0.72, 1.0"));
+  assert.ok(script.content.includes("trailAlpha * 0.82"));
   assert.equal(script.content.includes("smoothstep"), false);
   assert.deepEqual(template.errors, []);
   assert.ok(template.code.includes("era5-wind-particle-layer"));

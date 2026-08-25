@@ -14,14 +14,14 @@ import { createEra5WindParticleSystem } from "../utils/era5WindParticles";
 const props = defineProps({
   field: { type: Object, default: null },
   visible: { type: Boolean, default: true },
-  particleCount: { type: Number, default: 1_200 },
-  maxAge: { type: Number, default: 90 },
+  particleCount: { type: Number, default: 2_000 },
+  maxAge: { type: Number, default: 120 },
   timeScale: { type: Number, default: 36_000 },
-  trailLength: { type: Number, default: 8 },
+  trailLength: { type: Number, default: 16 },
   framesPerSecond: { type: Number, default: 30 },
   maxDisplaySpeed: { type: Number, default: 30 },
-  opacity: { type: Number, default: 0.78 },
-  lineWidth: { type: Number, default: 1 },
+  opacity: { type: Number, default: 0.94 },
+  lineWidth: { type: Number, default: 1.5 },
   speedColors: {
     type: Array,
     default: () => ["#2563eb", "#0891b2", "#16a34a", "#facc15", "#dc2626"],
@@ -86,7 +86,8 @@ const fragmentShader = [
   "  else if (position < 2.0) color = mix(uColor1, uColor2, position - 1.0);",
   "  else if (position < 3.0) color = mix(uColor2, uColor3, position - 2.0);",
   "  else color = mix(uColor3, uColor4, position - 3.0);",
-  "  frag = vec4(color, clamp(vTrailAlpha * uOpacity, 0.0, 1.0));",
+  "  float visibility = mix(0.72, 1.0, clamp(vStrength, 0.0, 1.0));",
+  "  frag = vec4(color, clamp(vTrailAlpha * visibility * uOpacity, 0.0, 1.0));",
   "}",
 ].join("\n");
 
@@ -214,9 +215,9 @@ function rebuildParticleSystem() {
     return;
   }
   try {
-    const count = integerProp(props.particleCount, 1_200, 1, 20_000);
-    const maxAge = integerProp(props.maxAge, 90, 1, 65_535);
-    historySize = integerProp(props.trailLength, 8, 2, 32);
+    const count = integerProp(props.particleCount, 2_000, 1, 20_000);
+    const maxAge = integerProp(props.maxAge, 120, 1, 65_535);
+    historySize = integerProp(props.trailLength, 16, 2, 32);
     particleSystem = createEra5WindParticleSystem(props.field, {
       count,
       maxAge,
@@ -284,7 +285,7 @@ function buildVertexData(width, height) {
   for (let trailAge = 0; trailAge < historySize - 1; trailAge += 1) {
     const newerSlot = (historyCursor - trailAge + historySize) % historySize;
     const olderSlot = (newerSlot - 1 + historySize) % historySize;
-    const trailAlpha = Math.pow(1 - trailAge / historySize, 1.5);
+    const trailAlpha = Math.pow(1 - trailAge / historySize, 0.85);
     for (let particle = 0; particle < count; particle += 1) {
       const newerIndex = newerSlot * count + particle;
       const olderIndex = olderSlot * count + particle;
@@ -313,7 +314,7 @@ function buildVertexData(width, height) {
       vertexData[cursor++] = olderX / width * 2 - 1;
       vertexData[cursor++] = 1 - olderY / height * 2;
       vertexData[cursor++] = strength;
-      vertexData[cursor++] = trailAlpha * 0.55;
+      vertexData[cursor++] = trailAlpha * 0.82;
       vertexData[cursor++] = newerX / width * 2 - 1;
       vertexData[cursor++] = 1 - newerY / height * 2;
       vertexData[cursor++] = strength;

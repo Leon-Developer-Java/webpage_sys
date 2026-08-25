@@ -761,16 +761,7 @@ async function loadDisplay(variableName = selectedVariable.value) {
       }
       display.value = normalizeDisplay(payload.data);
     }
-    const params = new URLSearchParams();
-    if (variableName) params.set("variable", variableName);
-    const query = params.toString();
-    const response = await authedFetch(`${API_BASE}/api/display/ERA5${query ? `?${query}` : ""}`);
-    const payload = await response.json();
-    if (!response.ok || payload.code !== 0) {
-      throw new Error(payload.detail || payload.message || "ERA5 data load failed");
-    }
     if (requestId !== displayLoadToken) return;
-    display.value = normalizeDisplay(payload.data);
     variables.value = display.value.variables || [];
     let nextVariable = variableName || display.value.default_variable || meta.value?.default_variable || variables.value[0]?.name || "";
     if (!variableName && props.variantIndex > 0 && variables.value.length > 1) {
