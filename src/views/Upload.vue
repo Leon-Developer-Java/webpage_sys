@@ -206,8 +206,6 @@ import { DataAnalysis, Delete, Upload, WarningFilled } from "@element-plus/icons
 import { ElNotification } from "element-plus";
 import MetaPanel from "../components/MetaPanel.vue";
 import {
-  getRawScenes,
-  listSatelliteParseTasks,
   prepareUploadCollections,
   retryUploadCollection,
   startSatelliteParseTask,
@@ -836,12 +834,8 @@ function syncLocalFileStatus(tasks) {
 async function refreshParseQueue() {
   const revision = ++parseQueueRefreshRevision;
   const previous = new Map(parseQueue.value.map(item => [item.id, item]));
-  const [databaseGroup, himawariGroup, fy3Group, fy3TasksGroup, himawariTasksGroup] = await Promise.allSettled([
+  const [databaseGroup] = await Promise.allSettled([
     getUploadTasks({limit: 200}),
-    getRawScenes("Himawari"),
-    getRawScenes("FY3"),
-    listSatelliteParseTasks("FY3", {activeOnly: true}),
-    listSatelliteParseTasks("Himawari", {activeOnly: true}),
   ]);
   const rows = [];
   const databaseItems = [];
@@ -880,36 +874,6 @@ async function refreshParseQueue() {
     databaseQueueError.value = "解析记录接口读取失败，请稍后重试";
   }
 
-  [himawariGroup, fy3Group].forEach((group, index) => {
-    const businessType = index === 0 ? "Himawari" : "FY3";
-    if (group.status !== "fulfilled") {
-      rows.push(...parseQueue.value.filter(item => item.queueKind === "raw" && item.dataType === businessType));
-      return;
-    }
-    (group.value.scenes || []).forEach(scene => {
-      const item = rawSceneToQueueItem(scene);
-      item.checked = previous.get(item.id)?.checked || false;
-      if (item.status !== "done") rows.push(item);
-    });
-  });
-  const activeTasks = [fy3TasksGroup, himawariTasksGroup]
-    .flatMap(group => group.status === "fulfilled" ? (group.value.tasks || []) : []);
-  const activeByScene = new Map();
-  activeTasks.forEach(task => {
-    (task.scene_ids || []).forEach(sceneId => activeByScene.set(`${task.business_type}:${sceneId}`, task));
-  });
-  rows.forEach(row => {
-    const task = activeByScene.get(row.id);
-    if (!task) return;
-    row.status = "parsing";
-    row.rawStatus = task.stage;
-    row.progress = Number(task.progress || 0);
-    row.taskId = task.task_id;
-    row.missing = [task.current_band ? `${task.current_scene || row.sceneId} · ${task.current_band}` : "后台解析中"];
-    if (row.steps?.[1]) {
-      row.steps[1] = {label: "解析", state: parseStatusText(row), t: "后台任务", ok: false, running: true};
-    }
-  });
   parseQueue.value = rows.sort((a, b) => String(b.uploaded || b.sceneId).localeCompare(String(a.uploaded || a.sceneId)));
   syncLocalFileStatus(databaseMemberItems);
 }
