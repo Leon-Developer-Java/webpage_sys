@@ -2,7 +2,7 @@
   <section class="task-config">
     <header class="panel-head">
       <div><span>{{ retryTaskId ? 'RESTART WRF TASK' : 'NEW WRF RUN' }}</span><h2>{{ retryTaskId ? `调整参数 · 第 ${Number(attemptNo || 1) + 1} 次尝试` : '新建模拟任务' }}</h2></div>
-      <div class="head-actions"><el-tag>GFS · TX-LAB</el-tag><el-tag type="info" effect="plain">CPU 运行 · Spin-up {{ fixedSpinupHours }} 小时</el-tag><el-button text @click="emit('cancel')">取消</el-button></div>
+      <div class="head-actions"><el-tag>{{ sourceLabel }} · TX-LAB</el-tag><el-tag type="info" effect="plain">CPU 运行 · Spin-up {{ fixedSpinupHours }} 小时</el-tag><el-button text @click="emit('cancel')">取消</el-button></div>
     </header>
 
     <div class="config-grid">
@@ -52,7 +52,7 @@
       <div class="map-column">
         <div class="map-title"><div><b>区域与嵌套域</b><span>选择域后可拖动位置或重画矩形</span></div><span>D{{ String(activeDomain + 1).padStart(2, '0') }}</span></div>
         <div :class="['region-note', { invalid: !domainCoverage.inside }]">
-          <span>当前 GFS 覆盖：{{ formatBounds(gfsBounds) }}</span>
+          <span>当前 {{ sourceLabel }} 覆盖：{{ formatBounds(gfsBounds) }}</span>
           <b>{{ domainCoverage.inside ? 'D01 范围有效' : 'D01 超出数据范围' }}</b>
         </div>
         <div class="domain-map">
@@ -111,6 +111,7 @@ import WrfDomainEditor from "./WrfDomainEditor.vue";
 
 const props = defineProps({
   options: Object,
+  dataSource: { type: String, default: "gfs" },
   submitting: Boolean,
   initialRequest: Object,
   retryTaskId: { type: String, default: "" },
@@ -166,6 +167,7 @@ const recommendationSignature = computed(() => JSON.stringify({
 const recommendationStale = computed(() => Boolean(
   recommendation.value && recommendationInputSignature.value !== recommendationSignature.value,
 ));
+const sourceLabel = computed(() => props.dataSource === "ecmwf" ? "ECMWF" : "GFS");
 const gfsBounds = computed(() => props.options?.capabilities?.gfs_bounds || [65, 5, 145, 60]);
 const domainCoverage = computed(() => {
   const outer = form.domains[0] || fallbackDomains[0];
@@ -290,6 +292,7 @@ function submit() {
   const validationError = validateForm();
   if (validationError) return ElMessage.warning(validationError);
   emit("submit", {
+    data_source: props.dataSource || "gfs",
     start_time: `${form.startTime}:00Z`, end_time: `${form.endTime}:00Z`, center: { ...form.center },
     forecast_interval_hours: form.interval,
     domains: form.domains.map((item, index) => ({ ...item, dy: item.dx, parent_id: index ? index : 0 })),
@@ -304,9 +307,9 @@ function validateForm() {
   const interval = Number(form.interval);
   const spanHours = (end - start) / 3600000;
   if (spanHours > 30 * 24) return "模拟时间跨度不能超过 30 天";
-  if (spanHours < interval) return "GFS 文件间隔不能大于模拟时长";
-  if (start.getUTCHours() % interval || end.getUTCHours() % interval) return "开始和结束时刻必须与 GFS 文件间隔对齐";
-  if (!domainCoverage.value.inside) return `D01（含 1° 缓冲）必须位于当前 GFS 覆盖 ${formatBounds(gfsBounds.value)} 内`;
+  if (spanHours < interval) return `${sourceLabel.value} 文件间隔不能大于模拟时长`;
+  if (start.getUTCHours() % interval || end.getUTCHours() % interval) return `开始和结束时刻必须与 ${sourceLabel.value} 文件间隔对齐`;
+  if (!domainCoverage.value.inside) return `D01（含 1° 缓冲）必须位于当前 ${sourceLabel.value} 覆盖 ${formatBounds(gfsBounds.value)} 内`;
   for (let index = 1; index < form.domains.length; index += 1) {
     const parent = form.domains[index - 1];
     const domain = form.domains[index];
@@ -324,7 +327,7 @@ function validateForm() {
   if (Number(form.physics.sf_urban_physics) === 1 && ![2, 4].includes(Number(form.physics.sf_surface_physics))) return "UCM 城市冠层仅支持 Noah 或 Noah-MP 陆面方案";
   const modelStart = new Date(start.getTime() - fixedSpinupHours.value * 3600000);
   const cycleStart = new Date(modelStart); cycleStart.setUTCHours(0, 0, 0, 0);
-  if ((end - cycleStart) / 3600000 + 6 > 72) return "模拟窗口、Spin-up 与 6 小时边界缓冲超出 GFS f000-f072";
+  if ((end - cycleStart) / 3600000 + 6 > 72) return `模拟窗口、Spin-up 与 6 小时边界缓冲超出 ${sourceLabel.value} f000-f072`;
   return "";
 }
 

@@ -182,8 +182,8 @@ export function authenticateWrfHpc(password) {
   });
 }
 
-export function getWrfDataStatus() {
-  return wrfRequest("/api/wrf/data-status");
+export function getWrfDataStatus(dataSource = "gfs") {
+  return wrfRequest(`/api/wrf/data-status?data_source=${encodeURIComponent(dataSource || "gfs")}`);
 }
 
 export function triggerWrfGfsDownload(cycle) {
@@ -200,6 +200,26 @@ export function syncLatestWrfGfs() {
 
 export function cleanupWrfGfs(paths) {
   return wrfRequest("/api/wrf/gfs/cleanup", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ paths, confirm: true }),
+  });
+}
+
+export function triggerWrfForcingDownload(dataSource, cycle) {
+  return wrfRequest(`/api/wrf/forcing/${encodeURIComponent(dataSource)}/trigger`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ cycle }),
+  });
+}
+
+export function syncLatestWrfForcing(dataSource) {
+  return wrfRequest(`/api/wrf/forcing/${encodeURIComponent(dataSource)}/sync-latest`, { method: "POST" });
+}
+
+export function cleanupWrfForcing(dataSource, paths) {
+  return wrfRequest(`/api/wrf/forcing/${encodeURIComponent(dataSource)}/cleanup`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ paths, confirm: true }),

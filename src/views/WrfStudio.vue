@@ -13,15 +13,15 @@
       <template v-if="tool === 'source'">
         <div class="service-summary" :class="{ offline: !serviceOnline }"><i></i><span>{{ serviceOnline ? `backend_wrf · 8007 · ${hpcModeLabel}` : 'WRF 服务未连接' }}</span><button v-if="!serviceOnline" @click="refreshAll(true)">重试</button></div>
         <p v-if="serviceError" class="service-error">{{ txLabText(serviceError) }}</p>
-        <p class="dock-hint">选择 WRF 驱动资料。当前版本仅开放 GFS 00Z，其他资料源保留扩展位置。</p>
+        <p class="dock-hint">选择 WRF 驱动资料。GFS 与 ECMWF 使用同一套任务、数据池和结果流程。</p>
         <div class="source-list">
-          <button v-for="source in sources" :key="source.id" :class="{ selected: source.status === 'available', disabled: source.status !== 'available' }" @click="selectSource(source)">
+          <button v-for="source in sources" :key="source.id" :class="{ selected: selectedSource === source.id, disabled: source.status !== 'available' }" @click="selectSource(source)">
             <span class="source-icon"><el-icon><DataAnalysis /></el-icon></span>
             <span class="source-copy"><b>{{ source.name }}</b><small>{{ source.description }}</small><em>{{ source.provider }}</em></span>
             <span :class="['source-state', source.status]">{{ source.status === 'available' ? '已接入' : '待接入' }}</span>
           </button>
         </div>
-        <div class="source-note"><el-icon><InfoFilled /></el-icon><p>GFS 由 tx-lab 后台持续预取；工作台只提交配置并拉取 WRF 结果。</p></div>
+        <div class="source-note"><el-icon><InfoFilled /></el-icon><p>{{ selectedSourceLabel }} 由 tx-lab 后台持续预取；工作台只提交配置并拉取 WRF 结果。</p></div>
       </template>
       <template v-else-if="tool === 'proj'">
         <p class="dock-hint">WRF 结果使用单地图展示，切换投影不会改变原始数据。</p>
@@ -44,7 +44,7 @@
             </header>
             <div v-if="!resultTaskId" class="result-empty"><el-icon><Picture /></el-icon><b>暂无 WRF 可视化结果</b><span>从右侧新建任务，任务完成后将在这里展示 WebP 预报图。</span><el-button type="primary" plain @click="openNewTask">新建模拟任务</el-button></div>
             <template v-else>
-              <div class="result-toolbar"><span><i></i>GFS · {{ visualInfo?.element || 'WRF 结果' }}</span><b>{{ currentVisualTime || '等待时次' }}</b></div>
+              <div class="result-toolbar"><span><i></i>{{ resultSourceLabel }} · {{ visualInfo?.element || 'WRF 结果' }}</span><b>{{ currentVisualTime || '等待时次' }}</b></div>
               <div class="visual-map">
                 <ProjMap :key="`${resultTaskId}-${projection}`" :projection="projection" :basemap="basemap" :grid="showGrid" :vector="showVector" :dark="mapDark">
                   <WrfResultLayer :task-id="resultTaskId" :time-index="visualTimeIndex" @display-loaded="onDisplayLoaded" @variable-change="onVariableChange" />
@@ -65,6 +65,7 @@
           <WrfTaskConfig
             v-else-if="workspaceView === 'new'"
             :options="options"
+            :data-source="selectedSource"
             :submitting="submitting"
             :initial-request="restartContext?.request"
             :retry-task-id="restartContext?.taskId || ''"
@@ -122,7 +123,7 @@
               </template>
             </div>
             <div class="side-card-actions">
-              <button v-if="hpcAuthenticated" class="side-action" :disabled="gfsActionBusy" @click="syncLatestRemoteGfs">{{ gfsActionBusy ? '正在同步…' : (autoCleanupPending ? '自动清理并同步 00Z' : '同步最新 00Z') }}</button>
+              <button v-if="hpcAuthenticated" class="side-action" :disabled="gfsActionBusy" @click="syncLatestRemoteForcing">{{ gfsActionBusy ? '正在同步…' : (autoCleanupPending ? `自动清理并同步 ${selectedSourceLabel} 00Z` : `同步 ${selectedSourceLabel} 最新 00Z`) }}</button>
               <button v-else class="side-action" @click="refreshHpcConnection">检查 tx-lab 连接</button>
             </div>
           </section>
@@ -132,7 +133,7 @@
             <div class="task-items">
               <article v-for="task in historyTasks" :key="task.id" :class="{ selected: task.id === activeTaskId }" :title="task.id" @click="openHistoryTask(task)">
                 <div><b>{{ taskDateRange(task) }}</b><span :class="['mini-status', task.status]">{{ taskStatus(task.status) }}</span></div>
-                <small>{{ task.request?.domains?.length || 0 }} 域 · {{ formatCycle(task.runtime?.gfs_cycle) || '周期待定' }}</small>
+                <small>{{ task.request?.domains?.length || 0 }} 域 · {{ String(task.request?.data_source || 'gfs').toUpperCase() }} · {{ formatCycle(task.runtime?.forcing_cycle || task.runtime?.gfs_cycle || task.runtime?.ecmwf_cycle) || '周期待定' }}</small>
                 <button class="delete-task" title="删除本地任务数据" aria-label="删除本地任务数据" @click.stop="confirmDelete(task)">×</button>
               </article>
               <div v-if="!historyTasks.length" class="side-empty">暂无历史任务</div>
@@ -171,9 +172,9 @@ import {
   InfoFilled, MapLocation, Moon, Picture, Position, Sunny, VideoPause, VideoPlay,
 } from "@element-plus/icons-vue";
 import {
-  cancelWrfTask, cleanupWrfGfs, createWrfTask, deleteWrfTask, getWrfDataStatus,
+  cancelWrfTask, cleanupWrfForcing, createWrfTask, deleteWrfTask, getWrfDataStatus,
   getWrfHealth, getWrfOptions, getWrfTaskLogs, getWrfTaskRestartPlan, listWrfTasks,
-  renderPartialWrfTask, restartWrfTask, resumeWrfTask, retryWrfTaskOutputs, syncLatestWrfGfs,
+  renderPartialWrfTask, restartWrfTask, resumeWrfTask, retryWrfTaskOutputs, syncLatestWrfForcing,
 } from "../api.js";
 import ProjMap from "../components/ProjMap.vue";
 import WrfTaskConfig from "../components/WrfTaskConfig.vue";
@@ -185,8 +186,8 @@ const router = useRouter();
 const theme = inject("theme", ref(true));
 const FINAL = new Set(["succeeded", "partial_success", "failed", "waiting_restart", "cancelled"]);
 const sources = [
-  { id: "gfs", name: "GFS 预报", description: "0.25° WRF 边界场，tx-lab 共享数据池", provider: "NOAA NOMADS Grib Filter", status: "available" },
-  { id: "ecmwf", name: "ECMWF IFS", description: "欧洲中心全球预报资料", provider: "ECMWF Open Data", status: "planned" },
+  { id: "gfs", name: "GFS 全球预报", description: "0.25° WRF 边界场，tx-lab 共享数据池", provider: "NOAA NOMADS Grib Filter", status: "available" },
+  { id: "ecmwf", name: "ECMWF IFS", description: "0.25° IFS 完整文件，tx-lab 共享数据池", provider: "ECMWF Open Data", status: "available" },
   { id: "era5", name: "ERA5 再分析", description: "历史再分析驱动资料", provider: "Copernicus CDS", status: "planned" },
 ];
 const projections = ["等经纬", "墨卡托", "正弦", "罗宾逊", "兰博托", "卫星正视", "北极", "南极"];
@@ -194,6 +195,7 @@ const basemaps = ["矢量底图", "影像底图", "地形晕渲", "全球境界"
 const initialWorkspaceView = ["result", "new", "run"].includes(String(route.query.view)) ? String(route.query.view) : "result";
 
 const tool = ref("source");
+const selectedSource = ref("gfs");
 const dockOpen = ref(true);
 const projection = ref("等经纬");
 const basemap = ref("矢量底图");
@@ -235,15 +237,21 @@ const activeTaskId = computed(() => selectedTaskId.value || resultTaskId.value |
 const hpcModeLabel = computed(() => health.value?.hpc?.connection_mode === "direct" ? "tx-lab 直连" : "远端连接");
 const hpcAuthenticated = computed(() => health.value?.hpc?.status === "ready");
 const activeTaskCount = computed(() => Number(health.value?.active_task_count) || 0);
+const maxConcurrentTasks = computed(() => Number(health.value?.max_concurrent_tasks || options.value?.capabilities?.max_concurrent_tasks) || 1);
+const selectedSourceLabel = computed(() => selectedSource.value === "ecmwf" ? "ECMWF" : "GFS");
 const footerTaskSummary = computed(() => {
   if (selectedTaskId.value || resultTaskId.value) return selectedTaskId.value || resultTaskId.value;
-  if (activeTaskCount.value) return `${activeTaskCount.value} 个任务执行中`;
-  return "GFS 00Z 驱动 · 动态调度就绪";
+  if (activeTaskCount.value) return `${activeTaskCount.value}/${maxConcurrentTasks.value} 个任务执行中`;
+  return `${selectedSourceLabel.value} 00Z 驱动 · 最多 ${maxConcurrentTasks.value} 任务并行`;
 });
 const currentVisualTime = computed(() => visualTimes.value[visualTimeIndex.value] || "");
+const resultSourceLabel = computed(() => {
+  const task = tasks.value.find(item => item.id === resultTaskId.value);
+  return String(task?.request?.data_source || selectedSource.value || "gfs").toUpperCase();
+});
 const poolItems = computed(() => {
   if (Array.isArray(dataStatus.value?.pool_items)) return dataStatus.value.pool_items;
-  return [{ provider: "gfs", label: "GFS", source: "NOAA NOMADS", status: dataStatus.value?.status || "idle", cycles: [] }];
+  return [{ provider: selectedSource.value, label: selectedSourceLabel.value, source: selectedSource.value === "ecmwf" ? "ECMWF Open Data" : "NOAA NOMADS", status: dataStatus.value?.status || "idle", cycles: [] }];
 });
 const autoCleanupPending = computed(() => poolItems.value.some(item =>
   (item.cycles || []).some(cycle => cycle.auto_cleanup_allowed),
@@ -251,10 +259,17 @@ const autoCleanupPending = computed(() => poolItems.value.some(item =>
 const dockTitle = computed(() => ({ source: "数据源选择", proj: "投影方式", base: "底图图层" })[tool.value]);
 
 function openTool(name) { if (dockOpen.value && tool.value === name) dockOpen.value = false; else { tool.value = name; dockOpen.value = true; } }
-function selectSource(source) { if (source.status !== "available") ElMessage.info(`${source.name} 尚未接入，当前仅支持 GFS`); }
+function selectSource(source) {
+  if (source.status !== "available") {
+    ElMessage.info(`${source.name} 尚未接入`);
+    return;
+  }
+  selectedSource.value = source.id;
+  refreshAll(true);
+}
 function isDisplayable(task) { return Boolean(task && ["succeeded", "partial_success"].includes(task.status)); }
 function taskStatus(value) { return ({ queued: "待调度", prefetching: "准备数据", uploading: "准备 tx-lab", running: "运行", rendering: "渲染", succeeded: "成功", partial_success: "部分完成", failed: "失败", waiting_restart: "待调整", paused_external: "等待连接", cancelled: "已取消", cancel_pending: "取消中", reconciling: "恢复连接" })[value] || value; }
-function taskStage(value) { return ({ queued: "等待动态调度", selecting_cycle: "选择 GFS 00Z 周期", checking_hpc_gfs: "校验 tx-lab GFS 数据池", waiting_for_hpc_gfs: "等待 tx-lab GFS 补齐", remote_gfs_ready: "tx-lab GFS 已就绪", preparing_hpc: "提交任务配置", running: "WPS / WRF 运行中", downloading_outputs: "拉取 wrfout 结果", rendering: "生成 WebP", done: "任务完成", failed: "本次尝试已停止" })[value] || value || "等待开始"; }
+function taskStage(value) { return ({ queued: "等待执行名额", selecting_cycle: `选择 ${selectedSourceLabel.value} 00Z 周期`, checking_hpc_gfs: "校验 tx-lab 驱动数据池", checking_hpc_forcing: "校验 tx-lab 驱动数据池", waiting_for_hpc_gfs: "等待 tx-lab 驱动数据补齐", waiting_for_hpc_forcing: "等待 tx-lab 驱动数据补齐", remote_gfs_ready: "tx-lab 驱动数据已就绪", remote_forcing_ready: "tx-lab 驱动数据已就绪", preparing_hpc: "提交任务配置", running: "WPS / WRF 运行中", downloading_outputs: "拉取 wrfout 结果", rendering: "生成 WebP", done: "任务完成", failed: "本次尝试已停止" })[value] || value || "等待开始"; }
 function txLabText(value) { return String(value || "").replaceAll("超算", "tx-lab"); }
 function poolStatus(value) { return ({ ready: "已就绪", downloading: "下载中", checking: "检查中", partial: "部分就绪", missing: "待下载", unavailable: "不可用", error: "需处理", idle: "等待" })[value] || value || "等待"; }
 function visiblePoolCycles(item) {
@@ -365,7 +380,7 @@ async function refreshAll(showMessage = false, includeRemote = hpcAuthenticated.
     try { health.value = await getWrfHealth(); serviceError.value = ""; } catch (error) { if (!health.value) health.value = { status: "offline", hpc: { status: "unavailable" } }; serviceError.value = error.message; if (showMessage) ElMessage.error(error.message); }
     const remoteDue = includeRemote && (forceRemote || !lastRemoteRefreshAt || Date.now() - lastRemoteRefreshAt >= REMOTE_REFRESH_INTERVAL);
     if (remoteDue) {
-      try { dataStatus.value = trackDownloadMetrics(await getWrfDataStatus()); lastRemoteRefreshAt = Date.now(); } catch (error) { dataStatus.value = { status: "error", message: error.message, pool_items: [] }; }
+      try { dataStatus.value = trackDownloadMetrics(await getWrfDataStatus(selectedSource.value)); lastRemoteRefreshAt = Date.now(); } catch (error) { dataStatus.value = { status: "error", message: error.message, pool_items: [] }; }
     } else if (!includeRemote) {
       dataStatus.value = { status: "locked", message: "等待 tx-lab 连接", pool_items: [] };
     }
@@ -506,11 +521,11 @@ async function confirmDelete(task) {
     await refreshAll(); showLatestResult();
   } catch (error) { if (error !== "cancel" && error !== "close") ElMessage.error(error.message); }
 }
-async function syncLatestRemoteGfs() {
+async function syncLatestRemoteForcing() {
   gfsActionBusy.value = true;
   try {
     await ensureHpcReady("认证并同步");
-    const result = await syncLatestWrfGfs();
+    const result = await syncLatestWrfForcing(selectedSource.value);
     showSyncResult(result);
     await refreshAll(false, true, true);
   }
@@ -523,12 +538,12 @@ async function confirmCleanupCycle(cycle) {
   if (!path) return;
   try {
     await ElMessageBox.confirm(
-      `将永久删除 tx-lab 旧 GFS 周期：\n${path}\n\n目标周期、下载中周期和运行中任务使用的周期不会被删除。`,
+      `将永久删除 tx-lab 旧 ${selectedSourceLabel.value} 周期：\n${path}\n\n目标周期、下载中周期和运行中任务使用的周期不会被删除。`,
       "清理 tx-lab 旧数据",
       { type: "error", confirmButtonText: "确认删除此路径" },
     );
     gfsActionBusy.value = true;
-    await cleanupWrfGfs([path]);
+    await cleanupWrfForcing(selectedSource.value, [path]);
     ElMessage.success(`已清理 ${path}`);
     await refreshAll(false, true, true);
   } catch (error) {
