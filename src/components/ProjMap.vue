@@ -16,6 +16,7 @@ const props = defineProps({
   vector: Boolean,
   grid: { type: Boolean, default: true },
   dark: Boolean,
+  preserveView: Boolean,
   syncView: Object,
 });
 const emit = defineEmits(["view-change"]);
@@ -369,6 +370,7 @@ function animateTo(target) {
 }
 
 function flyTo(ext) {
+  if (props.preserveView) return;
   if (!Array.isArray(ext) || ext.length !== 4) return;
   const t = fitExtent(ext);
   if (t) animateTo(t);

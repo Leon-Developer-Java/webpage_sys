@@ -32,7 +32,6 @@
               :key="source.key"
               type="button"
               :class="{ on: catalogSourceKey === source.key }"
-              :disabled="switching && catalogSourceKey !== source.key"
               @click="selectCatalogSource(source.key)"
             >{{ source.btn }}</button>
           </div>
@@ -141,6 +140,7 @@
             :vector="showVector"
             :basemap="basemap"
             :projection="projection"
+            :preserve-view="playing || playingPreparing"
             :sync-view="linked && emitterIdx !== i ? syncView : null"
             @view-change="v => onViewChange(i, v)"
           >
@@ -161,15 +161,15 @@
 
       <div class="timebar glass">
         <div class="tb-head">
-          <button class="tc-btn" @click="setTimeIndex(0)"><el-icon><DArrowLeft /></el-icon></button>
-          <button class="tc-btn" @click="setTimeIndex(Math.max(0, tIndex - 1))"><el-icon><ArrowLeft /></el-icon></button>
-          <button class="tc-play" :disabled="playingPreparing" @click="togglePlaying"><el-icon><Loading v-if="playingPreparing" class="is-loading" /><VideoPause v-else-if="playing" /><VideoPlay v-else /></el-icon></button>
-          <button class="tc-btn" @click="setTimeIndex(Math.min(axisTimes.length - 1, tIndex + 1))"><el-icon><ArrowRight /></el-icon></button>
-          <button class="tc-btn" @click="setTimeIndex(axisTimes.length - 1)"><el-icon><DArrowRight /></el-icon></button>
+          <button class="tc-btn" :disabled="!timelineInteractive" @click="setTimeIndex(0)"><el-icon><DArrowLeft /></el-icon></button>
+          <button class="tc-btn" :disabled="!timelineInteractive" @click="setTimeIndex(Math.max(0, tIndex - 1))"><el-icon><ArrowLeft /></el-icon></button>
+          <button class="tc-play" :disabled="!timelineInteractive || playingPreparing" @click="togglePlaying"><el-icon><Loading v-if="playingPreparing" class="is-loading" /><VideoPause v-else-if="playing" /><VideoPlay v-else /></el-icon></button>
+          <button class="tc-btn" :disabled="!timelineInteractive" @click="setTimeIndex(Math.min(axisTimes.length - 1, tIndex + 1))"><el-icon><ArrowRight /></el-icon></button>
+          <button class="tc-btn" :disabled="!timelineInteractive" @click="setTimeIndex(axisTimes.length - 1)"><el-icon><DArrowRight /></el-icon></button>
           <div class="tc-speed">
-            <button v-for="s in [0.5, 1, 2, 4]" :key="s" :class="{ on: speed === s }" @click="speed = s">{{ s }}x</button>
+            <button v-for="s in [0.5, 1, 2, 4]" :key="s" :class="{ on: speed === s }" :disabled="!timelineInteractive" @click="speed = s">{{ s }}x</button>
           </div>
-          <span class="tc-time">{{ activeTimeLabel }}</span>
+          <span class="tc-time">{{ timelineStatusText }}</span>
         </div>
         <TimeAxis
           :key="timeAxisKey"
@@ -177,6 +177,8 @@
           :active="animPos"
           :tick-mode="usesCompactTimeAxis ? 'all' : 'sampled'"
           :compact-labels="usesCompactTimeAxis"
+          :disabled="!timelineInteractive"
+          :disabled-label="timelineDisabledLabel"
           @update:active="v => setTimeIndex(v)"
           :dark="dark"
         />
@@ -186,23 +188,17 @@
     <MetaPanel
       v-if="propsOpen"
       :meta="meta"
-      :steps="processing"
       :himawari-status="active === 'himawari' ? himawariStatus : null"
       closable
       @close="propsOpen = false"
-    >
-      <div class="version">
-        <h4>MVP 当前版本</h4>
-        <p v-for="v in versions" :key="v"><el-icon class="ok"><CircleCheck /></el-icon>{{ v }}</p>
-      </div>
-    </MetaPanel>
+    />
   </div>
 </template>
 
 <script setup>
 import { computed, inject, onBeforeUnmount, onMounted, provide, ref, watch } from "vue";
 import { ElNotification } from "element-plus";
-import { ArrowLeft, ArrowRight, Check, CircleCheck, Close, Collection, Connection, DArrowLeft, DArrowRight, DataAnalysis, Document, FolderOpened, Grid, Loading, MapLocation, Monitor, Moon, Operation, Position, RefreshRight, Sunny, VideoPlay, VideoPause } from "@element-plus/icons-vue";
+import { ArrowLeft, ArrowRight, Check, Close, Collection, Connection, DArrowLeft, DArrowRight, DataAnalysis, Document, FolderOpened, Grid, Loading, MapLocation, Monitor, Moon, Operation, Position, RefreshRight, Sunny, VideoPlay, VideoPause } from "@element-plus/icons-vue";
 import {
   getDisplayResource,
   getDisplayResources,
@@ -279,34 +275,10 @@ const typeAttributeOrder = {
   himawari: ["resolutions", "satellites", "regions", "bands", "datasets"],
 };
 
-const infos = {
-  radar: { file: "radar_xh_20250616_1000.cinrad", element: "组合反射率 DBZH、径向速度、谱宽", time: "2025-06-16 10:00", level: "0.5° 仰角", range: "73°E-135°E, 15°N-55°N", grid: "721 × 361", missing: "-9999", unit: "dBZ / m·s⁻¹", vars: "3", steps: "24" },
-  himawari: { file: "himawari_20250616_1000.hsd", element: "B01-B16 全通道、真彩色合成", time: "2025-06-16 10:00", level: "全圆盘 / 区域", range: "80°E-160°E, 0°N-60°N", grid: "5500 × 5500", missing: "-9999", unit: "°C / %", vars: "16", steps: "25" },
-  fy3: { file: "FY3D_MERSI_GBAL_L1_20260701_0055_1000M_MS.HDF", element: "MERSI-II 25 波段", time: "2026-07-01 08:55", level: "极轨卫星观测", range: "按实际轨迹自动映射", grid: "随轨迹变化", missing: "NaN", unit: "% / K", vars: "25", steps: "12" },
-  era5: { file: "era5_t2m_20250616.nc", element: "2m 温度、位势、风场", time: "2025-06-16 09:00", level: "2m / 1000-200hPa", range: "73°E-135°E, 15°N-55°N", grid: "248 × 161", missing: "NaN", unit: "°C", vars: "5", steps: "24" },
-  grib: { file: "gfs.t00z.pgrb2.0p25.f006", element: "500hPa 位势高度、温度", time: "2025-06-16 08:00", level: "500hPa / 850hPa", range: "73°E-135°E, 15°N-55°N", grid: "249 × 161", missing: "9999", unit: "gpm", vars: "8", steps: "40" },
-  cma: { file: "cma_meso_20250616.grib2", element: "2m 温度、降水", time: "2025-06-16 08:00", level: "地面 / 多层", range: "70°E-140°E, 10°N-60°N", grid: "1025 × 801", missing: "9999", unit: "°C / mm", vars: "6", steps: "24" },
-  wrf: { file: "wrf_radar_20250616.nc", element: "雷达反射率 (NC)", time: "2025-06-16 10:00", level: "多仰角", range: "73°E-135°E, 15°N-55°N", grid: "460 × 460", missing: "-9999", unit: "dBZ", vars: "2", steps: "12" }
-};
-
-const defaultProcessing = [
-  {step: "下载", state: "成功", t: "06-16 09:58", ok: true},
-  {step: "解析", state: "成功", t: "06-16 09:59", ok: true},
-  {step: "渲染 WEBP", state: "成功", t: "06-16 10:02", ok: true},
-  {step: "前端展示", state: "服务中", t: "200 ms", ok: false}
-];
-
-const versions = ["文件存储：原始数据 + meta.json + WEBP", "前端渲染：GFS/ECMWF 独立入口 + WEBP 优先显示", "数据处理：后端完成、前端轻展示"];
 const projections = ["等经纬", "墨卡托", "正弦", "罗宾逊", "兰博托", "卫星正视", "北极", "南极"];
 const basemaps = ["矢量底图", "影像底图", "地形晕渲", "全球境界"];
-const defaultTimes = ["00时", "02时", "04时", "06时", "08时", "10时", "12时", "14时", "16时", "18时", "20时", "22时"];
-
 function isGribLayerKey(key) {
   return key === "gfs" || key === "ecmwf";
-}
-
-function sourceFallbackInfo(key) {
-  return infos[key] || (isGribLayerKey(key) ? infos.grib : {});
 }
 
 const tool = ref("select");
@@ -348,17 +320,14 @@ const syncView = ref(null);
 const showVector = ref(false);
 const mapDark = ref(dark.value);
 const emitterIdx = ref(-1);
-const switching = ref(false);
 const paneLabels = ref({});
 const selectedPane = ref(-1);
 const paneSources = ref({});
 const paneDisplays = ref({});
 const paneParsed = ref({});
 let paneDownAt = null;
-let switchingTarget = { pane: 0, key: "" };
 const latestView = {};
 let animTimer = null;
-let switchingTimer = null;
 let resourceRequestId = 0;
 const paneFramePreloads = new Map();
 const PLAYBACK_BASE_INTERVAL_MS = 900;
@@ -644,15 +613,6 @@ function onLayerDisplayLoaded(paneIndex, key, payload) {
   updatePaneLabel(paneIndex, key, normalizedPayload);
   schedulePaneFramePreload(paneIndex, normalizedPayload);
 
-  if (
-    switching.value &&
-    paneIndex === switchingTarget.pane &&
-    key === switchingTarget.key
-  ) {
-    switching.value = false;
-    clearTimeout(switchingTimer);
-  }
-
   if (paneIndex === 0) {
     const previousDisplay = layerDisplays.value[key];
     if (key === "himawari") {
@@ -854,7 +814,7 @@ const activeLayerTimes = computed(() => {
 const axisTimes = computed(() => {
   if (selectedResource.value && parsedLayerKey.value === active.value) {
     const times = selectedResourceTimes.value;
-    return times.length ? times.map(formatAxisTime) : ["无有效时间"];
+    return times.map(formatAxisTime);
   }
 
   if (active.value === "himawari" && himawariTimeline.value.length) {
@@ -868,11 +828,11 @@ const axisTimes = computed(() => {
   }
 
   // 其他图层继续沿用原有时间轴逻辑。
-  if (activeLayerTimes.value.length > 1) {
+  if (activeLayerTimes.value.length) {
     return activeLayerTimes.value.map(formatAxisTime);
   }
 
-  return defaultTimes;
+  return [];
 });
 
 const timeAxisKey = computed(() => {
@@ -1195,7 +1155,34 @@ const parsedFrameCount = computed(() => {
     if (parsedCount) return parsedCount;
   }
 
-  return defaultTimes.length;
+  return 0;
+});
+
+const selectedSeriesPlayable = computed(() => !(
+  selectedResource.value &&
+  parsedLayerKey.value === active.value &&
+  selectedResource.value.playable === false
+));
+
+const timelineInteractive = computed(() => (
+  selectedSeriesPlayable.value &&
+  parsedFrameCount.value > 1 &&
+  axisTimes.value.length > 1
+));
+
+const timelineDisabledLabel = computed(() => {
+  if (!selectedSeriesPlayable.value) return "时间序列不连续";
+  if (parsedFrameCount.value === 1 || axisTimes.value.length === 1) {
+    return axisTimes.value[0] ? `${axisTimes.value[0]} · 单帧` : "仅有单帧数据";
+  }
+  return "暂无可播放时间序列";
+});
+
+const timelineStatusText = computed(() => {
+  if (timelineInteractive.value) return activeTimeLabel.value;
+  if (!selectedSeriesPlayable.value) return "不可播放";
+  if (axisTimes.value.length === 1) return axisTimes.value[0];
+  return "无数据";
 });
 
 const layerTimeIndex = computed(() => {
@@ -1240,6 +1227,7 @@ async function togglePlaying() {
   }
 
   if (playingPreparing.value) return;
+  if (!timelineInteractive.value) return;
 
   if (selectedResource.value && parsedLayerKey.value === active.value && !selectedResource.value.playable) {
     const firstGap = selectedResource.value.gaps?.[0];
@@ -1337,6 +1325,10 @@ watch(axisTimes, () => {
   setTimeIndex(Math.min(tIndex.value, axisTimes.value.length - 1));
 });
 
+watch(timelineInteractive, interactive => {
+  if (!interactive && playing.value) playing.value = false;
+});
+
 watch(
     () => [
       active.value,
@@ -1354,7 +1346,6 @@ onBeforeUnmount(() => {
   clearInterval(animTimer);
   if (himawariStatusTimer) clearInterval(himawariStatusTimer);
   cmaPlaybackWaiting.value = false;
-  clearTimeout(switchingTimer);
 });
 
 async function refreshHimawariStatus() {
@@ -1519,7 +1510,7 @@ function normalizeParsedMeta(result) {
       info.file_name ||
       info.filename ||
       info.file ||
-      "—",
+      "",
     file_name:
       resolveOverviewFileName(result) ||
       result.file_name ||
@@ -1531,23 +1522,23 @@ function normalizeParsedMeta(result) {
       info.file_name ||
       info.filename ||
       info.file ||
-      "—",
-    element: panelMeta.element || info.element || "—",
-    time: panelMeta.time || info.time || "—",
-    level: panelMeta.level || info.level || "—",
-    range: panelMeta.range || info.range || "—",
-    grid: panelMeta.grid || info.grid || "—",
+      "",
+    element: panelMeta.element || info.element || "",
+    time: panelMeta.time || info.time || "",
+    level: panelMeta.level || info.level || "",
+    range: panelMeta.range || info.range || "",
+    grid: panelMeta.grid || info.grid || "",
     resolution:
       panelMeta.resolution ||
       info.resolution ||
       panelMeta.spatial_resolution ||
       info.spatial_resolution ||
-      "—",
-    missing: panelMeta.missing || info.missing || "—",
-    unit: panelMeta.unit || info.unit || "—",
-    vars: panelMeta.vars || info.variables || "—",
-    steps: panelMeta.steps || info.steps || String(frames.length || imageUrls.length || "—"),
-    status: panelMeta.status || info.status || "—",
+      "",
+    missing: panelMeta.missing || info.missing || "",
+    unit: panelMeta.unit || info.unit || "",
+    vars: panelMeta.vars || info.variables || "",
+    steps: panelMeta.steps || info.steps || (frames.length || imageUrls.length || ""),
+    status: panelMeta.status || info.status || "",
     variable_key: panelMeta.variable_key || info.variable_key || "",
     element_desc_zh: panelMeta.element_desc_zh || info.element_desc_zh || "",
     element_desc_en: panelMeta.element_desc_en || info.element_desc_en || "",
@@ -1581,7 +1572,7 @@ const meta = computed(() => {
     if (paneMeta) return paneMeta;
     const paneResource = paneParsed.value[selectedPane.value];
     if (paneResource?.parsed) return normalizeParsedMeta(paneResource.parsed);
-    return sourceFallbackInfo(catalogSourceKey.value);
+    return null;
   }
 
   const display = layerDisplays.value[active.value];
@@ -1626,19 +1617,7 @@ const meta = computed(() => {
     return displayMeta;
   }
 
-  return sourceFallbackInfo(active.value);
-});
-
-const processing = computed(() => {
-  if (layout.value !== "1" && selectedPane.value >= 0) {
-    const paneResource = paneParsed.value[selectedPane.value];
-    if (paneResource?.processing) return paneResource.processing;
-  }
-  if (parseProcessing.value) {
-    return parseProcessing.value;
-  }
-
-  return defaultProcessing;
+  return null;
 });
 
 function layerParsed(key, paneIndex = 0) {
@@ -2107,10 +2086,6 @@ function selectSource(key) {
     delete nextPaneParsed[pane];
     paneParsed.value = nextPaneParsed;
     dataResources.value = [];
-    switching.value = true;
-    clearTimeout(switchingTimer);
-    switchingTimer = setTimeout(() => { switching.value = false; }, 10000);
-    switchingTarget = { pane, key };
     if (dockOpen.value && tool.value === "select") refreshDataResources({ autoSelect: true });
     return;
   }
@@ -2121,10 +2096,6 @@ function selectSource(key) {
   }
   if (key === "himawari") pendingHimawariSceneId.value = "";
   resetTimebar();
-  switching.value = true;
-  clearTimeout(switchingTimer);
-  switchingTimer = setTimeout(() => { switching.value = false; }, 10000);
-  switchingTarget = { pane: 0, key };
   active.value = key;
   clearSelectedResource();
   dataResources.value = [];
@@ -2584,6 +2555,20 @@ watch(active, () => {
   border-color: var(--accent);
 }
 
+.tc-btn:disabled,
+.tc-speed button:disabled {
+  border-color: var(--border);
+  color: color-mix(in srgb, var(--muted) 55%, transparent);
+  background: color-mix(in srgb, var(--field) 72%, transparent);
+  cursor: not-allowed;
+}
+
+.tc-btn:disabled:hover,
+.tc-speed button:disabled:hover {
+  border-color: var(--border);
+  color: color-mix(in srgb, var(--muted) 55%, transparent);
+}
+
 .tc-play {
   display: grid;
   place-items: center;
@@ -2601,6 +2586,13 @@ watch(active, () => {
 
 .tc-play:hover {
   opacity: 0.85;
+}
+
+.tc-play:disabled {
+  background: color-mix(in srgb, var(--muted) 45%, var(--field));
+  color: color-mix(in srgb, var(--text) 55%, transparent);
+  cursor: not-allowed;
+  opacity: 0.72;
 }
 
 .tc-speed {
@@ -2638,30 +2630,6 @@ watch(active, () => {
   font-size: 12px;
   color: var(--muted);
   white-space: nowrap;
-}
-
-.version {
-  margin-top: 18px;
-  padding: 14px;
-  border-radius: 12px;
-  background: var(--field);
-}
-
-.version p {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  margin: 0 0 9px;
-  font-size: 12px;
-  color: var(--muted);
-}
-
-.version p:last-child {
-  margin-bottom: 0;
-}
-
-.ok {
-  color: var(--ok);
 }
 
 .run {

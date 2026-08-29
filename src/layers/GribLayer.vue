@@ -795,6 +795,12 @@ function normalizeExtentForFly(extent) {
 }
 
 function zoomToData() {
+  if (!currentImageUrl.value) {
+    window.clearTimeout(zoomTimer);
+    zoomedKey = "";
+    return;
+  }
+
   const target = normalizeExtentForFly(imageExtent.value);
   if (!target) return;
 

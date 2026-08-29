@@ -6,8 +6,12 @@
     </div>
 
     <div class="mp-body">
-      <slot v-if="!meta" name="empty">
-        <div class="empty">暂无解析信息</div>
+      <slot v-if="!hasMeta" name="empty">
+        <div class="empty-state">
+          <div class="empty-visual"><el-icon><DataAnalysis /></el-icon></div>
+          <strong>暂无气象数据</strong>
+          <span>请选择包含可展示数据的数据源</span>
+        </div>
       </slot>
 
       <template v-else>
@@ -44,6 +48,7 @@
 
 <script setup>
 import {computed, nextTick, onBeforeUnmount, ref, watch} from "vue";
+import {DataAnalysis} from "@element-plus/icons-vue";
 import * as echarts from "echarts";
 
 const props = defineProps({
@@ -71,71 +76,22 @@ function pickText(...items) {
       .find(Boolean) || "";
 }
 
-function normalizeElementKey(info, meta) {
-  const text = pickText(
-      info.shortName,
-      info.short_name,
-      info.key,
-      info.variable,
-      info.element,
-      info.long_name,
-      info.mainVariableName,
-      meta.shortName,
-      meta.short_name,
-      meta.variable,
-      meta.element,
-  ).toLowerCase();
-
-  if (/(^|[^a-z0-9])(?:2t|t2m)([^a-z0-9]|$)|2\s*metre\s*temperature|2\s*meter\s*temperature|2米气温|2米温度/.test(text)) return "t2m";
-  if (/(^|[^a-z0-9])(?:2d|d2m)([^a-z0-9]|$)|2\s*metre\s*dewpoint|2\s*meter\s*dewpoint|dewpoint|露点/.test(text)) return "d2m";
-  if (/(^|[^a-z0-9])(?:tp|apcp)([^a-z0-9]|$)|total\s*precipitation|accumulated\s*precipitation|precipitation|累积降水|总降水|降水/.test(text)) return "tp";
-  if (/(^|[^a-z0-9])(?:sp)([^a-z0-9]|$)|surface\s*pressure|地面气压|地表气压/.test(text)) return "sp";
-  if (/(^|[^a-z0-9])(?:msl|prmsl)([^a-z0-9]|$)|mean\s*sea\s*level\s*pressure|sea\s*level\s*pressure|海平面气压|海平面压力/.test(text)) return "msl";
-  if (/(^|[^a-z0-9])(?:u10)([^a-z0-9]|$)|10m\s*u|10\s*metre\s*u|10米u|东西风/.test(text)) return "u10";
-  if (/(^|[^a-z0-9])(?:v10)([^a-z0-9]|$)|10m\s*v|10\s*metre\s*v|10米v|南北风/.test(text)) return "v10";
-  if (/temperature|气温|温度/.test(text)) return "temperature";
-  if (/pressure|气压|压力/.test(text)) return "pressure";
-
-  return "";
-}
-
-function getElementMeaning(info, meta = {}) {
-  const explicit = pickText(
+const allRows = computed(() => {
+  const meta = props.meta || {};
+  const info = meta.weather_info || meta;
+  const elementValue = [pickText(info.element, meta.element), pickText(info.element_en, meta.element_en)]
+      .filter(Boolean)
+      .join(" · ");
+  const elementMeaning = pickText(
+      info.elementMeaning,
       info.element_description,
       info.elementDescription,
       info.description_cn,
       info.description,
+      meta.elementMeaning,
       meta.element_description,
       meta.elementDescription,
   );
-
-  if (explicit) return explicit;
-
-  const key = normalizeElementKey(info, meta);
-
-  const mapping = {
-    t2m: "表示距地面约 2 米高度处的空气温度，常用于判断近地面冷暖状况、热浪或低温风险；当前单位通常为 ℃。",
-    d2m: "表示距地面约 2 米高度处空气达到饱和时的温度，可反映近地面水汽含量和湿度条件；露点越高，空气越湿，有利于降水发展。",
-    tp: "表示从起报时刻到当前预报时效累计的降水量，用于判断降雨落区、强度和过程累计雨量；当前单位通常为 mm。",
-    sp: "表示地面实际气压，会受到天气系统和地形高度共同影响；低压区常与上升运动、云雨发展有关，高压区通常对应较稳定天气。",
-    msl: "表示订正到平均海平面的气压，适合分析大尺度高低压系统、锋面和气旋结构，较少受地形高度直接影响。",
-    u10: "表示 10 米高度处东西方向风速分量，正值通常代表由西向东的风，负值代表由东向西的风。",
-    v10: "表示 10 米高度处南北方向风速分量，正值通常代表由南向北的风，负值代表由北向南的风。",
-    temperature: "表示空气温度场，用于分析冷暖分布、温度梯度和天气系统热力结构。",
-    pressure: "表示气压场，用于识别高压、低压、槽脊等天气系统结构。",
-  };
-
-  return mapping[key] || "表示当前图层所展示的气象变量，用于描述该时次、该层级上的大气或地表状态。";
-}
-
-const allRows = computed(() => {
-  const meta = props.meta || {};
-  const info = meta.weather_info || meta;
-  // 优先使用数据源提供的 elementMeaning，否则从关键字推断
-  const elementMeaning = info.elementMeaning || getElementMeaning(info, meta);
-  // 要素中文名后附加英文名
-  const elementValue = info.element
-    + (info.element_en ? ` · ${info.element_en}` : "");
 
   const baseRows = [
     ["file", "文件", info.file || meta.file?.name || meta.file_name || meta.source_file],
@@ -155,8 +111,19 @@ const allRows = computed(() => {
   const extraRows = normalizeExtraRows(meta.extraRows || info.extraRows);
 
   return [...baseRows, ...extraRows]
-      .filter(([, , value]) => value !== undefined && value !== null && value !== "")
+      .filter(([, , value]) => isMeaningfulValue(value))
       .map(([key, label, value]) => ({key, label, value: formatPanelValue(key, value)}));
+});
+
+function isMeaningfulValue(value) {
+  if (value === undefined || value === null) return false;
+  const text = String(value).trim().toLowerCase();
+  return Boolean(text) && !["—", "-", "undefined", "null"].includes(text);
+}
+
+const hasMeta = computed(() => {
+  const primaryKeys = new Set(["file", "element", "time", "range", "grid", "resolution"]);
+  return allRows.value.some(row => primaryKeys.has(row.key));
 });
 
 const STAT_KEYS = ["min", "mean", "max"];
@@ -564,8 +531,42 @@ dd {
   line-height: 1.45;
 }
 
-.empty {
+.empty-state {
+  min-height: 240px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 8px;
   color: var(--muted);
-  font-size: 12px;
+  text-align: center;
+}
+
+.empty-visual {
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  margin-bottom: 6px;
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  color: var(--accent);
+}
+
+.empty-visual .el-icon {
+  font-size: 30px;
+}
+
+.empty-state strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.empty-state span {
+  max-width: 170px;
+  font-size: 11px;
+  line-height: 1.5;
 }
 </style>

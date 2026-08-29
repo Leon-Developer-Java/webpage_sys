@@ -1,10 +1,11 @@
 <template>
-  <div class="time-axis" :class="{ compact: compactLabels }">
+  <div class="time-axis" :class="{ compact: compactLabels, disabled }">
     <div class="track" ref="trackEl" @click="seek">
-      <div class="fill" :style="{ width: fillPct }"></div>
-      <div class="thumb" :style="{ left: fillPct }"></div>
+      <div v-if="!disabled" class="fill" :style="{ width: fillPct }"></div>
+      <div v-if="!disabled" class="thumb" :style="{ left: fillPct }"></div>
     </div>
-    <div class="labels">
+    <div v-if="disabled" class="disabled-label">{{ disabledLabel }}</div>
+    <div v-else class="labels">
       <span
         v-for="tick in visibleTicks"
         :key="`${tick.index}-${tick.label}`"
@@ -26,6 +27,8 @@ const props = defineProps({
   active: { type: Number, default: 0 },
   tickMode: { type: String, default: "sampled" },
   compactLabels: Boolean,
+  disabled: Boolean,
+  disabledLabel: { type: String, default: "暂无可播放时间序列" },
   dark: Boolean
 });
 const emit = defineEmits(["update:active"]);
@@ -36,6 +39,7 @@ const fillPct = computed(() => `${pct.value * 100}%`);
 const visibleTicks = computed(() => buildVisibleTicks(props.times, { mode: props.tickMode, maxTicks: 12 }));
 
 function seek(e) {
+  if (props.disabled || props.times.length < 2) return;
   const rect = trackEl.value.getBoundingClientRect();
   const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
   emit("update:active", Math.round(ratio * (props.times.length - 1)));
@@ -53,7 +57,7 @@ function compactTickLabel(label) {
 </script>
 
 <style scoped>
-.time-axis { display: flex; flex-direction: column; gap: 3px; user-select: none; }
+.time-axis { display: flex; flex-direction: column; gap: 3px; margin: 0 10px; user-select: none; }
 
 .track {
   position: relative;
@@ -96,9 +100,13 @@ function compactTickLabel(label) {
 }
 
 .labels { position: relative; height: 16px; }
-.labels span { position: absolute; transform: translateX(-50%); font-size: 11px; color: var(--muted); cursor: pointer; transition: 0.12s; }
+.labels span { position: absolute; transform: translateX(-50%); font-size: 11px; line-height: 16px; color: var(--muted); cursor: pointer; transition: 0.12s; white-space: nowrap; }
 .labels span.first { transform: none; }
 .labels span.last { transform: translateX(-100%); }
 .labels span:hover { color: var(--text); }
 .compact .labels span { font-size: 10px; }
+.disabled .track { height: 12px; cursor: default; }
+.disabled .track::before { height: 3px; background: color-mix(in srgb, var(--muted) 22%, transparent); }
+.disabled .track:hover::before { background: color-mix(in srgb, var(--muted) 22%, transparent); }
+.disabled-label { height: 16px; color: color-mix(in srgb, var(--muted) 72%, transparent); font-size: 11px; line-height: 16px; text-align: center; white-space: nowrap; }
 </style>

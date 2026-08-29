@@ -14,6 +14,9 @@
     </label>
     <p v-if="error" class="lc-error">{{ error }}</p>
     <p v-else-if="warningText" class="lc-warning">{{ warningText }}</p>
+    <p v-if="!error && grid?.capped" class="lc-note">
+      当前显示网格已限幅为 {{ grid.width }} × {{ grid.height }}，未达到请求的 {{ grid.target_resolution_km }} km 间距。插值不增加原始数据精度。
+    </p>
   </LayerCard>
 </template>
 
@@ -488,7 +491,7 @@ async function loadDisplay(variableName = selectedVariable.value) {
   loading.value = true;
   error.value = "";
   try {
-    const nextDisplay = await fetchCachedDisplay(variableName, props.levelIndex, props.timeIndex, resolutionKey);
+    let nextDisplay = await fetchCachedDisplay(variableName, props.levelIndex, props.timeIndex, resolutionKey);
     if (requestId !== displayRequestId) return;
     setResolutionOptions(nextDisplay);
     variables.value = nextDisplay.variables || [];
@@ -499,11 +502,18 @@ async function loadDisplay(variableName = selectedVariable.value) {
       nextDisplay.meta_json?.extra?.cma?.primary_variable ||
       variables.value[0]?.name ||
       "";
-    let nextVariable = defaultVar;
+    let nextVariable = variableName || defaultVar;
     if (!variableName && props.variantIndex > 0 && variables.value.length > 1) {
       const defaultIdx = variables.value.findIndex(v => v.name === defaultVar);
       const offset = (defaultIdx >= 0 ? defaultIdx : 0) + props.variantIndex;
       nextVariable = variables.value[offset % variables.value.length]?.name || defaultVar;
+    }
+    if (nextVariable && nextVariable !== nextDisplay.grid?.variable) {
+      nextDisplay = await fetchCachedDisplay(nextVariable, props.levelIndex, props.timeIndex, resolutionKey);
+      if (requestId !== displayRequestId) return;
+    }
+    if (!nextDisplay.grid || nextDisplay.grid.variable !== nextVariable) {
+      throw new Error(nextDisplay.warnings?.join(" / ") || "CMA 所选要素没有可显示的数据");
     }
     syncingVariable = true;
     selectedVariable.value = nextVariable;
@@ -576,8 +586,13 @@ watch(refreshKey, () => {
   clearNativeFrameCaches();
   loadDisplay(selectedVariable.value);
 });
+watch(() => props.variantIndex, () => {
+  clearNativeFrameCaches();
+  loadDisplay("");
+});
 
 onBeforeUnmount(() => {
+  displayRequestId += 1;
   clearNativeFrameCaches();
   clearImageryLayer();
 });
@@ -594,6 +609,14 @@ onBeforeUnmount(() => {
 .lc-warning {
   margin: 8px 0 0;
   color: #b45309;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.lc-note {
+  margin: 8px 0 0;
+  color: inherit;
+  opacity: 0.75;
   font-size: 12px;
   line-height: 1.4;
 }

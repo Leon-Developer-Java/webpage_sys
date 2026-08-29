@@ -1,232 +1,108 @@
-# 智慧气象 · 前端公共框架（第0阶段）
+# 智慧气象前端（webpage_sys）
 
-## 项目概述
+Vue 3 + Vite 单页应用，提供登录、气象数据总览、数据上传、智能体、模型运行、ERA5 历史数据和 WRF 工作台。地图由项目内的 WebGL2 投影画布渲染，不依赖 Cesium。
 
-本项目是"智慧气象"系统的前端公共框架，由第0阶段（邹聪）负责搭建。框架基于 Vue3 + Vite + Element Plus + Cesium 构建，为成员1-6提供统一的底图、渲染、时间轴等公共组件。各成员只需在 `src/layers/` 下维护自己的业务数据层组件即可。
+## 运行环境
 
-## 技术栈
+- Node.js 20（当前验证版本为 20.18；Vite 6 也支持兼容的 Node 18/22 版本）
+- npm 10 或更高版本
+- 支持 WebGL2 的现代浏览器
 
-| 技术 | 用途 |
-|------|------|
-| Vue 3 + Vite 6 | 前端框架 + 构建工具 |
-| Element Plus | UI 组件库 |
-| Cesium (Scene2D) | 公共底图（矢量 / 影像 / 地形 / 境界 四选一） |
-| WebGL2 | 气象数据叠加渲染层 |
-| Vue Router | 数据总览 / 数据上传 / 智能体 三页路由 |
+安装和启动：
 
-## 项目结构
-
+```powershell
+cd D:\weather_prediction_system\webpage_sys
+npm ci
+npm run dev
 ```
+
+开发地址为 `http://127.0.0.1:5177`。
+
+## 后端服务
+
+开发模式未设置 Vite 环境变量时使用以下地址：
+
+| 服务 | 默认地址 | 用途 |
+| --- | --- | --- |
+| `backend` | `http://127.0.0.1:8002` | 展示接口和 `/data` 资源 |
+| `backend_upload` | `http://127.0.0.1:8003` | 上传、任务、目录和自动采集 |
+| `backend_agent` | `http://127.0.0.1:8004` | 智能体 NDJSON 流式接口 |
+| `backend_auth` | `http://127.0.0.1:8005` | 登录、注册和用户管理 |
+| `backend_model` | `http://127.0.0.1:8006` | 模型运行与结果资源 |
+| WRF 服务 | `http://127.0.0.1:8007` | WRF 任务与展示 |
+| ERA5 历史服务 | `http://127.0.0.1:8010` | ERA5 历史状态、更新和展示 |
+
+对应环境变量：
+
+```text
+VITE_API_BASE
+VITE_UPLOAD_BASE
+VITE_AGENT_BASE
+VITE_AUTH_BASE
+VITE_MODEL_BASE
+VITE_WRF_BASE
+VITE_ERA5_HISTORY_API_BASE
+```
+
+生产构建使用 [.env.production](./.env.production)。其中空字符串表示同源请求，由 nginx 将 `/api`、`/data`、`/outputs` 等路径反向代理到对应服务；生产环境不要填写服务器自身的 `127.0.0.1`。
+
+## 页面与权限
+
+| 路由 | 页面 | 最低角色 |
+| --- | --- | --- |
+| `/login` | 登录/注册 | 未登录可用 |
+| `/` | 多屏气象总览 | role 1 |
+| `/era5-history` | ERA5 历史数据 | 未登录可访问 |
+| `/upload` | 数据上传与解析状态 | role 2 |
+| `/agent` | 智能体 | role 2 |
+| `/model` | 模型运行 | role 2 |
+| `/wrf` | WRF 工作台 | role 2 |
+
+JWT 和用户信息保存在浏览器 `localStorage`。请求会自动添加 `Authorization: Bearer ...`；Token 过半生命周期时通过 `backend_auth` 静默刷新，收到 401 后自动退出。
+
+## 数据链路
+
+普通文件和 FY-3/Himawari 集合统一通过 `backend_upload:8003` 分片上传：
+
+```text
+浏览器分片上传
+  -> backend_upload 写入共享 DB 和私有 raw 存储
+  -> backend Adapter Worker 异步解析
+  -> backend/data 生成 meta/WebP
+  -> backend_upload 目录接口选择资源
+  -> backend:8002 提供展示响应和 /data 文件
+```
+
+上传成功只表示文件已入队。前端继续轮询 `pending/running/success/failed`，不再把同一文件二次提交给 8002。FY-3/Himawari 在上传前调用集合准备接口，由服务端判断 science/geo、波段和分段完整性。
+
+## 目录结构
+
+```text
 webpage_sys/
-├── src/
-│   ├── main.js              # 入口：Vue + Router + ElementPlus
-│   ├── router.js            # 路由配置
-│   ├── api.js               # 统一请求：展示→8002 / 上传及任务状态→8003 / chatStream→8004
-│   ├── markdown.js          # 智能体消息 Markdown 渲染（marked + 中文加粗修复 + 净化）
-│   ├── App.vue              # 顶栏 + 主题切换 + <router-view>
-│   ├── styles/global.css    # CSS 变量（亮/暗主题）、公共组件样式
-│   ├── views/
-│   │   ├── Overview.vue     # 数据总览页（四屏地图 + 工具栏 + 属性面板 + 时间轴）
-│   │   ├── Upload.vue       # 数据上传页
-│   │   └── Agent.vue        # 智能体页
-│   ├── components/          # 公共组件（框架层，成员无需修改）
-│   │   ├── MapBase.vue      # Cesium 2D 底图（<slot> 供业务层叠加）
-│   │   ├── WebglLayer.vue   # WebGL2 数据叠加渲染层（接收 PNG + 地理范围）
-│   │   ├── TimeAxis.vue     # 时间轴（CSS 进度条，支持平滑播放）
-│   │   └── VariableSelect.vue
-│   └── layers/              # 业务数据层组件（成员1-6 各自维护）
-│       ├── Era5Layer.vue    # 成员1  ERA5
-│       ├── GribLayer.vue    # 成员2  GFS / ECMWF
-│       ├── CmaLayer.vue     # 成员3  CMA
-│       ├── RadarLayer.vue   # 成员4  雷达
-│       ├── HimawariLayer.vue # 成员5  葵花卫星
-│       ├── HimawariTimeAxis.vue       # Himawari 专属时间轴
-│       ├── himawariTimelineTicks.js   # Himawari 专属标签抽稀
-│       └── WrfLayer.vue     # 成员6  WRF
-└── public/
-    └── meta.template.json   # 后端 meta.json 字段规范
+├─ src/
+│  ├─ api.js                 # 服务地址、鉴权、上传、目录、模型和 WRF 请求
+│  ├─ router.js              # 页面路由与角色守卫
+│  ├─ views/                 # Overview、Upload、Agent、Model、WRF 等页面
+│  ├─ components/
+│  │  ├─ ProjMap.vue         # WebGL2 多投影底图
+│  │  ├─ WebglLayer.vue      # 气象栅格叠加
+│  │  ├─ TimeAxis.vue        # 公共时间轴
+│  │  └─ MetaPanel.vue       # 气象属性与统计面板
+│  ├─ layers/                # ERA5、CMA、Radar、FY3、Himawari、WRF 等图层
+│  └─ utils/                 # 帧缓存、投影与播放辅助逻辑
+├─ public/                   # 本地海岸线、国界和 meta 模板
+├─ tests/                    # Node 内置测试运行器用例
+├─ package.json
+└─ vite.config.js
 ```
 
-## 智能体页（Agent.vue）后端对接
+图层资源必须提供与图像一致的 `extent=[west,south,east,north]`。时间、要素、分辨率和 WebP URL 应来自后端 meta/目录响应，不要在组件中写演示数据作为真实回退。
 
-智能体页对接独立后端 `backend_agent`（端口 **8004**，详见其 README）。
+## 测试与构建
 
-- 请求：`api.js` 的 `chatStream(messages, context)` → `POST http://127.0.0.1:8004/api/agent/chat`
-- 响应：**NDJSON 流式**，每行一个 JSON 事件，前端按类型分发渲染：
-
-  | 事件 | 前端动作 |
-  |------|----------|
-  | `{type:"text",value}` | 追加到气泡（Markdown 渲染） |
-  | `{type:"tool",name,status,label,progress,result}` | 渲染/更新 `ToolCallCard` 进度卡 |
-  | `{type:"image",url,caption}` | 气泡内嵌 `<img>` |
-  | `{type:"done"}` / `{type:"error",message}` | 收尾 / 错误提示 |
-
-- 助手消息经 `markdown.js` 渲染（依赖 `marked`）。后端服务的图片由 `8004/outputs/*.png` 提供。
-
-## 快速开始
-
-```bash
-cd zhihuiqixiangWEB/webpage_sys
-npm install
-npm run dev -- --port 5177
-```
-
-浏览器打开：
-
-```text
-http://127.0.0.1:5177
-```
-
-上传页的标准单文件只提交给 `backend_upload:8003` 一次，之后轮询数据库任务状态；解析由无端口 Adapter Worker 串行执行。前端不再把同一文件二次提交给 `8002/api/files/parse`。FY-3/Himawari 多文件流程暂时保留。
-
-前端完整联调需要 `8002`、`8003`、`8005` 和 Adapter Worker 同时运行。Himawari 展示依赖：
-
-```text
-GET http://127.0.0.1:8002/api/display/HIMAWARI
-GET http://127.0.0.1:8002/api/himawari/auto-status
-```
-
-后端启动参考：
-
-```bash
-cd zhihuiqixiangSQL/backend_system
-conda activate zhihuiqixiang
-export HIMAWARI_FTP_USER="你的 FTP 用户名"
-export HIMAWARI_FTP_PASSWORD="你的 FTP 密码"
-uvicorn main:app --reload --host 127.0.0.1 --port 8002
-```
-
-只看已有样例、不启动自动 FTP 下载时，后端可加：
-
-```bash
-export HIMAWARI_AUTO_DOWNLOAD=0
-```
-
----
-
-## 成员协作指南
-
-### 你只需要修改一个文件
-
-每位成员只需编辑 `src/layers/` 下自己对应的 `.vue` 文件。  
-用户在界面选择数据类型（如"雷达"）后，框架自动加载并渲染对应的 Layer 组件，无需修改任何公共代码。
-
-Himawari 的专属前端逻辑放在：
-
-```text
-src/layers/HimawariLayer.vue
-src/layers/HimawariTimeAxis.vue
-src/layers/himawariTimelineTicks.js
-```
-
-Himawari 不应为了时间轴标签密度修改公共 `src/components/TimeAxis.vue` 或 `src/utils/timeAxisTicks.js`。
-
-### Layer 组件结构
-
-```vue
-<template>
-  <!-- 将后端 PNG 叠加渲染到 Cesium 底图上 -->
-  <WebglLayer :src="imageUrl" :extent="extent" />
-
-  <!-- 色标图例（自动显示在地图左上角文件信息卡下方） -->
-  <div class="layer-legend">
-    <small>单位（如 dBZ）</small>
-    <div class="legend-bar" :style="{ background: gradient }"></div>
-    <ul><li v-for="t in ticks" :key="t">{{ t }}</li></ul>
-  </div>
-</template>
-
-<script setup>
-import WebglLayer from "../components/WebglLayer.vue";
-
-// 替换为后端实际返回的 PNG 地址和地理范围
-const imageUrl = "http://your-backend/api/render/output.png";
-const extent = [73, 15, 135, 55]; // [west, south, east, north]（十进制度）
-
-const gradient = `linear-gradient(to right, #2563eb, #22c55e, #facc15, #e11d48)`;
-const ticks = ["0", "10", "30", "50", "70"];
-</script>
-```
-
----
-
-## ⚠️ 图像对齐与 meta.json（开发必读）
-
-### 图像与底图对齐
-
-`WebglLayer` 通过 `extent` 参数将 PNG **精确**叠加到 Cesium 底图，WebGL2 会将 PNG 直接投影到该矩形区域：
-
-> **后端渲染 PNG 时，输出图像的地理范围必须和传给 `WebglLayer` 的 `:extent=[west,south,east,north]` 完全一致。**  
-> 只要范围有偏差，图像就会偏移或拉伸，无法与底图对齐。
-
-- `extent = [west, south, east, north]`，单位：十进制度
-- 建议分辨率：短边 ≥ 600px，长宽比 = `(east-west) / (north-south)`
-- 中国范围参考：`[73, 15, 135, 55]`，宽高比 ≈ 1.55
-
-### meta.json 规范
-
-`public/meta.template.json` 是字段规范模板。后端 `POST /api/files/parse` 返回该结构后，前端自动填充气象信息面板：
-
-```js
-// Overview.vue 内部逻辑：
-const meta = computed(() => parsed.value || infos[active.value]);
-// parsed.value 即 api.parseFile() 返回的 meta 对象
-```
-
-```json
-{
-  "file":    "radar_xh_20250616_1000.cinrad",
-  "element": "组合反射率 DBZH",
-  "time":    "2025-06-16 10:00",
-  "level":   "0.5° 仰角",
-  "range":   "73°E-135°E, 15°N-55°N",
-  "grid":    "721 × 361",
-  "missing": "-9999",
-  "unit":    "dBZ",
-  "vars":    "1",
-  "steps":   "24",
-  "extent":  [73, 15, 135, 55]
-}
-```
-
-> **`extent` 字段必须写入 meta.json**。Layer 组件从后端响应中读取 `extent`，传给 `WebglLayer` 的 `:extent` prop，以确保图像与底图精确对齐。
-
-**完整数据流**：
-
-```
-后端解析文件
-  → 读取实际地理范围 → 以该范围渲染 PNG
-  → 输出 meta.json（含 extent 字段）
-  → 前端 api.parseFile() 获取响应
-  → Layer 组件将 meta.extent 传给 <WebglLayer :extent="meta.extent" />
-  → 气象信息面板自动填充（meta = parsed.value）
-```
-
----
-
-## 多屏联动
-
-双屏 / 四屏模式下，点击左侧工具栏「联动」按钮，所有屏幕视角跟随第一屏（缩放 / 平移同步）。
-
-## 主题切换
-
-点击右上角月亮 / 太阳图标，亮色 / 暗色主题切换，Cesium 底图配色同步更新。
-
-## Himawari 展示说明
-
-- 前端不直接读取 HSD raw，只读取后端返回的 `png_url`、`extent`、`grid`、`variables`、`composites` 和 `timeline`。
-- 后端 `/api/display/HIMAWARI` 返回滚动 24 小时窗口内已有的解析结果。
-- 窗口规则由后端统一控制：当前时间向前 60 分钟取 10 分钟整点作为右边界，再向前 24 小时。
-- 前端时间轴播放完整时次列表；标签由 `HimawariTimeAxis.vue` 专属抽稀到 12 个左右，公共时间轴不受影响。
-- 自动下载状态显示在右侧“气象信息”卡片，来源为 `/api/himawari/auto-status`。
-
-## 构建验证
-
-修改前端后运行：
-
-```bash
-cd zhihuiqixiangWEB/webpage_sys
+```powershell
+npm test
 npm run build
 ```
 
-注意 `dist/index.html` 与 `dist/assets` 是构建产物，提交时不要只提交半截构建结果。
+`npm test` 使用 Node 内置测试运行器；`npm run build` 输出到 `dist/`。提交依赖变更时必须同时更新 `package.json` 和 `package-lock.json`，协作者应优先使用 `npm ci`。

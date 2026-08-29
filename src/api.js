@@ -662,7 +662,9 @@ export async function uploadFilesResumable(fileOrFiles, dataType, onProgress = (
 
 export async function getUploadTasks({ limit = 100, offset = 0 } = {}) {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
-  const response = await authedFetch(`${UPLOAD_BASE}/api/upload/tasks?${params}`);
+  const response = await authedFetch(`${UPLOAD_BASE}/api/upload/tasks?${params}`, {
+    cache: "no-store",
+  });
   const payload = await response.json();
   if (!response.ok || payload.code !== 0) {
     throw new Error(apiError(payload, "解析队列读取失败"));
@@ -690,6 +692,25 @@ export async function retryUploadTask(fileUuid) {
   return payload.data;
 }
 
+async function catalogRequest(path, options = {}) {
+  let response;
+  try {
+    response = await authedFetch(`${UPLOAD_BASE}/api/catalog${path}`, options);
+  } catch (cause) {
+    throw new Error(`数据目录服务无法连接（${UPLOAD_BASE || location.origin}），请检查目录服务是否启动。`, { cause });
+  }
+  let payload;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new Error(`数据目录服务返回格式错误（HTTP ${response.status}）`);
+  }
+  if (!response.ok || payload.code !== 0) {
+    throw new Error(apiError(payload, `数据目录请求失败（HTTP ${response.status}）`));
+  }
+  return payload.data;
+}
+
 export async function getDisplayResources(dataType, { limit = 100, offset = 0, timeStart = "", timeEnd = "" } = {}) {
   const params = new URLSearchParams({
     data_type: dataType,
@@ -698,35 +719,20 @@ export async function getDisplayResources(dataType, { limit = 100, offset = 0, t
   });
   if (timeStart) params.set("time_start", timeStart);
   if (timeEnd) params.set("time_end", timeEnd);
-  const response = await authedFetch(`${UPLOAD_BASE}/api/catalog/resources?${params}`);
-  const payload = await response.json();
-  if (!response.ok || payload.code !== 0) {
-    throw new Error(apiError(payload, "可展示数据读取失败"));
-  }
-  return payload.data;
+  return catalogRequest(`/resources?${params}`);
 }
 
 export async function getDisplayResource(resource) {
   const fileUuids = Array.isArray(resource?.file_uuids) ? resource.file_uuids : [];
   if (fileUuids.length >= 1) {
-    const response = await authedFetch(`${UPLOAD_BASE}/api/catalog/series`, {
+    return catalogRequest("/series", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ file_uuids: fileUuids }),
     });
-    const payload = await response.json();
-    if (!response.ok || payload.code !== 0) {
-      throw new Error(apiError(payload, "时间序列读取失败"));
-    }
-    return payload.data;
   }
   const fileUuid = typeof resource === "string" ? resource : resource?.file_uuid;
-  const response = await authedFetch(`${UPLOAD_BASE}/api/catalog/resources/${encodeURIComponent(fileUuid)}`);
-  const payload = await response.json();
-  if (!response.ok || payload.code !== 0) {
-    throw new Error(apiError(payload, "数据详情读取失败"));
-  }
-  return payload.data;
+  return catalogRequest(`/resources/${encodeURIComponent(fileUuid)}`);
 }
 
 export async function ingestUploadedFiles(receipts, dataType, { action = "parse", overwrite = false } = {}) {
@@ -805,7 +811,9 @@ export async function uploadRawFiles(fileOrFiles, dataType, onProgress = () => {
 }
 
 export async function getRawScenes(dataType) {
-  const response = await authedFetch(`${API_BASE}/api/display/${encodeURIComponent(dataType)}/raw-scenes`);
+  const response = await authedFetch(`${API_BASE}/api/display/${encodeURIComponent(dataType)}/raw-scenes`, {
+    cache: "no-store",
+  });
   const payload = await response.json();
   if (!response.ok || payload.code !== 0) {
     throw new Error(payload.detail || payload.message || "raw 场景读取失败");
@@ -864,7 +872,9 @@ export async function getSatelliteParseTask(dataType, taskId) {
 
 export async function listSatelliteParseTasks(dataType, { activeOnly = false } = {}) {
   const params = new URLSearchParams({ active_only: activeOnly ? "true" : "false" });
-  const response = await authedFetch(`${API_BASE}/api/display/${encodeURIComponent(dataType)}/parse-tasks?${params}`);
+  const response = await authedFetch(`${API_BASE}/api/display/${encodeURIComponent(dataType)}/parse-tasks?${params}`, {
+    cache: "no-store",
+  });
   const payload = await response.json();
   if (!response.ok || payload.code !== 0) {
     throw new Error(apiError(payload, `${dataType} 解析任务列表读取失败`));

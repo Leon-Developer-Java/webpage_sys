@@ -141,7 +141,7 @@
             </thead>
             <tbody>
               <tr v-if="!parseQueue.length">
-                <td colspan="7" class="tbl-empty">暂无解析记录</td>
+                <td colspan="7" class="tbl-empty">{{ databaseQueueError || "暂无解析记录" }}</td>
               </tr>
               <tr
                 v-for="f in parseQueue"
@@ -236,8 +236,11 @@ const STATUS = { pending: "待上传", queued: "排队中", uploading: "上传�
 const PARSE_STATUS = { pending: "待解析", parsing: "解析中", done: "已解析", error: "不完整" };
 
 const parseQueue = ref([]);
-const databaseTaskTotal = ref(0);
-const databaseParsedTotal = ref(0);
+const databaseTaskTotal = ref(null);
+const databaseParsedTotal = ref(null);
+const databasePendingTotal = ref(null);
+const databaseQueueError = ref("");
+let parseQueueRefreshRevision = 0;
 
 function parseStatusText(file) {
   if (isRawSourceMissing(file)) return "原文件缺失";
@@ -290,9 +293,9 @@ const cur = computed(() => {
 
 const stats = computed(() => [
   { label: "已上传", val: files.value.filter(f => f.status === "done").length, sub: "本次会话", cls: "" },
-  { label: "数据库总量", val: databaseTaskTotal.value, sub: "当前账号", cls: "" },
-  { label: "已解析", val: databaseParsedTotal.value, sub: "当前账号", cls: "ok" },
-  { label: "待解析", val: parseQueue.value.filter(f => f.status === "pending").length, sub: "等待处理", cls: "accent" },
+  { label: "数据库总量", val: databaseTaskTotal.value ?? "—", sub: databaseQueueError.value ? "接口异常" : "当前账号", cls: "" },
+  { label: "已解析", val: databaseParsedTotal.value ?? "—", sub: databaseQueueError.value ? "接口异常" : "当前账号", cls: "ok" },
+  { label: "待解析", val: databasePendingTotal.value ?? "—", sub: databaseQueueError.value ? "接口异常" : "等待处理", cls: "accent" },
 ]);
 
 function fmtSize(b) {
@@ -831,6 +834,7 @@ function syncLocalFileStatus(tasks) {
 }
 
 async function refreshParseQueue() {
+  const revision = ++parseQueueRefreshRevision;
   const previous = new Map(parseQueue.value.map(item => [item.id, item]));
   const [databaseGroup, himawariGroup, fy3Group, fy3TasksGroup, himawariTasksGroup] = await Promise.allSettled([
     getUploadTasks({limit: 200}),
@@ -842,6 +846,7 @@ async function refreshParseQueue() {
   const rows = [];
   const databaseItems = [];
   const databaseMemberItems = [];
+  if (revision !== parseQueueRefreshRevision) return;
   if (databaseGroup.status === "fulfilled") {
     const collectionGroups = new Map();
     const standaloneTasks = [];
@@ -862,11 +867,17 @@ async function refreshParseQueue() {
       const id = databaseQueueItemId(tasks[0]?.file_uuid, tasks[0]?.collection_uuid);
       databaseItems.push(databaseCollectionToQueueItem(tasks, previous.get(id)));
     });
-    databaseTaskTotal.value = databaseItems.length;
-    databaseParsedTotal.value = databaseItems.filter(item => item.status === "done").length;
+    const summary = databaseGroup.value.summary || {};
+    databaseTaskTotal.value = Number(summary.total ?? databaseGroup.value.total ?? 0);
+    databaseParsedTotal.value = Number(summary.parsed ?? 0);
+    databasePendingTotal.value = Number(summary.pending ?? 0);
+    databaseQueueError.value = "";
     rows.push(...databaseItems);
   } else {
-    rows.push(...parseQueue.value.filter(item => item.queueKind === "database"));
+    databaseTaskTotal.value = null;
+    databaseParsedTotal.value = null;
+    databasePendingTotal.value = null;
+    databaseQueueError.value = "解析记录接口读取失败，请稍后重试";
   }
 
   [himawariGroup, fy3Group].forEach((group, index) => {
@@ -1266,14 +1277,29 @@ function onPick(e) {
   e.target.value = "";
 }
 
+function refreshQueueFromInterface(context) {
+  refreshParseQueue().catch(err => console.error(`${context}：`, err));
+}
+
+function refreshWhenVisible() {
+  if (document.visibilityState === "visible") {
+    refreshQueueFromInterface("页面恢复后解析记录刷新失败");
+  }
+}
+
 onMounted(() => {
-  refreshParseQueue().catch(err => console.error("解析队列读取失败：", err));
+  refreshQueueFromInterface("解析队列读取失败");
+  window.addEventListener("focus", refreshWhenVisible);
+  document.addEventListener("visibilitychange", refreshWhenVisible);
   queueTimer = window.setInterval(() => {
-    refreshParseQueue().catch(err => console.error("解析队列轮询失败：", err));
+    refreshQueueFromInterface("解析队列轮询失败");
   }, 3000);
 });
 
 onBeforeUnmount(() => {
+  parseQueueRefreshRevision += 1;
+  window.removeEventListener("focus", refreshWhenVisible);
+  document.removeEventListener("visibilitychange", refreshWhenVisible);
   uploadControllers.forEach(controller => controller.abort());
   if (queueTimer) window.clearInterval(queueTimer);
 });

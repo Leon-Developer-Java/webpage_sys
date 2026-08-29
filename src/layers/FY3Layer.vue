@@ -394,7 +394,7 @@ function emitSelectedVariableInfo() {
 }
 
 function flyToData() {
-  if (!display.value) return;
+  if (!display.value || !imageSrc.value) return;
   const ext = imageExtent.value;
   if (!Array.isArray(ext) || ext.length !== 4) return;
   const [west, south, east, north] = ext.map(Number);
