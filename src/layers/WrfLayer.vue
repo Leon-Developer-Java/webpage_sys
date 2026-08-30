@@ -63,13 +63,6 @@ function toPublicUrl(path) {
 }
 
 async function loadWrfDisplay() {
-  const response = await authedFetch(`${API_BASE}/api/display/WRF`);
-  const payload = await response.json();
-  if (!response.ok || payload?.code !== 0) {
-    throw new Error(payload?.detail || payload?.message || `WRF 展示请求失败（HTTP ${response.status}）`);
-  }
-  display.value = payload.data;
-async function loadWrfDisplay() {
   const requestId = ++displayRequestId;
   if (props.parsed || props.parsedMeta) {
     display.value = null;
