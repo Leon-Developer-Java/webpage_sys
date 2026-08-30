@@ -36,6 +36,7 @@
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import WebglLayer from "../components/WebglLayer.vue";
 import LayerCard from "../components/LayerCard.vue";
+import { authedFetch, withToken } from "../api";
 
 const props = defineProps({
   timeIndex: { type: Number, default: 12 },
@@ -54,13 +55,20 @@ let displayRequestId = 0;
 
 function toPublicUrl(path) {
   if (!path) return "";
-  if (/^https?:\/\//i.test(path) || path.startsWith("data:")) return path;
+  if (/^https?:\/\//i.test(path) || path.startsWith("data:")) return withToken(path);
   const normalized = String(path).replaceAll("\\", "/");
-  if (normalized.startsWith("data/")) return `${API_BASE}/${normalized}`;
+  if (normalized.startsWith("data/")) return withToken(`${API_BASE}/${normalized}`);
   const idx = normalized.indexOf("/data/");
-  return idx >= 0 ? `${API_BASE}${normalized.slice(idx)}` : "";
+  return idx >= 0 ? withToken(`${API_BASE}${normalized.slice(idx)}`) : "";
 }
 
+async function loadWrfDisplay() {
+  const response = await authedFetch(`${API_BASE}/api/display/WRF`);
+  const payload = await response.json();
+  if (!response.ok || payload?.code !== 0) {
+    throw new Error(payload?.detail || payload?.message || `WRF 展示请求失败（HTTP ${response.status}）`);
+  }
+  display.value = payload.data;
 async function loadWrfDisplay() {
   const requestId = ++displayRequestId;
   if (props.parsed || props.parsedMeta) {
@@ -86,11 +94,6 @@ const domains = {
     extent: [118.345093, 33.010822, 119.284912, 33.632328],
   },
 };
-
-const domainOptions = Object.entries(domains).map(([value, item]) => ({
-  value,
-  label: item.label,
-}));
 
 const defaultDates = ["2025-07-16"];
 const timelineSlotCount = 12;
@@ -185,13 +188,34 @@ const selectedResolution = ref("3km");
 const selectedDate = ref(defaultDates[0]);
 const flyToExtent = inject("flyToExtent", null);
 
-const currentDomain = computed(() => domains[domain.value] ?? domains.d02);
 const wrfMeta = computed(() => props.parsedMeta || props.parsed?.meta || props.parsed?.meta_json || display.value?.meta_json || null);
+const workbenchDomains = computed(() => Array.isArray(wrfMeta.value?.domains) ? wrfMeta.value.domains : []);
+const workbenchDomain = computed(() => workbenchDomains.value.find((item) => item.id === domain.value) || workbenchDomains.value[0] || null);
+const domainOptions = computed(() => {
+  if (workbenchDomains.value.length) {
+    return workbenchDomains.value.map((item) => ({
+      value: item.id,
+      label: `${item.id} · ${Number(item.dx || 0) / 1000 || "?"}km`,
+    }));
+  }
+  return Object.entries(domains).map(([value, item]) => ({ value, label: item.label }));
+});
+const currentDomain = computed(() => {
+  const item = workbenchDomain.value;
+  if (item && Array.isArray(item.extent) && item.extent.length === 4) {
+    return { label: `${item.id} WRF 区域`, extent: item.extent.map(Number) };
+  }
+  return domains[domain.value] ?? domains.d02;
+});
 const resolutionProducts = computed(() => {
   const products = wrfMeta.value?.resolution_products;
   return products && typeof products === "object" ? products : {};
 });
 const resolutionOptions = computed(() => {
+  if (workbenchDomain.value) {
+    const km = Number(workbenchDomain.value.dx || 0) / 1000;
+    return [{ value: "native", label: km ? `${Number(km.toFixed(2))}km` : "原始网格" }];
+  }
   const entries = Object.entries(resolutionProducts.value);
   if (!entries.length) return [{ value: "3km", label: "3km" }];
   return entries.map(([value, item]) => ({
@@ -208,24 +232,28 @@ const currentResolutionProduct = computed(() => {
     || null;
 });
 const currentWebpFiles = computed(() => {
+  if (workbenchDomain.value) {
+    return (workbenchDomain.value.variables || []).flatMap((item) => (item.frames || []).map((frame) => frame.url)).filter(Boolean);
+  }
   const files = currentResolutionProduct.value?.webp_files;
   if (Array.isArray(files) && files.length) return files;
   return Array.isArray(wrfMeta.value?.webp_files) ? wrfMeta.value.webp_files : [];
 });
 const availableDates = computed(() => {
-  const parsedDates = (wrfMeta.value?.times ?? [])
+  const parsedDates = (workbenchDomain.value?.times || wrfMeta.value?.times || [])
     .map((item) => String(item).slice(0, 10))
     .filter(Boolean);
   return parsedDates.length ? [...new Set(parsedDates)] : defaultDates;
 });
 const dayTimes = computed(() => {
-  const list = Array.isArray(wrfMeta.value?.times) ? wrfMeta.value.times : [];
+  const source = workbenchDomain.value?.times || wrfMeta.value?.times;
+  const list = Array.isArray(source) ? source : [];
   return list
     .map((item) => String(item))
     .filter((item) => item.startsWith(selectedDate.value));
 });
 const parsedVariables = computed(() => {
-  const list = currentResolutionProduct.value?.variables || wrfMeta.value?.variables;
+  const list = workbenchDomain.value?.variables || currentResolutionProduct.value?.variables || wrfMeta.value?.variables;
   if (!Array.isArray(list) || list.length === 0) return [];
   return list
     .filter((item) => !hiddenVariables.has(item.name))
@@ -289,11 +317,20 @@ const time = computed(() => {
   return `${selectedDate.value}_${hour}_00_00`;
 });
 const imageUrl = computed(() => {
+  const workbenchVariable = (workbenchDomain.value?.variables || []).find((item) => item.name === variable.value)
+    || workbenchDomain.value?.variables?.[0];
+  const workbenchFrame = workbenchVariable?.frames?.[currentFrameIndex.value];
+  if (workbenchFrame?.url) return toPublicUrl(workbenchFrame.url);
   const parsedUrl = parsedWebpUrl(variable.value);
   if (parsedUrl) return parsedUrl;
   return toPublicUrl(display.value?.webp);
 });
 const selectedFrameUrls = computed(() => {
+  if (workbenchDomain.value) {
+    const selected = (workbenchDomain.value.variables || []).find((item) => item.name === variable.value)
+      || workbenchDomain.value.variables?.[0];
+    return (selected?.frames || []).map((frame) => toPublicUrl(frame.url)).filter(Boolean);
+  }
   const files = currentWebpFiles.value;
   if (!Array.isArray(files) || !files.length) return imageUrl.value ? [imageUrl.value] : [];
   const target = String(variable.value || "");
@@ -363,8 +400,12 @@ function isRenderableVariable(item) {
 }
 
 function preferredVariable(meta) {
-  const list = Array.isArray(meta?.variables)
-    ? meta.variables.filter((item) => !hiddenVariables.has(item.name))
+  const activeWorkbenchDomain = Array.isArray(meta?.domains)
+    ? (meta.domains.find((item) => item.id === domain.value) || meta.domains.find((item) => item.id === meta.default_domain) || meta.domains[0])
+    : null;
+  const sourceVariables = activeWorkbenchDomain?.variables || meta?.variables;
+  const list = Array.isArray(sourceVariables)
+    ? sourceVariables.filter((item) => !hiddenVariables.has(item.name))
     : [];
   const priority = [meta?.default_variable, "T2", "PBLH", "U10", "V10", "PSFC", "RAINC", "RAINNC"].filter(Boolean);
   return priority
@@ -394,7 +435,7 @@ function buildPanelInfo() {
   const meta = wrfMeta.value || {};
   const weather = meta.weather_info || {};
   const current = currentVariable.value || {};
-  const productVariables = currentResolutionProduct.value?.variables || meta.variables;
+  const productVariables = workbenchDomain.value?.variables || currentResolutionProduct.value?.variables || meta.variables;
   const metaVar = (Array.isArray(productVariables) ? productVariables : [])
     .find((item) => item.name === variable.value) || {};
   const varInfo = (Array.isArray(meta.variable_information) ? meta.variable_information : [])
@@ -446,8 +487,8 @@ function emitPanelInfo() {
   emit("display-loaded", {
     meta: metaOut,
     weather_info: { ...info },
-    variables: currentResolutionProduct.value?.variables || wrfMeta.value?.variables || [],
-    times: wrfMeta.value?.times || [],
+    variables: workbenchDomain.value?.variables || currentResolutionProduct.value?.variables || wrfMeta.value?.variables || [],
+    times: workbenchDomain.value?.times || wrfMeta.value?.times || [],
     image_url: imageUrl.value,
     image_urls: selectedFrameUrls.value,
     frames: selectedFrameUrls.value.map((url, index) => ({
@@ -478,6 +519,11 @@ function zoomToDomain() {
 watch(
   wrfMeta,
   (meta) => {
+    if (Array.isArray(meta?.domains) && meta.domains.length) {
+      const values = meta.domains.map((item) => item.id);
+      const preferredDomain = meta.default_domain || values[0];
+      if (!values.includes(domain.value)) domain.value = preferredDomain;
+    }
     const firstVar = preferredVariable(meta);
     if (firstVar) {
       if (props.variantIndex > 0) {
@@ -508,7 +554,9 @@ watch(() => [wrfMeta.value, extent.value], zoomToDomain, { immediate: true });
 watch(() => [wrfMeta.value, variable.value, domain.value, time.value, selectedResolution.value], emitPanelInfo, { immediate: true });
 
 onMounted(() => {
-  loadWrfDisplay();
+  loadWrfDisplay().catch((error) => {
+    console.warn("WRF display load failed", error);
+  });
 });
 
 onBeforeUnmount(() => {

@@ -487,6 +487,31 @@ export async function* chatStream(messages, context) {
   if (tail) yield JSON.parse(tail);
 }
 
+// WRF Agent workflow: the Agent service validates/forwards the current user's
+// token, while backend_wrf remains the authority that validates and owns tasks.
+async function agentJson(path, options = {}) {
+  const response = await authedFetch(`${AGENT_BASE}${path}`, options);
+  const payload = await response.json();
+  if (!response.ok || payload?.code !== 0) throw new Error(apiError(payload, `智能体请求失败（HTTP ${response.status}）`));
+  return payload.data;
+}
+
+export function createAgentWrfConfirmation(request) {
+  return agentJson("/api/agent/wrf/confirmations", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ request }),
+  });
+}
+
+export function submitAgentWrfTask(request) {
+  return agentJson("/api/agent/wrf/tasks", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ request }),
+  });
+}
+
+export function getAgentWrfDiagnosis(taskId) {
+  return agentJson(`/api/agent/wrf/tasks/${encodeURIComponent(taskId)}/diagnosis`);
+}
+
 function abortError() {
   return new DOMException("上传已取消", "AbortError");
 }
