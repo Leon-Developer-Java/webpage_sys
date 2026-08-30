@@ -52,6 +52,7 @@ const selectedResolution = ref("original");
 const opacity = 0.68;
 let timer = null;
 let zoomedKey = "";
+let displayRequestId = 0;
 
 const imageExtent = computed(() => props.extent || display.value?.extent || display.value?.meta_json?.extent || display.value?.meta_json?.bbox || [73, 18, 136, 54]);
 const variables = computed(() => display.value?.variables || display.value?.meta_json?.variables || []);
@@ -311,10 +312,12 @@ function flyToData() {
 }
 
 async function loadHimawariDisplay() {
+  const requestId = ++displayRequestId;
   try {
     const query = props.sceneId ? `?scene_id=${encodeURIComponent(props.sceneId)}` : "";
     const response = await authedFetch(`${API_BASE}/api/display/HIMAWARI${query}`);
     const payload = await response.json();
+    if (requestId !== displayRequestId) return;
     if (!response.ok || payload.code !== 0) {
       throw new Error(payload.detail || payload.message || "Himawari 数据读取失败");
     }
@@ -324,6 +327,7 @@ async function loadHimawariDisplay() {
     emitSelectedVariableInfo();
     error.value = "";
   } catch (err) {
+    if (requestId !== displayRequestId) return;
     error.value = err?.message || "Himawari 数据未加载";
     emit("display-error", error.value);
     console.error(err);
@@ -336,7 +340,14 @@ onMounted(() => {
   timer = window.setInterval(loadHimawariDisplay, 30000);
 });
 
-watch(() => [props.refreshKey, props.sceneId], () => {
+watch(() => props.refreshKey, () => {
+  loadHimawariDisplay();
+});
+
+watch(() => props.sceneId, () => {
+  display.value = null;
+  selectedProductKey.value = "";
+  zoomedKey = "";
   loadHimawariDisplay();
 });
 
@@ -350,6 +361,7 @@ watch(() => selectedProductKey.value, emitSelectedVariableInfo);
 watch(selectedResolution, (val) => emit("resolution-change", val));
 
 onBeforeUnmount(() => {
+  displayRequestId += 1;
   if (timer) window.clearInterval(timer);
 });
 </script>

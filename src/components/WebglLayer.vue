@@ -217,6 +217,8 @@ watch(() => [props.src, props.values, props.width, props.height, props.product, 
 watch(() => props.alpha, pushSurface);
 
 onBeforeUnmount(() => {
+  // Invalidate an image preload that may finish after this layer is gone.
+  textureVersion += 1;
   surface?.clear();
   if (gl) {
     if (texture) gl.deleteTexture(texture);

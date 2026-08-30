@@ -1,5 +1,6 @@
 import { ElMessage } from "element-plus";
 import router from "./router";
+import { requestCacheMode } from "./utils/requestCachePolicy";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8002";
 const UPLOAD_BASE = import.meta.env.VITE_UPLOAD_BASE ?? "http://127.0.0.1:8003";
@@ -98,8 +99,10 @@ async function ensureFreshToken() {
 
 export async function authedFetch(url, options = {}) {
   await ensureFreshToken();
+  const cache = requestCacheMode(url, options);
   const res = await fetch(url, {
     ...options,
+    ...(cache ? { cache } : {}),
     headers: { ...(options.headers || {}), Authorization: `Bearer ${getToken()}` },
   });
   if (res.status === 401) logout();
@@ -308,6 +311,7 @@ export function getWrfDisplay(taskId = "") {
 async function era5HistoryRequest(path, options = {}) {
   const response = await fetch(`${ERA5_HISTORY_BASE}${path}`, {
     ...options,
+    cache: options.cache || "no-store",
     headers: { Accept: "application/json", ...(options.headers || {}) },
   });
   const payload = await response.json().catch(() => ({}));
@@ -548,12 +552,13 @@ export async function uploadFileResumable(
   file,
   dataType,
   onProgress = () => {},
-  { signal, collectionUuid = null, collectionRole = null } = {},
+  { signal, collectionUuid = null, collectionRole = null, radarIntervalMinutes = null } = {},
 ) {
   const baseFileId = `${file.name}-${file.size}-${file.lastModified}`;
+  const scopedFileId = radarIntervalMinutes ? `${baseFileId}-radar-${radarIntervalMinutes}m` : baseFileId;
   const fileId = collectionUuid
-    ? `${baseFileId}-${collectionUuid}-${collectionRole || "member"}`
-    : baseFileId;
+    ? `${scopedFileId}-${collectionUuid}-${collectionRole || "member"}`
+    : scopedFileId;
   const total = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
   if (signal?.aborted) throw abortError();
   const statusResponse = await authedFetch(
@@ -593,6 +598,7 @@ export async function uploadFileResumable(
       data_type: dataType,
       collection_uuid: collectionUuid,
       collection_role: collectionRole,
+      radar_interval_minutes: radarIntervalMinutes,
     }),
     signal,
   });
@@ -681,10 +687,13 @@ export async function getUploadTask(fileUuid) {
   return payload.data;
 }
 
-export async function retryUploadTask(fileUuid) {
-  const response = await authedFetch(`${UPLOAD_BASE}/api/upload/tasks/${encodeURIComponent(fileUuid)}/retry`, {
-    method: "POST",
-  });
+export async function retryUploadTask(fileUuid, radarIntervalMinutes = null) {
+  const options = { method: "POST" };
+  if (radarIntervalMinutes != null) {
+    options.headers = { "Content-Type": "application/json" };
+    options.body = JSON.stringify({ radar_interval_minutes: radarIntervalMinutes });
+  }
+  const response = await authedFetch(`${UPLOAD_BASE}/api/upload/tasks/${encodeURIComponent(fileUuid)}/retry`, options);
   const payload = await response.json();
   if (!response.ok || payload.code !== 0) {
     throw new Error(apiError(payload, "任务重试失败"));

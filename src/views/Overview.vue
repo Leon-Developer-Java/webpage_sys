@@ -91,7 +91,7 @@
             >
               <div class="resource-title">
                 <b :title="item.file_name">{{ item.file_name }}</b>
-                <span :class="['continuity', { gap: !item.continuous }]">{{ resourceStatus(item) }}</span>
+                <span class="continuity">{{ resourceStatus(item) }}</span>
               </div>
               <span>{{ resourceTimeRange(item) }}</span>
               <span>{{ formatFileSize(item.file_size) }} · {{ item.elements.length }} 个要素</span>
@@ -150,7 +150,7 @@
               :parsed="layerParsed(p.key, i)"
               :time-index="layerTimeIndex"
               :variant-index="p.variantIndex"
-              v-bind="layerProps(p.key)"
+              v-bind="layerProps(p.key, i)"
               @display-loaded="payload => onLayerDisplayLoaded(i, p.key, payload)"
               @display-error="message => onLayerDisplayError(i, p.key, message)"
               @variable-change="payload => onLayerVariableChange(i, p.key, payload)"
@@ -233,48 +233,6 @@ const sources = [
   {key: "era5", btn: "ERA5", comp: Era5Layer}
 ];
 
-const attributeLabels = {
-  levels: "层次",
-  level_types: "层次类型",
-  resolutions: "分辨率",
-  datasets: "数据集",
-  product_types: "产品类型",
-  product_names: "产品名称",
-  data_streams: "数据流",
-  step_types: "步长类型",
-  grid_types: "网格类型",
-  run_times: "起报时间",
-  cycle_hours: "起报时次",
-  forecast_hours: "预报时效",
-  product_categories: "产品类别",
-  streams: "数据流",
-  product_classes: "产品级别",
-  radar_names: "雷达名称",
-  station_codes: "站号",
-  radar_types: "雷达类型",
-  product_codes: "产品代码",
-  elevations: "仰角",
-  domains: "计算区域",
-  forecast_reference_times: "预报基准时间",
-  source_resolutions: "源分辨率",
-  satellites: "卫星",
-  instruments: "仪器",
-  bands: "波段",
-  file_roles: "文件角色",
-  regions: "区域",
-};
-
-const typeAttributeOrder = {
-  era5: ["levels", "level_types", "resolutions", "product_types", "data_streams", "step_types", "grid_types", "datasets"],
-  gfs: ["levels", "level_types", "resolutions", "run_times", "cycle_hours", "forecast_hours", "step_types", "product_categories", "datasets"],
-  ecmwf: ["levels", "level_types", "resolutions", "run_times", "cycle_hours", "forecast_hours", "step_types", "streams", "product_classes", "datasets"],
-  cma: ["levels", "level_types", "resolutions", "product_types", "product_names", "datasets"],
-  radar: ["levels", "resolutions", "radar_names", "station_codes", "radar_types", "product_codes", "elevations", "datasets"],
-  wrf: ["levels", "resolutions", "domains", "forecast_reference_times", "forecast_hours", "source_resolutions", "datasets"],
-  fy3: ["resolutions", "satellites", "instruments", "bands", "source_resolutions", "file_roles", "datasets"],
-  himawari: ["resolutions", "satellites", "regions", "bands", "datasets"],
-};
-
 const projections = ["等经纬", "墨卡托", "正弦", "罗宾逊", "兰博托", "卫星正视", "北极", "南极"];
 const basemaps = ["矢量底图", "影像底图", "地形晕渲", "全球境界"];
 function isGribLayerKey(key) {
@@ -282,7 +240,7 @@ function isGribLayerKey(key) {
 }
 
 const tool = ref("select");
-const dockOpen = ref(false);
+const dockOpen = ref(true);
 const showGrid = ref(true);
 const layout = ref("1");
 const propsOpen = ref(true);
@@ -300,7 +258,6 @@ const resourcesLoading = ref(false);
 const resourcesError = ref("");
 const resourceStartTime = ref("");
 const resourceEndTime = ref("");
-const attributeFilters = ref({});
 const layerDisplays = ref({});
 const layerRefreshKeys = ref({himawari: 0, fy3: 0});
 const himawariStatus = ref(null);
@@ -348,11 +305,10 @@ const catalogSourceKey = computed(() =>
 );
 
 const activeSourceLabel = computed(() => sources.find(item => item.key === catalogSourceKey.value)?.btn || catalogSourceKey.value.toUpperCase());
-const singleFrameCatalogSources = new Set(["radar", "himawari", "fy3"]);
 const resourceListLabel = computed(() =>
   resourceStartTime.value && resourceEndTime.value
     ? `${activeSourceLabel.value} 搜索结果`
-    : `${activeSourceLabel.value} ${singleFrameCatalogSources.has(catalogSourceKey.value) ? "最近数据" : "最近连续数据"}`,
+    : `${activeSourceLabel.value} 最近数据`,
 );
 const catalogSelectedResourceUuid = computed(() => {
   if (layout.value !== "1" && selectedPane.value >= 0) {
@@ -360,37 +316,6 @@ const catalogSelectedResourceUuid = computed(() => {
   }
   return selectedResourceUuid.value;
 });
-
-const attributeOptions = computed(() => {
-  const values = {};
-  dataResources.value.forEach(item => {
-    Object.entries(item.attributes || {}).forEach(([key, options]) => {
-      if (!Array.isArray(options)) return;
-      if (!values[key]) values[key] = new Set();
-      options.forEach(option => {
-        if (option !== null && option !== undefined && String(option).trim()) values[key].add(String(option));
-      });
-    });
-  });
-  return Object.fromEntries(
-    Object.entries(values).map(([key, options]) => [key, [...options].sort((a, b) => a.localeCompare(b, "zh-CN", { numeric: true }))]),
-  );
-});
-
-const availableAttributeFilters = computed(() => {
-  const preferred = typeAttributeOrder[catalogSourceKey.value] || [];
-  const keys = [...preferred, ...Object.keys(attributeOptions.value).filter(key => !preferred.includes(key))];
-  return keys
-    .filter(key => key !== "elements" && attributeOptions.value[key]?.length)
-    .map(key => ({ key, label: attributeLabels[key] || key, options: attributeOptions.value[key] }));
-});
-
-const layerCardFilters = computed(() => ({
-  filters: availableAttributeFilters.value,
-  values: attributeFilters.value,
-}));
-
-provide("layerCardFilters", layerCardFilters);
 
 function timestamp(value) {
   if (!value) return Number.NaN;
@@ -414,20 +339,8 @@ function overlapsSelectedTime(item) {
 }
 
 const filteredDataResources = computed(() => {
-  const selectedAttributes = Object.entries(attributeFilters.value).filter(([key, value]) => key !== "elements" && value !== "" && value !== null && value !== undefined);
-  const matches = dataResources.value.filter(item => {
-    if (!overlapsSelectedTime(item)) return false;
-    return selectedAttributes.every(([key, value]) =>
-      (item.attributes?.[key] || []).some(option => String(option) === String(value)),
-    );
-  });
+  const matches = dataResources.value.filter(overlapsSelectedTime);
   matches.sort((left, right) => timestamp(right.time_end || right.time_start) - timestamp(left.time_end || left.time_start));
-  if (!resourceStartTime.value || !resourceEndTime.value) {
-    return matches.filter(item =>
-      item.continuous
-      || (singleFrameCatalogSources.has(catalogSourceKey.value) && Number(item.frame_count) >= 1),
-    );
-  }
   return matches;
 });
 
@@ -1158,20 +1071,12 @@ const parsedFrameCount = computed(() => {
   return 0;
 });
 
-const selectedSeriesPlayable = computed(() => !(
-  selectedResource.value &&
-  parsedLayerKey.value === active.value &&
-  selectedResource.value.playable === false
-));
-
 const timelineInteractive = computed(() => (
-  selectedSeriesPlayable.value &&
   parsedFrameCount.value > 1 &&
   axisTimes.value.length > 1
 ));
 
 const timelineDisabledLabel = computed(() => {
-  if (!selectedSeriesPlayable.value) return "时间序列不连续";
   if (parsedFrameCount.value === 1 || axisTimes.value.length === 1) {
     return axisTimes.value[0] ? `${axisTimes.value[0]} · 单帧` : "仅有单帧数据";
   }
@@ -1180,7 +1085,6 @@ const timelineDisabledLabel = computed(() => {
 
 const timelineStatusText = computed(() => {
   if (timelineInteractive.value) return activeTimeLabel.value;
-  if (!selectedSeriesPlayable.value) return "不可播放";
   if (axisTimes.value.length === 1) return axisTimes.value[0];
   return "无数据";
 });
@@ -1228,21 +1132,6 @@ async function togglePlaying() {
 
   if (playingPreparing.value) return;
   if (!timelineInteractive.value) return;
-
-  if (selectedResource.value && parsedLayerKey.value === active.value && !selectedResource.value.playable) {
-    const firstGap = selectedResource.value.gaps?.[0];
-    const gapDetail = firstGap
-      ? `缺少 ${formatAxisTime(firstGap.after)} 与 ${formatAxisTime(firstGap.before)} 之间的时次。`
-      : selectedResource.value.reason;
-    ElNotification({
-      title: "无法播放",
-      message: gapDetail || "时间序列不连续，请补齐数据后再播放。",
-      type: "warning",
-      position: "top-right",
-      duration: 3200,
-    });
-    return;
-  }
 
   playingPreparing.value = true;
   try {
@@ -1359,6 +1248,7 @@ async function refreshHimawariStatus() {
 onMounted(() => {
   refreshHimawariStatus();
   himawariStatusTimer = window.setInterval(refreshHimawariStatus, 5000);
+  refreshDataResources({ autoSelect: true });
 });
 
 function businessTypeToLayerKey(type) {
@@ -1602,19 +1492,14 @@ const meta = computed(() => {
       }
     : null;
 
-  // CMA 面板跟随卡片中选中的要素。
-  if (active.value === "cma" && displayMeta) {
+  // 当前图层发出的展示信息包含用户正在查看的要素与统计值，应优先于入库时的原始 meta。
+  if (displayMeta) {
     return displayMeta;
   }
 
   // 本地上传解析结果。
   if (parsed.value && parsedLayerKey.value === active.value) {
     return normalizeParsedMeta(parsed.value);
-  }
-
-  // 在线 GFS / ECMWF 以及其他图层。
-  if (displayMeta) {
-    return displayMeta;
   }
 
   return null;
@@ -1673,17 +1558,34 @@ const selectedHimawariSceneId = computed(() => {
   return items[index]?.scene_id || "";
 });
 
-function layerProps(key) {
+function resourceSceneId(key, paneIndex = 0) {
+  const paneResource = layout.value !== "1" ? paneParsed.value[paneIndex] : null;
+  const source = paneResource?.key === key ? paneResource.parsed : layerParsed(key, paneIndex);
+  if (!source) return "";
+  const meta = source.meta || source.meta_json || source;
+  const attributes = source.attributes || meta.attributes || {};
+  const frames = Array.isArray(meta.frames) ? meta.frames : [];
+  const candidates = [
+    source.scene_id,
+    meta.scene_id,
+    meta.extra?.scene_id,
+    frames[0]?.scene_id,
+    attributes.scene_ids?.[0],
+  ];
+  return String(candidates.find(Boolean) || "");
+}
+
+function layerProps(key, paneIndex = 0) {
   if (key === "gfs") return {dataType: "GFS"};
   if (key === "ecmwf") return {dataType: "ECMWF"};
   if (key === "himawari") return {
-    sceneId: selectedHimawariSceneId.value,
+    sceneId: resourceSceneId(key, paneIndex) || selectedHimawariSceneId.value,
     resolution: layerResolutions.value.himawari || "original",
     refreshKey: layerRefreshKeys.value.himawari || 0,
     onResolutionChange: value => onLayerResolutionChange(key, value),
   };
   if (key === "fy3") return {
-    sceneId: focusedFY3SceneId.value,
+    sceneId: resourceSceneId(key, paneIndex) || focusedFY3SceneId.value,
     resolution: layerResolutions.value.fy3 || "original",
     refreshKey: layerRefreshKeys.value.fy3 || 0,
     onResolutionChange: value => onLayerResolutionChange(key, value),
@@ -1909,8 +1811,7 @@ function resourceTimeRange(item) {
 }
 
 function resourceStatus(item) {
-  if (item.frame_count < 2) return `${item.frame_count || 0} 帧`;
-  return item.continuous ? `${item.frame_count} 帧连续` : `${item.frame_count} 帧有断点`;
+  return `${item.frame_count || 0} 帧`;
 }
 
 function resourceRenderKey(key, paneIndex = 0) {
@@ -1930,7 +1831,6 @@ function clearSelectedResource() {
 function resetCatalogFilters() {
   resourceStartTime.value = "";
   resourceEndTime.value = "";
-  attributeFilters.value = {};
 }
 
 function selectCatalogSource(key) {
@@ -1966,18 +1866,6 @@ function resourceRequest(item) {
     .map(member => member.file_uuid)
     .filter(Boolean);
   return { ...item, file_uuids: fileUuids };
-}
-
-function resourceWithSelectionDefaults(resource) {
-  const defaultResolution = attributeFilters.value.resolutions;
-  if (!defaultResolution) return resource;
-  return {
-    ...resource,
-    meta: {
-      ...(resource.meta || {}),
-      default_resolution: defaultResolution,
-    },
-  };
 }
 
 async function refreshDataResources(options = {}) {
@@ -2022,6 +1910,7 @@ function parsedResourcePayload(resource, sourceKey = catalogSourceKey.value) {
     meta_file: resource.meta_path,
     meta,
     meta_json: meta,
+    attributes: resource.attributes || {},
   };
   return isGribLayerKey(sourceKey) ? { ...common, meta } : { ...meta, ...common };
 }
@@ -2035,7 +1924,7 @@ async function selectDataResource(item) {
   resourcesError.value = "";
   const requestId = ++resourceRequestId;
   try {
-    const resource = resourceWithSelectionDefaults(await getDisplayResource(resourceRequest(item)));
+    const resource = await getDisplayResource(resourceRequest(item));
     if (requestId !== resourceRequestId) return;
     resetTimebar();
     const nextProcessing = [
@@ -2383,7 +2272,6 @@ watch(active, () => {
 .resource-title b { min-width: 0; overflow: hidden; color: var(--text); font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .resource-list li > span { color: var(--muted); font-size: 11px; }
 .continuity { flex-shrink: 0; color: #15803d; font-size: 10px; }
-.continuity.gap { color: #b45309; }
 @keyframes resource-spin { to { transform: rotate(360deg); } }
 .pick-hint {
   margin: 0;

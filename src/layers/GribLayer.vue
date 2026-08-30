@@ -119,6 +119,7 @@ let refreshTimer = null;
 let zoomTimer = null;
 let zoomedKey = "";
 let variantApplied = false;
+let displayRequestId = 0;
 
 const sourceName = computed(() => {
   const candidates = [
@@ -707,6 +708,7 @@ function applyDisplayData(payload) {
 }
 
 async function loadDisplay() {
+  const requestId = ++displayRequestId;
   if (props.parsed) {
     applyDisplayData(props.parsed);
     return;
@@ -725,6 +727,8 @@ async function loadDisplay() {
 
     const payload = await response.json();
 
+    if (requestId !== displayRequestId) return;
+
     if (
       !response.ok ||
       (payload.code !== undefined && payload.code !== 0)
@@ -739,11 +743,12 @@ async function loadDisplay() {
     applyDisplayData(payload);
     error.value = "";
   } catch (exception) {
+    if (requestId !== displayRequestId) return;
     error.value = `${sourceName.value} 数据未加载`;
     console.error(exception);
     surface?.setData?.(null);
   } finally {
-    loading.value = false;
+    if (requestId === displayRequestId) loading.value = false;
   }
 }
 
@@ -911,7 +916,10 @@ function formatStat(value) {
 watch(
   () => props.parsed,
   value => {
-    if (value) applyDisplayData(value);
+    if (value) {
+      displayRequestId += 1;
+      applyDisplayData(value);
+    }
   },
   { immediate: true, deep: true }
 );
@@ -962,6 +970,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  displayRequestId += 1;
   if (refreshTimer) {
     window.clearInterval(refreshTimer);
   }

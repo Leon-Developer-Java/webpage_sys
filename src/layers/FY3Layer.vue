@@ -54,6 +54,7 @@ const opacity = 0.72;
 let timer = null;
 let zoomedKey = "";
 let variantApplied = false;
+let displayRequestId = 0;
 
 const frames = computed(() => Array.isArray(display.value?.frames) ? display.value.frames : []);
 const currentFrame = computed(() => {
@@ -408,11 +409,13 @@ function flyToData() {
 }
 
 async function loadDisplay() {
+  const requestId = ++displayRequestId;
   try {
     const params = new URLSearchParams({limit: "144"});
     if (props.sceneId) params.set("scene_id", props.sceneId);
     const response = await authedFetch(`${API_BASE}/api/display/FY3?${params}`);
     const payload = await response.json();
+    if (requestId !== displayRequestId) return;
     if (!response.ok || payload.code !== 0) {
       throw new Error(payload.detail || payload.message || "FY-3 数据读取失败");
     }
@@ -422,6 +425,7 @@ async function loadDisplay() {
     emitSelectedVariableInfo();
     error.value = "";
   } catch (err) {
+    if (requestId !== displayRequestId) return;
     error.value = err?.message || "FY-3 数据未加载";
     emit("display-error", error.value);
     console.error(err);
@@ -434,7 +438,13 @@ onMounted(() => {
   timer = window.setInterval(loadDisplay, 30000);
 });
 
-watch(() => [props.refreshKey, props.sceneId], loadDisplay);
+watch(() => props.refreshKey, loadDisplay);
+watch(() => props.sceneId, () => {
+  display.value = null;
+  selectedProductKey.value = "";
+  zoomedKey = "";
+  loadDisplay();
+});
 watch(() => props.resolution, (value) => {
   if (value && value !== selectedResolution.value) selectedResolution.value = value;
 });
@@ -443,6 +453,7 @@ watch(() => [selectedProductKey.value, selectedResolution.value, props.timeIndex
 watch(selectedResolution, (val) => emit("resolution-change", val));
 
 onBeforeUnmount(() => {
+  displayRequestId += 1;
   if (timer) window.clearInterval(timer);
 });
 </script>

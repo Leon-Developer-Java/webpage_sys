@@ -69,8 +69,11 @@ const imageCache = new Map();
 let wantedFrameIndices = new Set();
 let appliedLayerKey = "";
 let framePreloadPromise = Promise.resolve();
+let cacheGeneration = 0;
 
 const products = computed(() => display.value?.products ?? []);
+const catalogMeta = computed(() => props.parsed?.meta || props.parsed?.meta_json || props.parsed || {});
+const catalogFrames = computed(() => Array.isArray(catalogMeta.value?.frames) ? catalogMeta.value.frames : []);
 const frames = computed(() => Array.isArray(display.value?.frames) ? display.value.frames : []);
 const frameCount = computed(() => {
   const count = Number(display.value?.frame_count);
@@ -150,46 +153,37 @@ function clampedTimeIndex(index = props.timeIndex) {
   return Math.min(Math.max(next, 0), count - 1);
 }
 
-let variantApplied = false;
+let selectionContext = "";
+
+function defaultLevel(levels) {
+  return levels.find((level) =>
+    String(level?.key || "").toLowerCase() === "max"
+    || String(level?.mode || "").toLowerCase() === "vertical_max"
+    || /^(max|最大值|垂直最大值)$/i.test(String(level?.label || "").trim()),
+  ) || levels[0] || null;
+}
+
 function syncSelection() {
   if (!products.value.length) {
     selectedProductKey.value = "";
     selectedLevelKey.value = "";
     return;
   }
-  if (!products.value.some((item) => item.key === selectedProductKey.value)) {
-    if (!variantApplied && props.variantIndex > 0 && products.value.length > 1) {
-      selectedProductKey.value = products.value[props.variantIndex % products.value.length].key;
-      variantApplied = true;
-    } else {
-      selectedProductKey.value = products.value[0].key;
-    }
+  const nextContext = `${props.variantIndex}|${products.value.map((item) => item.key).join(",")}`;
+  if (selectionContext !== nextContext) {
+    selectedProductKey.value = products.value[props.variantIndex % products.value.length].key;
+    selectionContext = nextContext;
+  } else if (!products.value.some((item) => item.key === selectedProductKey.value)) {
+    selectedProductKey.value = products.value[0].key;
   }
   const levels = currentLevels.value;
   if (levels.length && !levels.some((item) => item.key === selectedLevelKey.value)) {
-    selectedLevelKey.value = levels[0].key;
+    selectedLevelKey.value = defaultLevel(levels)?.key || "";
   }
 }
 
 function sampleHeightLevels(levels) {
-  if (!Array.isArray(levels) || levels.length === 0) return [];
-  const keep = new Set();
-  const add = (level) => {
-    if (level?.key) keep.add(level.key);
-  };
-  const heightLevels = levels.filter((level) => level?.mode === "single_level" || /^level-\d+$/.test(String(level?.key || "")));
-  levels.forEach((level) => {
-    if (level?.key === "max" || level?.mode === "vertical_max") add(level);
-  });
-  if (heightLevels.length) {
-    heightLevels.forEach((level, index) => {
-      if (index % 5 === 0) add(level);
-    });
-    add(heightLevels[heightLevels.length - 1]);
-  } else if (!keep.size) {
-    levels.forEach(add);
-  }
-  return levels.filter((level) => keep.has(level.key));
+  return Array.isArray(levels) ? levels.filter(level => level?.key) : [];
 }
 
 function apiUrl(path) {
@@ -427,6 +421,7 @@ function preloadCachedImages() {
 }
 
 async function fetchRadarFrame(index, options = {}) {
+  const generation = cacheGeneration;
   const targetIndex = clampedTimeIndex(index);
   if (!options.force && frameCache.has(targetIndex)) {
     const cached = frameCache.get(targetIndex);
@@ -437,17 +432,34 @@ async function fetchRadarFrame(index, options = {}) {
     return pendingFrames.get(targetIndex);
   }
 
+  const frameSnapshot = catalogFrames.value;
+  const metaSnapshot = catalogMeta.value;
   const request = (async () => {
     const params = new URLSearchParams();
     params.set("time_index", String(targetIndex));
-    const metaFile = props.parsed?.meta_file || props.parsed?.meta?.meta_file;
+    const catalogFrame = frameSnapshot[targetIndex] || frameSnapshot[0] || null;
+    const metaFile = catalogFrame?.meta_file || props.parsed?.meta_file || props.parsed?.meta?.meta_file;
     if (metaFile) params.set("meta_file", metaFile);
     const response = await authedFetch(`${API_BASE}/api/display/RADAR?${params.toString()}`);
     const payload = await response.json();
     if (!response.ok || payload.code !== 0) {
       throw new Error(payload.detail || payload.message || "Radar display data load failed");
     }
-    const data = payload.data;
+    const data = frameSnapshot.length > 1
+      ? {
+          ...payload.data,
+          frame_count: frameSnapshot.length,
+          frames: frameSnapshot,
+          times: metaSnapshot?.times || frameSnapshot.map(frame => frame.time).filter(Boolean),
+          time_index: targetIndex,
+          frame: {
+            ...(payload.data?.frame || {}),
+            ...catalogFrame,
+            index: targetIndex,
+          },
+        }
+      : payload.data;
+    if (generation !== cacheGeneration) return data;
     const actualIndex = frameIndexFromPayload(data, targetIndex);
     const keepResult = !options.prefetch || !wantedFrameIndices.size || wantedFrameIndices.has(targetIndex) || wantedFrameIndices.has(actualIndex);
     if (!keepResult) return data;
@@ -461,7 +473,7 @@ async function fetchRadarFrame(index, options = {}) {
   try {
     return await request;
   } finally {
-    pendingFrames.delete(targetIndex);
+    if (pendingFrames.get(targetIndex) === request) pendingFrames.delete(targetIndex);
   }
 }
 
@@ -509,6 +521,7 @@ async function preloadFrameWindow() {
 }
 
 function clearFrameCaches() {
+  cacheGeneration += 1;
   wantedFrameIndices = new Set();
   pendingFrames.clear();
   frameCache.clear();
@@ -550,6 +563,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   if (timer) window.clearInterval(timer);
+  requestId += 1;
   clearFrameCaches();
   clearImageryLayer();
 });
@@ -566,8 +580,13 @@ watch(selectedLevelKey, () => {
 });
 watch(() => props.parsed, () => {
   zoomedKey = "";
+  selectionContext = "";
   clearFrameCaches();
   loadRadarDisplay({ initial: true, force: true });
+});
+watch(() => props.variantIndex, () => {
+  selectionContext = "";
+  syncSelection();
 });
 watch(() => props.timeIndex, () => loadRadarDisplay());
 watch(

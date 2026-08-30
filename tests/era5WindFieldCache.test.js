@@ -162,7 +162,7 @@ test("downloads U and V concurrently and decodes little-endian Float32 values", 
   assert.equal(lease.field.validCount, 2);
   assert.equal(lease.field.invalidCount, 2);
   assert.equal(lease.field.byteLength, 32);
-  assert.equal(calls[0].options.cache, "no-store");
+  assert.equal(calls[0].options.cache, "force-cache");
   assert.equal(calls[0].options.headers.Accept, "application/octet-stream");
   lease.release();
 });

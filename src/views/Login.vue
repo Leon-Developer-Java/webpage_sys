@@ -6,33 +6,45 @@
         <b>智慧气象</b>
       </div>
       <div class="login-tabs">
-        <button :class="{ on: tab === 'login' }" @click="tab = 'login'">登录</button>
-        <button :class="{ on: tab === 'register' }" @click="tab = 'register'">注册</button>
+        <button type="button" :class="{ on: tab === 'login' }" @click="selectTab('login')">登录</button>
+        <button type="button" :class="{ on: tab === 'register' }" @click="selectTab('register')">注册</button>
       </div>
 
       <el-form label-position="top" @submit.prevent="submit">
         <el-form-item label="用户名">
-          <el-input v-model="form.username" placeholder="3-32 个字符" />
+          <el-input
+            v-model="activeForm.username"
+            :name="tab === 'login' ? 'login_username' : 'register_username'"
+            :autocomplete="tab === 'login' ? 'username' : 'off'"
+            placeholder="3-32 个字符"
+          />
         </el-form-item>
         <el-form-item label="密码">
-          <el-input v-model="form.password" type="password" show-password placeholder="至少 8 位" />
+          <el-input
+            v-model="activeForm.password"
+            :name="tab === 'login' ? 'login_password' : 'register_password'"
+            type="password"
+            show-password
+            :autocomplete="tab === 'login' ? 'current-password' : 'new-password'"
+            placeholder="至少 8 位"
+          />
         </el-form-item>
         <template v-if="tab === 'register'">
           <el-form-item label="确认密码">
-            <el-input v-model="form.confirm" type="password" show-password />
+            <el-input v-model="activeForm.confirm" name="register_password_confirm" type="password" show-password autocomplete="new-password" />
           </el-form-item>
           <div class="login-grid">
             <el-form-item label="姓名（选填）">
-              <el-input v-model="form.real_name" maxlength="64" />
+              <el-input v-model="activeForm.real_name" maxlength="64" />
             </el-form-item>
             <el-form-item label="单位/部门（选填）">
-              <el-input v-model="form.organization" maxlength="128" />
+              <el-input v-model="activeForm.organization" maxlength="128" />
             </el-form-item>
             <el-form-item label="邮箱（选填）">
-              <el-input v-model="form.email" maxlength="128" />
+              <el-input v-model="activeForm.email" maxlength="128" />
             </el-form-item>
             <el-form-item label="手机号（选填）">
-              <el-input v-model="form.phone" maxlength="32" />
+              <el-input v-model="activeForm.phone" maxlength="32" />
             </el-form-item>
           </div>
         </template>
@@ -41,13 +53,13 @@
           {{ tab === 'login' ? '登 录' : '注册并登录' }}
         </el-button>
       </el-form>
-      <p v-if="tab === 'register'" class="login-hint">注册账号默认为普通用户（仅可浏览数据），上传/智能体权限请联系管理员开通。</p>
+      <p v-if="tab === 'register'" class="login-hint">注册账号可以浏览系统数据并上传气象文件。</p>
     </div>
   </div>
 </template>
 
 <script setup>
-import { reactive, ref } from "vue";
+import { computed, reactive, ref } from "vue";
 import { useRouter } from "vue-router";
 import { Cloudy } from "@element-plus/icons-vue";
 import { login, register } from "../api";
@@ -56,12 +68,20 @@ const router = useRouter();
 const tab = ref("login");
 const busy = ref(false);
 const error = ref("");
-const form = reactive({
+const loginForm = reactive({ username: "", password: "" });
+const registerForm = reactive({
   username: "", password: "", confirm: "",
   real_name: "", organization: "", email: "", phone: "",
 });
+const activeForm = computed(() => tab.value === "login" ? loginForm : registerForm);
+
+function selectTab(nextTab) {
+  tab.value = nextTab;
+  error.value = "";
+}
 
 async function submit() {
+  const form = activeForm.value;
   error.value = "";
   if (form.username.length < 3) return (error.value = "用户名至少 3 个字符");
   if (form.password.length < 8) return (error.value = "密码至少 8 位");

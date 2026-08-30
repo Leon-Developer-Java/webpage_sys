@@ -45,6 +45,16 @@
                 >
                   <el-option v-for="t in TYPES" :key="t" :label="t" :value="t" />
                 </el-select>
+                <el-select
+                  v-if="batchRadarTargets.length"
+                  v-model="batchRadarInterval"
+                  class="batch-type-select"
+                  size="small"
+                  placeholder="统一时间分辨率"
+                  title="统一设置雷达时间分辨率"
+                >
+                  <el-option v-for="item in RADAR_INTERVALS" :key="item.value" :label="item.label" :value="item.value" />
+                </el-select>
               </div>
               <button class="act del" :disabled="!checked.length" @click="deleteChecked">
                 <el-icon><Delete /></el-icon>删除
@@ -90,7 +100,7 @@
                 v-for="f in files"
                 :key="f.id"
                 :class="{ hl: selected === f.id, done: f.status === 'done' }"
-                @click="f.status === 'done' && (selected = f.id)"
+                @click="f.status === 'done' && selectRow(f.id)"
               >
                 <td><input type="checkbox" v-model="f.checked" @click.stop /></td>
                 <td>
@@ -107,6 +117,17 @@
                     <select class="type-sel" v-model="f.dataType" @click.stop @change="markTypeManual(f)" :disabled="f.status !== 'pending'">
                       <option value="">选择类型</option>
                       <option v-for="t in TYPES" :key="t" :value="t">{{ t }}</option>
+                    </select>
+                    <select
+                      v-if="isRadarType(f.dataType)"
+                      v-model.number="f.radarIntervalMinutes"
+                      class="type-sel"
+                      title="雷达时间分辨率（必选）"
+                      @click.stop
+                      :disabled="f.status !== 'pending'"
+                    >
+                      <option :value="null">选择时间分辨率 *</option>
+                      <option v-for="item in RADAR_INTERVALS" :key="item.value" :value="item.value">{{ item.label }}</option>
                     </select>
                     <small v-if="f.typeDetected" :title="f.detectionReason">自动识别</small>
                     <small v-else-if="!f.dataType" class="unresolved">未识别</small>
@@ -147,8 +168,8 @@
                 v-for="f in parseQueue"
                 :key="f.id"
                 class="record-row"
-                :class="{ hl: selected === f.id, done: f.status === 'done' }"
-                @click="selected = f.id"
+                :class="{ hl: selected === f.id || locatedDuplicateIds.has(f.id), done: f.status === 'done' }"
+                @click="selectRow(f.id)"
               >
                 <td><input type="checkbox" v-model="f.checked" :disabled="!canQueueAction(f)" @click.stop /></td>
                 <td><span class="trunc" :title="f.name">{{ f.name }}</span></td>
@@ -203,7 +224,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { DataAnalysis, Delete, Upload, WarningFilled } from "@element-plus/icons-vue";
-import { ElNotification } from "element-plus";
+import { ElMessageBox, ElNotification } from "element-plus";
 import MetaPanel from "../components/MetaPanel.vue";
 import {
   getRawScenes,
@@ -227,25 +248,34 @@ const missingTypeFiles = ref([]);
 const pendingUpload = ref([]);
 const uploadQueue = [];
 const uploadControllers = new Map();
+const uploadBatches = new Map();
 let activeUploadCount = 0;
+let uploadBatchSequence = 0;
 let queueTimer = null;
 
 // GFS 与 ECMWF 必须分开。不能再使用合并入口，否则 ECMWF 可能会被落入 GFS 目录。
 const TYPES = ["ERA5", "GFS", "ECMWF", "CMA", "雷达", "葵花", "FY-3", "WRF"];
+const RADAR_INTERVALS = [
+  { label: "3 分钟", value: 3 },
+  { label: "6 分钟", value: 6 },
+];
 const STATUS = { pending: "待上传", queued: "排队中", uploading: "上传中", done: "完成", error: "失败", cancelled: "已取消" };
-const PARSE_STATUS = { pending: "待解析", parsing: "解析中", done: "已解析", error: "不完整" };
+const PARSE_STATUS = { pending: "待解析", parsing: "解析中", done: "已解析", error: "解析失败" };
 
 const parseQueue = ref([]);
+const locatedDuplicateIds = ref(new Set());
 const databaseTaskTotal = ref(null);
 const databaseParsedTotal = ref(null);
 const databasePendingTotal = ref(null);
 const databaseQueueError = ref("");
 let parseQueueRefreshRevision = 0;
+const promptedRadarIntervalMismatches = new Set();
 
 function parseStatusText(file) {
   if (isRawSourceMissing(file)) return "原文件缺失";
   if (file?.rawStatus === "no_coverage") return "无区域覆盖";
   if (file?.rawStatus === "waiting_collection") return "等待集合完整";
+  if (file?.rawStatus === "raw_incomplete") return "数据不完整";
   if (file?.status === "parsing" && Number.isFinite(Number(file?.progress))) {
     return `解析中 ${Number(file.progress).toFixed(1)}%`;
   }
@@ -279,6 +309,17 @@ const batchDataType = computed({
     applyBatchType(dataType);
   },
 });
+const batchRadarTargets = computed(() => batchTypeTargets.value.filter(file => isRadarType(file.dataType)));
+const batchRadarInterval = computed({
+  get() {
+    const values = batchRadarTargets.value.map(file => file.radarIntervalMinutes ?? null);
+    if (!values.length || values.some(value => value !== values[0])) return null;
+    return values[0];
+  },
+  set(value) {
+    batchRadarTargets.value.forEach(file => { file.radarIntervalMinutes = Number(value); });
+  },
+});
 const pqChecked = computed(() => parseQueue.value.filter(f => f.checked));
 const pqAllChecked = computed(() => {
   const actionable = parseQueue.value.filter(canQueueAction);
@@ -290,6 +331,11 @@ const cur = computed(() => {
   if (uploaded?.status === "done") return uploaded;
   return parseQueue.value.find(f => f.id === selected.value) || null;
 });
+
+function selectRow(id) {
+  locatedDuplicateIds.value = new Set();
+  selected.value = id;
+}
 
 const stats = computed(() => [
   { label: "已上传", val: files.value.filter(f => f.status === "done").length, sub: "本次会话", cls: "" },
@@ -548,6 +594,7 @@ function inferDataType(file) {
 }
 
 function markTypeManual(file) {
+  if (!isRadarType(file.dataType)) file.radarIntervalMinutes = null;
   file.typeDetected = false;
   file.detectionReason = file.dataType ? "用户手动指定" : "未指定";
 }
@@ -556,6 +603,7 @@ function applyBatchType(dataType) {
   if (!dataType) return;
   batchTypeTargets.value.forEach(file => {
     file.dataType = dataType;
+    if (!isRadarType(dataType)) file.radarIntervalMinutes = null;
     file.typeDetected = false;
     file.detectionReason = "批量统一指定";
   });
@@ -583,6 +631,7 @@ function addFiles(list) {
       created: "—",
       modified: file.lastModified ? fmtDate(file.lastModified) : "—",
       dataType: detected.type,
+      radarIntervalMinutes: null,
       typeDetected: Boolean(detected.type),
       detectionReason: detected.reason,
       status: "pending",
@@ -617,6 +666,11 @@ function normalizeDataTypeForBackend(dataType, fileName = "") {
   }
 
   return raw;
+}
+
+function isRadarType(dataType) {
+  const value = String(dataType || "").trim();
+  return value === "雷达" || value.toUpperCase() === "RADAR";
 }
 
 function isSatelliteCollectionType(dataType) {
@@ -829,7 +883,45 @@ function syncLocalFileStatus(tasks) {
       parseStep.ok = false;
       parseStep.state = task.parseError || "解析失败";
       file.meta = { ...file.meta, status: "解析失败", alert: task.parseError || "可在待解析列表中重试" };
+      promptRadarIntervalMismatch(file, task);
     }
+  });
+}
+
+function promptRadarIntervalMismatch(file, task) {
+  const match = String(task.parseError || "").match(/上传时选择\s*(3|6)\s*分钟，文件实际为\s*(3|6)\s*分钟/);
+  if (!match || promptedRadarIntervalMismatches.has(task.fileUuid)) return;
+
+  const selectedInterval = Number(match[1]);
+  const actualInterval = Number(match[2]);
+  promptedRadarIntervalMismatches.add(task.fileUuid);
+  ElMessageBox.confirm(
+    `${file.name} 实际为 ${actualInterval} 分钟数据，但上传时选择了 ${selectedInterval} 分钟。是否改为 ${actualInterval} 分钟并重新解析？`,
+    "雷达时间分辨率不匹配",
+    {
+      type: "warning",
+      confirmButtonText: `改为 ${actualInterval} 分钟并重试`,
+      cancelButtonText: "暂不处理",
+      distinguishCancelAndClose: true,
+    },
+  ).then(async () => {
+    await retryUploadTask(task.fileUuid, actualInterval);
+    ElNotification({
+      title: "已修正时间分辨率",
+      message: `${file.name} 已按 ${actualInterval} 分钟重新进入解析队列。`,
+      type: "success",
+      position: "top-right",
+    });
+    await refreshParseQueue();
+  }).catch((error) => {
+    if (error === "cancel" || error === "close") return;
+    promptedRadarIntervalMismatches.delete(task.fileUuid);
+    ElNotification({
+      title: "重新解析失败",
+      message: error?.message || String(error || "请求失败"),
+      type: "error",
+      position: "top-right",
+    });
   });
 }
 
@@ -919,6 +1011,7 @@ async function switchTab(nextTab) {
   try {
     await refreshParseQueue();
     if (nextTab === "upload") {
+      locatedDuplicateIds.value = new Set();
       const completedIds = new Set(files.value.filter(file => file.status === "done").map(file => file.id));
       if (completedIds.has(selected.value)) selected.value = null;
       files.value = files.value.filter(file => file.status !== "done");
@@ -937,6 +1030,75 @@ async function switchTab(nextTab) {
     tab.value = nextTab;
   }
 }
+
+function registerUploadBatch(items) {
+  const id = ++uploadBatchSequence;
+  uploadBatches.set(id, {
+    files: [...items],
+    remaining: new Set(items.map(file => file.id)),
+  });
+  items.forEach(file => { file.uploadBatchId = id; });
+}
+
+function duplicateBatchMessage(duplicates, total) {
+  const firstName = duplicates[0]?.name || "所选数据";
+  if (duplicates.length === 1) {
+    return `${firstName} 已存在，未创建重复解析任务，当前已定位到原解析记录。`;
+  }
+  if (duplicates.length === total) {
+    return `${firstName} 等 ${duplicates.length} 个数据均重复，未创建重复解析任务，当前已定位到 ${duplicates.length} 条原解析记录。`;
+  }
+  return `${firstName} 等 ${duplicates.length} 个数据重复，未创建重复解析任务；其余 ${total - duplicates.length} 个数据请查看各自处理状态。`;
+}
+
+async function finalizeUploadBatch(batch) {
+  const completed = batch.files.filter(file => file.status === "done" && file.uploadResult);
+  if (!completed.length) return;
+
+  await refreshParseQueue();
+  const duplicates = completed.filter(file => file.uploadResult?.duplicate_content);
+  const queueIds = duplicates.map(file => {
+    const result = file.uploadResult || {};
+    return databaseQueueItemId(
+      result.file_uuid,
+      result.collection?.collection_uuid || result.collection_uuid,
+    );
+  }).filter(Boolean);
+
+  if (duplicates.length) {
+    locatedDuplicateIds.value = new Set(queueIds);
+    selected.value = queueIds[0] || null;
+    tab.value = "parse";
+    await ElMessageBox.alert(
+      duplicateBatchMessage(duplicates, batch.files.length),
+      "检测到重复数据",
+      { type: "warning", confirmButtonText: "我知道了" },
+    ).catch(() => {});
+    return;
+  }
+
+  locatedDuplicateIds.value = new Set();
+  const latest = completed.at(-1)?.uploadResult || {};
+  selected.value = databaseQueueItemId(
+    latest.file_uuid,
+    latest.collection?.collection_uuid || latest.collection_uuid,
+  );
+  tab.value = "parse";
+}
+
+function finishUploadBatchItem(file) {
+  const batchId = file.uploadBatchId;
+  delete file.uploadBatchId;
+  const batch = uploadBatches.get(batchId);
+  if (!batch) return;
+  batch.remaining.delete(file.id);
+  if (batch.remaining.size) return;
+  uploadBatches.delete(batchId);
+  void finalizeUploadBatch(batch).catch(error => {
+    console.error("上传批次结果刷新失败：", error);
+  });
+}
+
 async function run(f) {
   f.status = "uploading";
   f.percent = 0;
@@ -959,6 +1121,7 @@ async function run(f) {
       signal: controller.signal,
       collectionUuid: f.collectionAssignment?.collection_uuid || null,
       collectionRole: f.collectionAssignment?.role || null,
+      radarIntervalMinutes: f.radarIntervalMinutes,
     });
 
     f.steps[0].ok = true;
@@ -1000,17 +1163,6 @@ async function run(f) {
       };
       f.uploadResult = uploadData;
       f.status = "done";
-      selected.value = f.id;
-      ElNotification({
-        title: "上传的是重复数据",
-        message: `${f.name} 与已有数据重复，系统已复用已有记录或解析结果。`,
-        type: "warning",
-        position: "top-right",
-        duration: 4500,
-      });
-      await refreshParseQueue();
-      selected.value = databaseQueueItemId(f.fileUuid, duplicateCollection?.collection_uuid || uploadData.collection_uuid);
-      tab.value = "parse";
       return;
     }
     const collection = uploadData.collection || null;
@@ -1041,10 +1193,6 @@ async function run(f) {
     };
     f.uploadResult = uploadData;
     f.status = "done";
-    selected.value = f.id;
-    await refreshParseQueue();
-    selected.value = databaseQueueItemId(f.fileUuid, collection?.collection_uuid || uploadData.collection_uuid);
-    tab.value = "parse";
   } catch (err) {
     const cancelled = err?.name === "AbortError" || controller.signal.aborted;
     const msg = cancelled ? "已由用户取消，可重新选择后断点续传" : (err?.message || "失败");
@@ -1064,6 +1212,7 @@ async function run(f) {
     if (!cancelled) console.error("上传或解析失败：", err);
   } finally {
     uploadControllers.delete(f.id);
+    finishUploadBatchItem(f);
   }
 }
 
@@ -1097,9 +1246,9 @@ async function queueUploads(items) {
       console.error("卫星集合准备失败：", error);
     }
   }));
-  pending.forEach(f => {
-    if (rejected.has(f.id)) return;
-    if (f.status !== "pending") return;
+  const accepted = pending.filter(file => !rejected.has(file.id) && file.status === "pending");
+  if (accepted.length) registerUploadBatch(accepted);
+  accepted.forEach(f => {
     f.checked = false;
     f.status = "queued";
     uploadQueue.push(f);
@@ -1129,6 +1278,7 @@ function cancelFileUpload(file) {
   if (index >= 0) uploadQueue.splice(index, 1);
   file.status = "cancelled";
   file.steps = [{label: "上传", state: "已在开始前取消", t: now(), ok: false, running: false}];
+  finishUploadBatchItem(file);
 }
 
 function toggleAll(e) {
@@ -1164,8 +1314,40 @@ function deleteChecked() {
   });
 }
 
-function uploadChecked() {
+async function uploadChecked() {
   const sel = files.value.filter(f => f.checked && f.status === "pending");
+  const radarWithoutInterval = sel.filter(f =>
+    isRadarType(f.dataType)
+    && !RADAR_INTERVALS.some(item => item.value === Number(f.radarIntervalMinutes)),
+  );
+  if (radarWithoutInterval.length) {
+    ElNotification({
+      title: "请选择雷达时间分辨率",
+      message: `${radarWithoutInterval.map(file => file.name).join("、")} 必须选择 3 分钟或 6 分钟。`,
+      type: "warning",
+      position: "top-right",
+    });
+    return;
+  }
+  const radarFiles = sel.filter(f => isRadarType(f.dataType));
+  if (radarFiles.length) {
+    const summary = RADAR_INTERVALS
+      .map(item => `${item.label} ${radarFiles.filter(file => Number(file.radarIntervalMinutes) === item.value).length} 个`)
+      .join("，");
+    try {
+      await ElMessageBox.confirm(
+        `本次雷达文件选择为：${summary}。请确认所选时间分辨率与文件实际扫描间隔一致。`,
+        "确认雷达时间分辨率",
+        {
+          type: "warning",
+          confirmButtonText: "确认并上传",
+          cancelButtonText: "返回修改",
+        },
+      );
+    } catch {
+      return;
+    }
+  }
   const withType = sel.filter(f => f.dataType);
   const withoutType = sel.filter(f => !f.dataType);
 
@@ -1300,6 +1482,8 @@ onBeforeUnmount(() => {
   parseQueueRefreshRevision += 1;
   window.removeEventListener("focus", refreshWhenVisible);
   document.removeEventListener("visibilitychange", refreshWhenVisible);
+  uploadBatches.clear();
+  uploadQueue.splice(0, uploadQueue.length);
   uploadControllers.forEach(controller => controller.abort());
   if (queueTimer) window.clearInterval(queueTimer);
 });

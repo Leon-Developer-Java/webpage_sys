@@ -10,14 +10,6 @@
       <div v-if="$slots.default" class="lc-controls">
         <slot />
       </div>
-      <div v-if="layerCardFilters?.filters?.length" class="lc-resource-filters">
-        <label v-for="filter in layerCardFilters.filters" :key="filter.key">
-          <span>{{ filter.label }}</span>
-          <el-select v-model="layerCardFilters.values[filter.key]" size="small" clearable filterable placeholder="全部">
-            <el-option v-for="option in filter.options" :key="option" :label="option" :value="option" />
-          </el-select>
-        </label>
-      </div>
       <div v-if="showLegend" class="lc-legend">
         <small v-if="legendTitle">{{ legendTitle }}</small>
         <div class="lc-bar" :style="{ background: gradient }"></div>
@@ -58,7 +50,6 @@ const props = defineProps({
 
 const collapsed = ref(props.initialCollapsed);
 const controls = inject("mapControls", null);
-const layerCardFilters = inject("layerCardFilters", null);
 </script>
 
 <style scoped>
@@ -181,34 +172,6 @@ const layerCardFilters = inject("layerCardFilters", null);
 /* ── 控件区（slot） ── */
 .lc-controls {
   border-bottom: 1px solid var(--border);
-}
-
-.lc-resource-filters {
-  display: grid;
-  gap: 6px;
-  padding: 7px 9px;
-  border-bottom: 1px solid var(--border);
-}
-
-.lc-resource-filters label {
-  display: grid;
-  gap: 3px;
-  min-width: 0;
-}
-
-.lc-resource-filters label > span {
-  color: var(--muted);
-  font-size: 10px;
-}
-
-.lc-resource-filters :deep(.el-select) {
-  width: 100%;
-}
-
-.lc-resource-filters :deep(.el-select__wrapper) {
-  min-height: 24px;
-  background: var(--field);
-  box-shadow: 0 0 0 1px var(--border) inset;
 }
 
 /* ── 图例 ── */

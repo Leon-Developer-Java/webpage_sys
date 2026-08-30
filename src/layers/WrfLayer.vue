@@ -33,7 +33,7 @@
 </template>
 
 <script setup>
-import { computed, inject, onMounted, ref, watch } from "vue";
+import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import WebglLayer from "../components/WebglLayer.vue";
 import LayerCard from "../components/LayerCard.vue";
 
@@ -50,6 +50,7 @@ const emit = defineEmits(["display-loaded", "variable-change"]);
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8002";
 const display = ref(null);
+let displayRequestId = 0;
 
 function toPublicUrl(path) {
   if (!path) return "";
@@ -60,10 +61,19 @@ function toPublicUrl(path) {
   return idx >= 0 ? `${API_BASE}${normalized.slice(idx)}` : "";
 }
 
-function loadWrfDisplay() {
-  fetch(`${API_BASE}/api/display/WRF`).then((response) => response.json()).then((payload) => {
-    if (payload?.code === 0) display.value = payload.data;
-  });
+async function loadWrfDisplay() {
+  const requestId = ++displayRequestId;
+  if (props.parsed || props.parsedMeta) {
+    display.value = null;
+    return;
+  }
+  try {
+    const response = await fetch(`${API_BASE}/api/display/WRF`, { cache: "no-store" });
+    const payload = await response.json();
+    if (requestId === displayRequestId && payload?.code === 0) display.value = payload.data;
+  } catch (error) {
+    if (requestId === displayRequestId) console.error(error);
+  }
 }
 
 const domains = {
@@ -499,6 +509,10 @@ watch(() => [wrfMeta.value, variable.value, domain.value, time.value, selectedRe
 
 onMounted(() => {
   loadWrfDisplay();
+});
+
+onBeforeUnmount(() => {
+  displayRequestId += 1;
 });
 </script>
 

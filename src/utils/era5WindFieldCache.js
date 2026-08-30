@@ -445,7 +445,7 @@ async function fetchComponent(component, url, expectedByteLength, fetcher, signa
     response = await fetcher(url, {
       ...requestInit,
       method: "GET",
-      cache: "no-store",
+      cache: requestInit?.cache || "force-cache",
       headers: requestHeaders(requestInit?.headers),
       signal,
     });

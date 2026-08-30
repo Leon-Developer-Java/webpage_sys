@@ -8,7 +8,7 @@
       <nav v-if="user">
         <router-link to="/">数据总览</router-link>
         <router-link to="/era5-history">ERA5 历史</router-link>
-        <router-link v-if="user.role >= 2" to="/upload">数据上传</router-link>
+        <router-link to="/upload">数据上传</router-link>
         <router-link v-if="user.role >= 2" to="/agent">智能体</router-link>
         <router-link v-if="user.role >= 2" to="/model">专用模型调用</router-link>
         <router-link v-if="user.role >= 2" to="/wrf">WRF 工作台</router-link>

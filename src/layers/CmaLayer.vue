@@ -65,7 +65,23 @@ const imageCache = new Map();
 const FRAME_PRELOAD_CONCURRENCY = 4;
 
 const resolvedFile = computed(() => grid.value?.file || props.file || "");
-const currentMetaFile = computed(() => props.parsed?.meta?.meta_file || props.parsed?.meta_file || "");
+const catalogFrames = computed(() => {
+  const meta = props.parsed?.meta || props.parsed?.meta_json || props.parsed || {};
+  return Array.isArray(meta.frames) ? meta.frames : [];
+});
+
+function metaFileForIndex(timeIndex) {
+  const index = Math.max(0, Math.floor(Number(timeIndex) || 0));
+  return catalogFrames.value[index]?.meta_file
+    || props.parsed?.meta?.meta_file
+    || props.parsed?.meta_file
+    || "";
+}
+
+function usesExactCatalogFrame(timeIndex) {
+  const index = Math.max(0, Math.floor(Number(timeIndex) || 0));
+  return Boolean(catalogFrames.value[index]?.meta_file);
+}
 const currentVariable = computed(() => variables.value.find(item => item.name === selectedVariable.value) || null);
 const legendTitle = computed(() => {
   const item = currentVariable.value;
@@ -359,7 +375,7 @@ function emitDisplay(data, framePreloadPromise = null) {
 
 function cacheKey(variableName, levelIndex, timeIndex, resolutionKey) {
   return JSON.stringify([
-    currentMetaFile.value || "",
+    metaFileForIndex(timeIndex),
     normalizeResolutionKey(resolutionKey),
     variableName || "",
     Number(levelIndex) || 0,
@@ -371,9 +387,12 @@ async function fetchCmaDisplay(variableName, levelIndex = 0, timeIndex = 0, reso
   const params = new URLSearchParams();
   if (variableName) params.set("variable", variableName);
   params.set("level_index", String(levelIndex));
-  params.set("time_index", String(timeIndex));
+  const exactFrame = usesExactCatalogFrame(timeIndex);
+  params.set("time_index", String(exactFrame ? 0 : timeIndex));
   params.set("resolution", normalizeResolutionKey(resolutionKey));
-  if (currentMetaFile.value) params.set("meta_file", currentMetaFile.value);
+  const metaFile = metaFileForIndex(timeIndex);
+  if (metaFile) params.set("meta_file", metaFile);
+  if (exactFrame) params.set("exact_meta", "true");
   const response = await authedFetch(`${API_BASE}/api/display/CMA?${params.toString()}`);
   const payload = await response.json();
   if (!response.ok || payload.code !== 0) {

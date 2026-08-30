@@ -23,7 +23,7 @@ router.beforeEach(to => {
   if (to.path === "/login" || to.path === "/era5-history") return true;
   if (!localStorage.getItem("token")) return "/login";
   const user = JSON.parse(localStorage.getItem("user") || "null");
-  if (["/upload", "/agent", "/model", "/wrf"].includes(to.path) && (user?.role ?? 0) < 2) return "/";
+  if (["/agent", "/model", "/wrf"].includes(to.path) && (user?.role ?? 0) < 2) return "/";
   return true;
 });
 

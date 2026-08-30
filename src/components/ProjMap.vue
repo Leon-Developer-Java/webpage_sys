@@ -61,6 +61,8 @@ let center = [0, 0], scale = 1.6, aspect = 1;
 let viewLon = LON0, orthoLat = ORTHO_LAT0;
 let dragging = false, lastX = 0, lastY = 0, ro;
 let needsInitialFit = true;
+let fittedExtent = null;
+let userAdjustedView = false;
 
 function centerLon() { return (PROJ[props.projection] ?? 0) === 5 ? viewLon : LON0; }
 let mosaicToken = 0, mosaicTimer = 0, animRAF = 0, applyingSync = false, dataTextureToken = 0;
@@ -148,7 +150,7 @@ float gline(float v, float step){
 void main(){
   vec2 c = uCenter + vNdc * vec2(uScale * uAspect, uScale);
   float lon, lat;
-  if(!invert(uProj, c, lon, lat)){ frag = vec4(0.0); return; }
+  if(!invert(uProj, c, lon, lat)){ frag = vec4(uOcean, 1.0); return; }
   lon += uLon0;
   lon = mod(lon + PI, 2.0*PI) - PI;
 
@@ -373,10 +375,15 @@ function flyTo(ext) {
   if (props.preserveView) return;
   if (!Array.isArray(ext) || ext.length !== 4) return;
   const t = fitExtent(ext);
-  if (t) animateTo(t);
+  if (t) {
+    fittedExtent = ext.map(Number);
+    userAdjustedView = false;
+    animateTo(t);
+  }
 }
 
 function zoomBy(factor) {
+  userAdjustedView = true;
   scale = Math.min(20, Math.max(0.002, scale * factor));
   render();
   if (computedTileUrl.value) scheduleMosaic();
@@ -384,6 +391,8 @@ function zoomBy(factor) {
 
 function home() {
   viewLon = LON0; orthoLat = ORTHO_LAT0;
+  fittedExtent = null;
+  userAdjustedView = false;
   fitView(); render();
   if (computedTileUrl.value) scheduleMosaic();
 }
@@ -563,11 +572,21 @@ function rebuildLines() {
 
 function resize() {
   const w = box.value.clientWidth, h = box.value.clientHeight, dpr = devicePixelRatio || 1;
+  if (!w || !h) return;
   canvas.value.width = w * dpr; canvas.value.height = h * dpr;
   aspect = w / h;
   if (needsInitialFit) {
     fitView();
     needsInitialFit = false;
+  } else if (!userAdjustedView) {
+    cancelAnimationFrame(animRAF);
+    const target = fittedExtent ? fitExtent(fittedExtent) : null;
+    if (target) {
+      center = target.center;
+      scale = target.scale;
+    } else {
+      fitView();
+    }
   }
   gl.viewport(0, 0, canvas.value.width, canvas.value.height);
   if (computedTileUrl.value) scheduleMosaic();
@@ -576,8 +595,9 @@ function resize() {
 
 function render() {
   if (!gl) return;
-  gl.clear(gl.COLOR_BUFFER_BIT);
   const ocean = props.dark ? [0.043, 0.102, 0.169] : [0.482, 0.733, 0.839];
+  gl.clearColor(ocean[0], ocean[1], ocean[2], 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
   gl.useProgram(quadProg);
   gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
   gl.enableVertexAttribArray(qloc.aPos);
@@ -623,6 +643,7 @@ function render() {
 function onDown(e) { dragging = true; lastX = e.clientX; lastY = e.clientY; }
 function onMove(e) {
   if (!dragging) return;
+  userAdjustedView = true;
   if ((PROJ[props.projection] ?? 0) === 5) {
     viewLon -= (e.clientX - lastX) * 0.005;
     orthoLat = Math.max(-1.4, Math.min(1.4, orthoLat + (e.clientY - lastY) * 0.005));
@@ -640,6 +661,7 @@ function onMove(e) {
 function onUp() { if (dragging && computedTileUrl.value) scheduleMosaic(); dragging = false; }
 function onWheel(e) {
   e.preventDefault();
+  userAdjustedView = true;
   scale = Math.min(20, Math.max(0.002, scale * Math.exp(e.deltaY * 0.001)));
   render(); emitView();
   if (computedTileUrl.value) scheduleMosaic();
@@ -673,7 +695,7 @@ onMounted(() => {
   canvas.value.addEventListener("wheel", onWheel, { passive: false });
 });
 
-watch(() => props.projection, () => { viewLon = LON0; orthoLat = ORTHO_LAT0; fitView(); if (props.vector && allLines.length) rebuildLines(); if (computedTileUrl.value) scheduleMosaic(); render(); });
+watch(() => props.projection, () => { viewLon = LON0; orthoLat = ORTHO_LAT0; fittedExtent = null; userAdjustedView = false; fitView(); if (props.vector && allLines.length) rebuildLines(); if (computedTileUrl.value) scheduleMosaic(); render(); });
 watch(() => [props.grid, props.dark], render);
 watch(computedTileUrl, v => { hasBase = false; ++mosaicToken; if (v) scheduleMosaic(); else render(); });
 watch(() => props.vector, v => { if (v) { if (allLines.length) rebuildLines(); else loadVectors(); } render(); });
@@ -691,6 +713,7 @@ watch(dataRef, () => {
 watch(() => props.syncView, v => {
   if (!v || applyingSync) return;
   applyingSync = true;
+  userAdjustedView = true;
   center = v.center.slice(); scale = v.scale; viewLon = v.viewLon; orthoLat = v.orthoLat;
   if (props.vector && allLines.length) rebuildLines();
   if (computedTileUrl.value) scheduleMosaic();
