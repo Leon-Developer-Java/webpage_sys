@@ -20,7 +20,7 @@ const props = defineProps({
   trailPersistence: { type: Number, default: 0.94 },
   framesPerSecond: { type: Number, default: 30 },
   maxDisplaySpeed: { type: Number, default: 30 },
-  opacity: { type: Number, default: 0.78 },
+  opacity: { type: Number, default: 0.84 },
   lineWidth: { type: Number, default: 1.25 },
   speedColors: {
     type: Array,
@@ -81,7 +81,7 @@ const fragmentShader = [
   "  else if (position < 2.0) color = mix(uColor1, uColor2, position - 1.0);",
   "  else if (position < 3.0) color = mix(uColor2, uColor3, position - 2.0);",
   "  else color = mix(uColor3, uColor4, position - 3.0);",
-  "  float visibility = mix(0.72, 1.0, clamp(vStrength, 0.0, 1.0));",
+  "  float visibility = mix(0.76, 1.0, clamp(vStrength, 0.0, 1.0));",
   "  frag = vec4(color, clamp(vTrailAlpha * visibility * uOpacity, 0.0, 1.0));",
   "}",
 ].join("\n");
