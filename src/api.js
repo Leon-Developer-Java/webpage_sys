@@ -1,6 +1,5 @@
 import { ElMessage } from "element-plus";
 import router from "./router";
-import { requestCacheMode } from "./utils/requestCachePolicy";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8002";
 const UPLOAD_BASE = import.meta.env.VITE_UPLOAD_BASE ?? "http://127.0.0.1:8003";
@@ -326,7 +325,9 @@ async function era5HistoryRequest(path, options = {}) {
 export function era5HistoryAssetUrl(path) {
   const value = String(path || "");
   if (!value || /^(https?:|data:|blob:)/i.test(value)) return value;
-  return new URL(value, `${ERA5_HISTORY_BASE.replace(/\/$/, "")}/`).toString();
+  const configuredBase = ERA5_HISTORY_BASE.replace(/\/$/, "");
+  const origin = configuredBase || window.location.origin;
+  return new URL(value, `${origin}/`).toString();
 }
 
 export async function getEra5HistoryStatus({ fresh = false } = {}) {
