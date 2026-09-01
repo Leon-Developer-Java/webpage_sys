@@ -81,6 +81,7 @@ const fragmentShader = [
   "  else if (position < 2.0) color = mix(uColor1, uColor2, position - 1.0);",
   "  else if (position < 3.0) color = mix(uColor2, uColor3, position - 2.0);",
   "  else color = mix(uColor3, uColor4, position - 3.0);",
+  "  color *= 0.82;",
   "  float visibility = mix(0.84, 1.0, clamp(vStrength, 0.0, 1.0));",
   "  frag = vec4(color, clamp(vTrailAlpha * visibility * uOpacity, 0.0, 1.0));",
   "}",

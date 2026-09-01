@@ -45,6 +45,7 @@ test("the standalone ERA5 WebGL particle component compiles as a Vue SFC", () =>
   assert.ok(script.content.includes("default: 0.92"));
   assert.ok(script.content.includes("visibility = mix(0.84, 1.0"));
   assert.ok(script.content.includes('"#1d4ed8", "#0e7490", "#15803d"'));
+  assert.ok(script.content.includes("color *= 0.82"));
   assert.ok(script.content.includes("preserveDrawingBuffer: true"));
   assert.ok(script.content.includes("gl.ONE_MINUS_SRC_ALPHA"));
   assert.ok(script.content.includes("fadeTrails"));
