@@ -98,10 +98,8 @@ async function ensureFreshToken() {
 
 export async function authedFetch(url, options = {}) {
   await ensureFreshToken();
-  const cache = requestCacheMode(url, options);
   const res = await fetch(url, {
     ...options,
-    ...(cache ? { cache } : {}),
     headers: { ...(options.headers || {}), Authorization: `Bearer ${getToken()}` },
   });
   if (res.status === 401) logout();
