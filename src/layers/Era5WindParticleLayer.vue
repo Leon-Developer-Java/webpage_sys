@@ -17,10 +17,10 @@ const props = defineProps({
   particleCount: { type: Number, default: 3_200 },
   maxAge: { type: Number, default: 100 },
   timeScale: { type: Number, default: 60_000 },
-  trailPersistence: { type: Number, default: 0.94 },
+  trailPersistence: { type: Number, default: 0.95 },
   framesPerSecond: { type: Number, default: 30 },
   maxDisplaySpeed: { type: Number, default: 30 },
-  opacity: { type: Number, default: 0.92 },
+  opacity: { type: Number, default: 0.96 },
   lineWidth: { type: Number, default: 1.25 },
   speedColors: {
     type: Array,
@@ -81,8 +81,8 @@ const fragmentShader = [
   "  else if (position < 2.0) color = mix(uColor1, uColor2, position - 1.0);",
   "  else if (position < 3.0) color = mix(uColor2, uColor3, position - 2.0);",
   "  else color = mix(uColor3, uColor4, position - 3.0);",
-  "  color *= 0.82;",
-  "  float visibility = mix(0.84, 1.0, clamp(vStrength, 0.0, 1.0));",
+  "  color = min(color * 1.28, vec3(1.0));",
+  "  float visibility = mix(0.90, 1.0, clamp(vStrength, 0.0, 1.0));",
   "  frag = vec4(color, clamp(vTrailAlpha * visibility * uOpacity, 0.0, 1.0));",
   "}",
 ].join("\n");
@@ -291,7 +291,7 @@ function buildVertexData(width, height) {
     vertexData[cursor++] = older.x / width * 2 - 1;
     vertexData[cursor++] = 1 - older.y / height * 2;
     vertexData[cursor++] = strength;
-    vertexData[cursor++] = 0.58;
+    vertexData[cursor++] = 0.68;
     vertexData[cursor++] = newer.x / width * 2 - 1;
     vertexData[cursor++] = 1 - newer.y / height * 2;
     vertexData[cursor++] = strength;
