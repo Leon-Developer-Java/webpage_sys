@@ -142,12 +142,12 @@
           </table>
         </div>
 
-        <div class="tbl-wrap" v-else>
-          <table class="tbl">
+        <div class="tbl-wrap parse-tbl-wrap" v-else>
+          <table class="tbl parse-tbl">
             <colgroup>
               <col style="width:36px"><col>
               <col style="width:68px"><col style="width:90px">
-              <col style="width:124px"><col style="width:120px"><col style="width:76px">
+              <col style="width:124px"><col style="width:120px"><col style="width:112px">
             </colgroup>
             <thead>
               <tr>
@@ -272,7 +272,14 @@ const promptedRadarIntervalMismatches = new Set();
 function parseStatusText(file) {
   if (isRawSourceMissing(file)) return "原文件缺失";
   if (file?.rawStatus === "no_coverage") return "无区域覆盖";
-  if (file?.rawStatus === "waiting_collection") return "等待集合完整";
+  if (file?.rawStatus === "waiting_collection") {
+    const received = Number(file?.collectionReceivedCount);
+    const expected = Number(file?.collectionExpectedCount);
+    if (Number.isFinite(received) && Number.isFinite(expected) && expected > 0) {
+      return `等待集合 ${received}/${expected}`;
+    }
+    return "等待集合完整";
+  }
   if (file?.rawStatus === "raw_incomplete") return "数据不完整";
   if (file?.status === "parsing" && Number.isFinite(Number(file?.progress))) {
     return `解析中 ${Number(file.progress).toFixed(1)}%`;
@@ -731,6 +738,7 @@ function databaseTaskToQueueItem(task, previous = {}) {
   const parseError = task.parse_error || "";
   const collection = task.collection || null;
   const collectionMissing = Array.isArray(collection?.missing_roles) ? collection.missing_roles : [];
+  const collectionWaitingReason = collection?.waiting_reason || "";
   const item = {
     id: databaseQueueItemId(task.file_uuid, task.collection_uuid),
     queueKind: "database",
@@ -757,12 +765,13 @@ function databaseTaskToQueueItem(task, previous = {}) {
       grid: status === "done" ? `${Number(task.webp_count || 0)} 个 WebP` : "—",
       missing: isRawSourceMissing({queueKind: "database", parseError})
         ? "原始文件不在本机"
-        : collectionMissing.length ? collectionMissing.join("、") : "—",
+        : collectionWaitingReason || (collectionMissing.length ? collectionMissing.join("、") : "—"),
       status: parseStatusText({queueKind: "database", status, rawStatus: task.parse_status, parseError}),
       extraRows: [
         ["fileUuid", "任务 ID", task.file_uuid],
         ["collectionUuid", "集合 ID", task.collection_uuid || ""],
         ["collectionMissing", "集合缺失成员", collectionMissing.join("、")],
+        ["collectionWaitingReason", "等待原因", collectionWaitingReason],
         ["parseAttempts", "解析次数", task.parse_attempts],
         ["finishedAt", "完成时间", task.parse_finished_at ? new Date(task.parse_finished_at).toLocaleString("zh-CN") : ""],
         ["renderResult", "渲染结果", status === "done" ? `${Number(task.webp_count || 0)} 个 WebP` : ""],
@@ -786,7 +795,10 @@ function databaseCollectionToQueueItem(tasks, previous = {}) {
   const totalBytes = members.reduce((sum, member) => sum + (Number(member.file_size) || 0), 0);
   const receivedCount = Number(collection.received_count ?? members.length);
   const expectedCount = Number(collection.expected_count ?? receivedCount);
+  const requiredReceivedCount = Number(collection.required_received_count ?? Math.min(receivedCount, expectedCount));
   const collectionMissing = Array.isArray(collection.missing_roles) ? collection.missing_roles : [];
+  const collectionWaitingReason = collection.waiting_reason || "";
+  const memberSummary = `${receivedCount} 个文件（必需 ${requiredReceivedCount} / ${expectedCount}）`;
   const parseError = collection.parse_error
     || tasks.find(task => task.parse_error)?.parse_error
     || "";
@@ -797,8 +809,10 @@ function databaseCollectionToQueueItem(tasks, previous = {}) {
     fileUuid: leader?.file_uuid,
     collectionUuid: collection.collection_uuid || leader?.collection_uuid,
     collectionStatus: collection.status || null,
+    collectionReceivedCount: receivedCount,
+    collectionExpectedCount: expectedCount,
     name: collection.scene_key || leader?.file_name || "卫星场景集合",
-    fmt: "集合",
+    fmt: `集合 ${receivedCount}/${expectedCount}`,
     size: totalBytes > 0 ? fmtSize(totalBytes) : `${receivedCount} 个文件`,
     uploaded: collection.create_time ? new Date(collection.create_time).toLocaleString("zh-CN") : "—",
     dataType: collection.data_type || leader?.data_type,
@@ -817,16 +831,17 @@ function databaseCollectionToQueueItem(tasks, previous = {}) {
       grid: status === "done" ? `${webpCount} 个 WebP` : "—",
       missing: isRawSourceMissing({queueKind: "database", parseError})
         ? "原始文件不在本机"
-        : collectionMissing.length ? collectionMissing.join("、") : "无",
+        : collectionWaitingReason || (collectionMissing.length ? collectionMissing.join("、") : "无"),
       unit: "—",
-      vars: `${receivedCount} / ${expectedCount} 个成员`,
-      steps: `${receivedCount} / ${expectedCount} 个成员`,
+      vars: memberSummary,
+      steps: memberSummary,
       status: parseStatusText({queueKind: "database", status, rawStatus: rawStatusMap[collection.status], parseError}),
       extraRows: [
         ["collectionUuid", "集合 ID", collection.collection_uuid || leader?.collection_uuid || ""],
         ["leaderFileUuid", "主任务 ID", leader?.file_uuid || ""],
-        ["collectionMembers", "集合成员", `${receivedCount} / ${expectedCount}`],
+        ["collectionMembers", "集合成员", memberSummary],
         ["collectionMissing", "集合缺失成员", collectionMissing.join("、")],
+        ["collectionWaitingReason", "等待原因", collectionWaitingReason],
         ["parseAttempts", "解析次数", collection.parse_attempts ?? leader?.parse_attempts],
         ["finishedAt", "完成时间", collection.finished_at ? new Date(collection.finished_at).toLocaleString("zh-CN") : ""],
         ["renderResult", "渲染结果", status === "done" ? `${webpCount} 个 WebP` : ""],
@@ -834,7 +849,7 @@ function databaseCollectionToQueueItem(tasks, previous = {}) {
       ],
     },
     steps: [
-      {label: "上传集合", state: `${receivedCount} / ${expectedCount} 个成员`, t: "", ok: receivedCount === expectedCount},
+      {label: "上传集合", state: memberSummary, t: "", ok: requiredReceivedCount === expectedCount},
       {label: "解析", state: parseStatusText({status, rawStatus: rawStatusMap[collection.status]}), t: "", ok: status === "done", running: status === "parsing"},
       {label: "渲染 WEBP", state: status === "done" ? `${webpCount} 个 WebP` : "等待", t: "", ok: status === "done"},
     ],
@@ -1131,10 +1146,11 @@ async function run(f) {
     }
     const collection = uploadData.collection || null;
     const missingRoles = Array.isArray(collection?.missing_roles) ? collection.missing_roles : [];
+    const waitingReason = collection?.waiting_reason || "";
     const waitingCollection = uploadData.parse_status === "waiting_collection" || collection?.status === "collecting";
     f.steps[1].running = uploadData.parse_status === "running";
     f.steps[1].state = waitingCollection
-      ? `等待集合完整（缺 ${missingRoles.length}）`
+      ? (waitingReason || `等待必需成员（缺 ${missingRoles.length}）`)
       : uploadData.parse_status === "running" ? "解析中" : "等待 Worker";
     f.steps[2].state = "等待 Adapter";
     f.steps[3].state = "待解析完成";
@@ -1145,14 +1161,14 @@ async function run(f) {
       level: collectionUpload ? "卫星场景集合成员" : "原始单文件",
       range: collectionUpload ? `集合 ${collection?.scene_key || "—"}` : "私有 raw 存储",
       grid: "待解析",
-      missing: missingRoles.length ? missingRoles.join("、") : "待 Adapter 检查",
+      missing: waitingReason || (missingRoles.length ? missingRoles.join("、") : "待 Adapter 检查"),
       unit: "—",
       vars: "—",
       steps: "—",
       status: waitingCollection ? "已上传，等待集合其余成员" : "已上传，等待自动解析",
       quality: "待解析",
       alert: collectionUpload
-        ? `集合 ${collection?.collection_uuid || f.collectionAssignment?.collection_uuid || "—"}`
+        ? (waitingReason || `集合 ${collection?.collection_uuid || f.collectionAssignment?.collection_uuid || "—"}`)
         : `任务 ${uploadData.file_uuid}`,
     };
     f.uploadResult = uploadData;
@@ -1577,6 +1593,7 @@ onBeforeUnmount(() => {
   flex: 1;
   min-height: 0;
   overflow: auto;
+  scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: var(--border) transparent;
 }
@@ -1633,6 +1650,8 @@ tbody tr.hl td:not(.pin-l):not(.pin-r) { background: var(--accent-soft); }
   box-shadow: -4px 0 8px rgba(0, 0, 0, 0.14);
 }
 .pin-r { position: sticky; right: 0; z-index: 1; background: var(--glass-2); }
+.parse-tbl .pin-l { right: 112px; }
+.parse-tbl .pin-r { padding-right: 14px; }
 thead .pin-l, thead .pin-r { z-index: 3; }
 
 .tbl-empty { padding: 28px 14px; text-align: center; color: var(--muted); font-size: 13px; }

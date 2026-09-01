@@ -69,7 +69,7 @@ async function loadWrfDisplay() {
     return;
   }
   try {
-    const response = await fetch(`${API_BASE}/api/display/WRF`, { cache: "no-store" });
+    const response = await authedFetch(`${API_BASE}/api/display/WRF`, { cache: "no-store" });
     const payload = await response.json();
     if (requestId === displayRequestId && payload?.code === 0) display.value = payload.data;
   } catch (error) {

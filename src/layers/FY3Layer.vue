@@ -74,6 +74,7 @@ const products = computed(() => {
   ];
 });
 const defaultProduct = computed(() =>
+  products.value.find((item) => productName(item) === display.value?.default_product_name) ||
   products.value.find((item) => productName(item) === "B03") ||
   products.value.find((item) => productName(item) === "B01") ||
   products.value[0]

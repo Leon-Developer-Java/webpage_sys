@@ -37,34 +37,8 @@
           </option>
         </select>
       </label>
-
-      <div class="gfs-current">
-        <span>当前时次</span>
-        <b>{{ currentTimeLabel }}</b>
-        <small>
-          {{ safeIndex + 1 }} / {{ frameCount }}
-          · WEBP
-          · {{ statusText }}
-        </small>
-      </div>
-
-      <div class="gfs-stat-row">
-        <span>Min {{ formatStat(currentStepStats?.min) }}</span>
-        <span>Mean {{ formatStat(currentStepStats?.mean) }}</span>
-        <span>Max {{ formatStat(currentStepStats?.max) }}</span>
-        <em>{{ displayUnit }}</em>
-      </div>
-
-      <div class="gfs-status" :class="{ error: !!error }">
-        {{ error || statusText }}
-      </div>
     </template>
-
-    <template v-else>
-      <div class="gfs-status" :class="{ error: !!error }">
-        {{ error || statusText }}
-      </div>
-    </template>
+    <p v-if="error" class="lc-error">{{ error }}</p>
   </LayerCard>
 </template>
 
@@ -101,7 +75,6 @@ const emit = defineEmits(["variable-change", "display-loaded"]);
 
 const API_BASE = "http://127.0.0.1:8002";
 const FALLBACK_EXTENT = [-180, -90, 179.75, 90];
-const DEFAULT_FOCUS_EXTENT = [73, 15, 135, 55];
 
 const surface = inject("mapSurface", null);
 const flyToExtent = inject("flyToExtent", null);
@@ -510,24 +483,6 @@ const ticks = computed(() => {
   return ["低", "较低", "中", "较高", "高"];
 });
 
-const statusText = computed(() => {
-  if (loading.value) return "图层读取中";
-
-  const gridText =
-    currentLayer.value?.grid?.text ||
-    currentLayer.value?.gridText ||
-    display.value?.grid?.text ||
-    "";
-
-  const levelText = currentLayer.value?.level || "";
-
-  return (
-    [levelText, gridText ? `网格 ${gridText}` : ""]
-      .filter(Boolean)
-      .join(" · ") || "已加载"
-  );
-});
-
 function categoryByVarType(type) {
   if (type === "temperature") return "温度产品";
   if (type === "precipitation") return "降水产品";
@@ -704,6 +659,9 @@ function applyDisplayData(payload) {
 
   syncSelection();
   renderLayer();
+  // 与 CMA 等图层保持一致：数据就绪后立即把视口飞到当前 extent，
+  // 这样从其它数据类型切到 GFS/ECMWF 时也能自动缩放到全球范围。
+  zoomToData();
   emitCurrentVariable();
 }
 
@@ -763,16 +721,6 @@ function renderLayer() {
   surface?.setData?.(url, imageExtent.value, props.alpha);
 }
 
-function isGlobalExtent(extent) {
-  if (!Array.isArray(extent) || extent.length !== 4) return false;
-  const [west, south, east, north] = extent.map(Number);
-  return (
-    [west, south, east, north].every(Number.isFinite) &&
-    Math.abs(east - west) >= 350 &&
-    Math.abs(north - south) >= 170
-  );
-}
-
 function normalizeExtentForFly(extent) {
   if (!Array.isArray(extent) || extent.length !== 4) return null;
 
@@ -780,10 +728,6 @@ function normalizeExtentForFly(extent) {
 
   if ([west, south, east, north].some(value => !Number.isFinite(value))) {
     return null;
-  }
-
-  if (isGlobalExtent([west, south, east, north])) {
-    return DEFAULT_FOCUS_EXTENT;
   }
 
   if (south >= north || west >= east) return null;
@@ -898,21 +842,6 @@ function emitCurrentVariable() {
   });
 }
 
-function formatStat(value) {
-  if (
-    value === null ||
-    value === undefined ||
-    Number.isNaN(Number(value))
-  ) {
-    return "—";
-  }
-
-  const number = Number(value);
-  return Math.abs(number) >= 10
-    ? number.toFixed(2)
-    : number.toFixed(3);
-}
-
 watch(
   () => props.parsed,
   value => {
@@ -981,80 +910,11 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.gfs-current {
-  display: grid;
-  gap: 2px;
-  margin-top: 8px;
-  padding: 7px 8px;
-  border-radius: 8px;
-  background: rgba(15, 23, 42, 0.42);
-  color: #cbd5e1;
-  font-size: 10px;
-}
-
-.gfs-current b {
-  color: #e5e7eb;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.gfs-current small {
-  color: #94a3b8;
-  line-height: 1.35;
-}
-
-.gfs-stat-row {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 4px;
-  margin-top: 7px;
-  font-size: 10px;
-  color: #cbd5e1;
-}
-
-.gfs-stat-row span {
-  padding: 4px 5px;
-  border-radius: 6px;
-  background: rgba(15, 23, 42, 0.38);
-  text-align: center;
-  white-space: nowrap;
-}
-
-.gfs-stat-row em {
-  grid-column: 1 / -1;
-  color: #94a3b8;
-  font-style: normal;
-  text-align: right;
-}
-
-.gfs-status {
-  margin-top: 6px;
-  font-size: 10px;
-  color: #86efac;
+.lc-error {
+  margin: 0;
+  padding: 0 9px 7px;
+  color: #dc2626;
+  font-size: 10.5px;
   line-height: 1.4;
-}
-
-.gfs-status.error {
-  color: #fca5a5;
-}
-
-.lc-row {
-  display: grid;
-  grid-template-columns: 72px minmax(0, 1fr);
-  align-items: center;
-  gap: 8px;
-  margin-top: 7px;
-  font-size: 11px;
-  color: #cbd5e1;
-}
-
-.lc-row select {
-  min-width: 0;
-  height: 28px;
-  border: 1px solid rgba(148, 163, 184, 0.24);
-  border-radius: 6px;
-  background: rgba(15, 23, 42, 0.68);
-  color: #e5e7eb;
-  padding: 0 6px;
 }
 </style>
