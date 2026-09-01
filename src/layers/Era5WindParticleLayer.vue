@@ -20,11 +20,11 @@ const props = defineProps({
   trailPersistence: { type: Number, default: 0.94 },
   framesPerSecond: { type: Number, default: 30 },
   maxDisplaySpeed: { type: Number, default: 30 },
-  opacity: { type: Number, default: 0.84 },
+  opacity: { type: Number, default: 0.92 },
   lineWidth: { type: Number, default: 1.25 },
   speedColors: {
     type: Array,
-    default: () => ["#2563eb", "#0891b2", "#16a34a", "#facc15", "#dc2626"],
+    default: () => ["#1d4ed8", "#0e7490", "#15803d", "#eab308", "#b91c1c"],
   },
   seed: { type: Number, default: 1 },
 });
@@ -81,7 +81,7 @@ const fragmentShader = [
   "  else if (position < 2.0) color = mix(uColor1, uColor2, position - 1.0);",
   "  else if (position < 3.0) color = mix(uColor2, uColor3, position - 2.0);",
   "  else color = mix(uColor3, uColor4, position - 3.0);",
-  "  float visibility = mix(0.76, 1.0, clamp(vStrength, 0.0, 1.0));",
+  "  float visibility = mix(0.84, 1.0, clamp(vStrength, 0.0, 1.0));",
   "  frag = vec4(color, clamp(vTrailAlpha * visibility * uOpacity, 0.0, 1.0));",
   "}",
 ].join("\n");
@@ -330,11 +330,11 @@ function normalizedColor(value, fallback) {
 
 function normalizedPalette() {
   const fallback = [
-    [37, 99, 235],
-    [8, 145, 178],
-    [22, 163, 74],
-    [250, 204, 21],
-    [220, 38, 38],
+    [29, 78, 216],
+    [14, 116, 144],
+    [21, 128, 61],
+    [234, 179, 8],
+    [185, 28, 28],
   ];
   const values = Array.isArray(props.speedColors) && props.speedColors.length === 5
     ? props.speedColors
