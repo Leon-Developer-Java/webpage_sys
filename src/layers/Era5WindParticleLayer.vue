@@ -14,14 +14,14 @@ import { createEra5WindParticleSystem } from "../utils/era5WindParticles";
 const props = defineProps({
   field: { type: Object, default: null },
   visible: { type: Boolean, default: true },
-  particleCount: { type: Number, default: 2_000 },
-  maxAge: { type: Number, default: 120 },
-  timeScale: { type: Number, default: 36_000 },
-  trailLength: { type: Number, default: 16 },
+  particleCount: { type: Number, default: 3_200 },
+  maxAge: { type: Number, default: 100 },
+  timeScale: { type: Number, default: 60_000 },
+  trailPersistence: { type: Number, default: 0.94 },
   framesPerSecond: { type: Number, default: 30 },
   maxDisplaySpeed: { type: Number, default: 30 },
-  opacity: { type: Number, default: 0.94 },
-  lineWidth: { type: Number, default: 1.5 },
+  opacity: { type: Number, default: 0.78 },
+  lineWidth: { type: Number, default: 1.25 },
   speedColors: {
     type: Array,
     default: () => ["#2563eb", "#0891b2", "#16a34a", "#facc15", "#dc2626"],
@@ -35,21 +35,16 @@ const mapProjector = inject("mapProjector", null);
 
 let gl = null;
 let program = null;
+let fadeProgram = null;
 let vertexBuffer = null;
 let locations = {};
+let fadeOpacityLocation = null;
 let particleSystem = null;
-let historyLon = null;
-let historyLat = null;
-let historyGeneration = null;
-let projectedX = null;
-let projectedY = null;
-let projectedVisible = null;
 let vertexData = null;
-let historyCursor = 0;
-let historySize = 0;
 let animationFrame = 0;
 let lastFrameAt = 0;
 let lastStatsAt = 0;
+let lastMapRevision = -1;
 let mounted = false;
 let contextLost = false;
 
@@ -91,6 +86,28 @@ const fragmentShader = [
   "}",
 ].join("\n");
 
+const fadeVertexShader = [
+  "#version 300 es",
+  "const vec2 POSITIONS[3] = vec2[3](",
+  "  vec2(-1.0, -1.0),",
+  "  vec2(3.0, -1.0),",
+  "  vec2(-1.0, 3.0)",
+  ");",
+  "void main() {",
+  "  gl_Position = vec4(POSITIONS[gl_VertexID], 0.0, 1.0);",
+  "}",
+].join("\n");
+
+const fadeFragmentShader = [
+  "#version 300 es",
+  "precision highp float;",
+  "uniform float uFadeAlpha;",
+  "out vec4 frag;",
+  "void main() {",
+  "  frag = vec4(0.0, 0.0, 0.0, uFadeAlpha);",
+  "}",
+].join("\n");
+
 function particleError(code, message, cause) {
   const error = new Error(message);
   error.name = "Era5WindParticleLayerError";
@@ -116,9 +133,9 @@ function compileShader(type, source) {
   return shader;
 }
 
-function createProgram() {
-  const vertex = compileShader(gl.VERTEX_SHADER, vertexShader);
-  const fragment = compileShader(gl.FRAGMENT_SHADER, fragmentShader);
+function createProgram(vertexSource, fragmentSource) {
+  const vertex = compileShader(gl.VERTEX_SHADER, vertexSource);
+  const fragment = compileShader(gl.FRAGMENT_SHADER, fragmentSource);
   const nextProgram = gl.createProgram();
   gl.attachShader(nextProgram, vertex);
   gl.attachShader(nextProgram, fragment);
@@ -141,6 +158,7 @@ function initializeWebGl() {
     depth: false,
     stencil: false,
     premultipliedAlpha: true,
+    preserveDrawingBuffer: true,
     powerPreference: "high-performance",
   });
   if (!gl) {
@@ -152,7 +170,8 @@ function initializeWebGl() {
   }
 
   try {
-    program = createProgram();
+    program = createProgram(vertexShader, fragmentShader);
+    fadeProgram = createProgram(fadeVertexShader, fadeFragmentShader);
     locations = {
       position: gl.getAttribLocation(program, "aPosition"),
       strength: gl.getAttribLocation(program, "aStrength"),
@@ -162,6 +181,7 @@ function initializeWebGl() {
       ),
       opacity: gl.getUniformLocation(program, "uOpacity"),
     };
+    fadeOpacityLocation = gl.getUniformLocation(fadeProgram, "uFadeAlpha");
     vertexBuffer = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
     gl.enable(gl.BLEND);
@@ -184,9 +204,12 @@ function disposeWebGl(loseContext = true) {
   if (!gl) return;
   if (vertexBuffer) gl.deleteBuffer(vertexBuffer);
   if (program) gl.deleteProgram(program);
+  if (fadeProgram) gl.deleteProgram(fadeProgram);
   if (loseContext) gl.getExtension("WEBGL_lose_context")?.loseContext();
   vertexBuffer = null;
   program = null;
+  fadeProgram = null;
+  fadeOpacityLocation = null;
   locations = {};
   gl = null;
 }
@@ -200,40 +223,24 @@ function integerProp(value, fallback, minimum = 1, maximum = 100_000) {
 
 function rebuildParticleSystem() {
   particleSystem = null;
-  historyLon = null;
-  historyLat = null;
-  historyGeneration = null;
-  projectedX = null;
-  projectedY = null;
-  projectedVisible = null;
   vertexData = null;
-  historyCursor = 0;
-  historySize = 0;
+  lastMapRevision = -1;
 
   if (!props.field) {
     clearCanvas();
     return;
   }
   try {
-    const count = integerProp(props.particleCount, 2_000, 1, 20_000);
-    const maxAge = integerProp(props.maxAge, 120, 1, 65_535);
-    historySize = integerProp(props.trailLength, 16, 2, 32);
+    const count = integerProp(props.particleCount, 3_200, 1, 20_000);
+    const maxAge = integerProp(props.maxAge, 100, 1, 65_535);
     particleSystem = createEra5WindParticleSystem(props.field, {
       count,
       maxAge,
       seed: props.seed,
     });
-    const historyValueCount = count * historySize;
-    historyLon = new Float32Array(historyValueCount);
-    historyLat = new Float32Array(historyValueCount);
-    historyGeneration = new Uint32Array(historyValueCount);
-    projectedX = new Float32Array(historyValueCount);
-    projectedY = new Float32Array(historyValueCount);
-    projectedVisible = new Uint8Array(historyValueCount);
-    const maxSegments = count * (historySize - 1);
-    vertexData = new Float32Array(maxSegments * 2 * 4);
-    writeHistorySlot();
+    vertexData = new Float32Array(count * 2 * 4);
     allocateVertexBuffer();
+    clearCanvas();
     lastFrameAt = 0;
   } catch (error) {
     reportError(error);
@@ -247,81 +254,63 @@ function allocateVertexBuffer() {
   gl.bufferData(gl.ARRAY_BUFFER, vertexData.byteLength, gl.DYNAMIC_DRAW);
 }
 
-function writeHistorySlot() {
-  if (!particleSystem || !historyLon) return;
-  const offset = historyCursor * particleSystem.count;
-  historyLon.set(particleSystem.lon, offset);
-  historyLat.set(particleSystem.lat, offset);
-  historyGeneration.set(particleSystem.generation, offset);
-}
-
-function updateProjectedHistory() {
-  if (!particleSystem || !mapProjector?.project) return;
-  const total = particleSystem.count * historySize;
-  for (let index = 0; index < total; index += 1) {
-    if (historyGeneration[index] === 0) {
-      projectedVisible[index] = 0;
-      continue;
-    }
-    const point = mapProjector.project(historyLon[index], historyLat[index]);
-    if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) {
-      projectedVisible[index] = 0;
-      continue;
-    }
-    projectedX[index] = point.x;
-    projectedY[index] = point.y;
-    projectedVisible[index] = point.visible ? 1 : 0;
-  }
-}
-
 function buildVertexData(width, height) {
   if (!particleSystem || !vertexData || !width || !height) return 0;
-  updateProjectedHistory();
   const count = particleSystem.count;
   const maxSpeed = Math.max(0.001, Number(props.maxDisplaySpeed) || 30);
   const longitudePeriod = particleSystem.field.longitudePeriod;
   let cursor = 0;
 
-  for (let trailAge = 0; trailAge < historySize - 1; trailAge += 1) {
-    const newerSlot = (historyCursor - trailAge + historySize) % historySize;
-    const olderSlot = (newerSlot - 1 + historySize) % historySize;
-    const trailAlpha = Math.pow(1 - trailAge / historySize, 0.85);
-    for (let particle = 0; particle < count; particle += 1) {
-      const newerIndex = newerSlot * count + particle;
-      const olderIndex = olderSlot * count + particle;
-      const generation = historyGeneration[newerIndex];
-      if (
-        !generation
-        || generation !== historyGeneration[olderIndex]
-        || !projectedVisible[newerIndex]
-        || !projectedVisible[olderIndex]
-      ) {
-        continue;
-      }
-      if (
-        particleSystem.field.periodicLongitude
-        && Math.abs(historyLon[newerIndex] - historyLon[olderIndex]) > longitudePeriod * 0.5
-      ) {
-        continue;
-      }
-      const newerX = projectedX[newerIndex];
-      const newerY = projectedY[newerIndex];
-      const olderX = projectedX[olderIndex];
-      const olderY = projectedY[olderIndex];
-      if (Math.abs(newerX - olderX) > width * 0.5) continue;
-
-      const strength = Math.min(1, Math.max(0, particleSystem.speed[particle] / maxSpeed));
-      vertexData[cursor++] = olderX / width * 2 - 1;
-      vertexData[cursor++] = 1 - olderY / height * 2;
-      vertexData[cursor++] = strength;
-      vertexData[cursor++] = trailAlpha * 0.82;
-      vertexData[cursor++] = newerX / width * 2 - 1;
-      vertexData[cursor++] = 1 - newerY / height * 2;
-      vertexData[cursor++] = strength;
-      vertexData[cursor++] = trailAlpha;
+  for (let particle = 0; particle < count; particle += 1) {
+    const olderLon = particleSystem.previousLon[particle];
+    const olderLat = particleSystem.previousLat[particle];
+    const newerLon = particleSystem.lon[particle];
+    const newerLat = particleSystem.lat[particle];
+    if (
+      particleSystem.field.periodicLongitude
+      && Math.abs(newerLon - olderLon) > longitudePeriod * 0.5
+    ) {
+      continue;
     }
+    const older = mapProjector.project(olderLon, olderLat);
+    const newer = mapProjector.project(newerLon, newerLat);
+    if (!older?.visible || !newer?.visible) continue;
+    if (
+      !Number.isFinite(older.x) || !Number.isFinite(older.y)
+      || !Number.isFinite(newer.x) || !Number.isFinite(newer.y)
+      || Math.abs(newer.x - older.x) > width * 0.5
+    ) {
+      continue;
+    }
+    const normalizedSpeed = Math.min(
+      1,
+      Math.max(0, particleSystem.speed[particle] / maxSpeed),
+    );
+    const strength = Math.pow(normalizedSpeed, 0.62);
+    vertexData[cursor++] = older.x / width * 2 - 1;
+    vertexData[cursor++] = 1 - older.y / height * 2;
+    vertexData[cursor++] = strength;
+    vertexData[cursor++] = 0.58;
+    vertexData[cursor++] = newer.x / width * 2 - 1;
+    vertexData[cursor++] = 1 - newer.y / height * 2;
+    vertexData[cursor++] = strength;
+    vertexData[cursor++] = 1;
   }
   return cursor / 4;
+}
+
+function fadeTrails(deltaSeconds) {
+  if (!gl || !fadeProgram) return;
+  const fps = integerProp(props.framesPerSecond, 30, 1, 60);
+  const persistence = Math.min(0.985, Math.max(0.75, Number(props.trailPersistence) || 0.94));
+  const frameAdjustedPersistence = Math.pow(
+    persistence,
+    Math.max(0.25, deltaSeconds * fps),
+  );
+  gl.useProgram(fadeProgram);
+  gl.blendFuncSeparate(gl.ZERO, gl.ONE_MINUS_SRC_ALPHA, gl.ZERO, gl.ONE_MINUS_SRC_ALPHA);
+  gl.uniform1f(fadeOpacityLocation, 1 - frameAdjustedPersistence);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
 
 function normalizedColor(value, fallback) {
@@ -355,7 +344,7 @@ function normalizedPalette() {
   );
 }
 
-function drawParticles() {
+function drawParticles(deltaSeconds) {
   if (!gl || !program || !particleSystem || !props.visible) {
     clearCanvas();
     return 0;
@@ -364,10 +353,16 @@ function drawParticles() {
   const width = state?.width || canvas.value?.clientWidth || 0;
   const height = state?.height || canvas.value?.clientHeight || 0;
   if (!width || !height) return 0;
-  resizeCanvas(width, height);
+  const resized = resizeCanvas(width, height);
+  const mapRevision = Number(state?.rev) || 0;
+  if (resized || mapRevision !== lastMapRevision) {
+    clearCanvas();
+    lastMapRevision = mapRevision;
+  } else {
+    fadeTrails(deltaSeconds);
+  }
   const vertexCount = buildVertexData(width, height);
 
-  gl.clear(gl.COLOR_BUFFER_BIT);
   if (!vertexCount) return 0;
   gl.useProgram(program);
   gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
@@ -399,12 +394,13 @@ function drawParticles() {
   });
   gl.uniform1f(locations.opacity, Math.min(1, Math.max(0, Number(props.opacity) || 0)));
   gl.lineWidth(Math.min(4, Math.max(1, Number(props.lineWidth) || 1)));
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
   gl.drawArrays(gl.LINES, 0, vertexCount);
   return vertexCount / 2;
 }
 
 function resizeCanvas(widthValue, heightValue) {
-  if (!gl || !canvas.value) return;
+  if (!gl || !canvas.value) return false;
   const state = mapProjector?.state?.value;
   const cssWidth = Math.max(
     1,
@@ -417,9 +413,11 @@ function resizeCanvas(widthValue, heightValue) {
   const pixelRatio = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
   const renderWidth = Math.round(cssWidth * pixelRatio);
   const renderHeight = Math.round(cssHeight * pixelRatio);
+  const resized = canvas.value.width !== renderWidth || canvas.value.height !== renderHeight;
   if (canvas.value.width !== renderWidth) canvas.value.width = renderWidth;
   if (canvas.value.height !== renderHeight) canvas.value.height = renderHeight;
   gl.viewport(0, 0, renderWidth, renderHeight);
+  return resized;
 }
 
 function clearCanvas() {
@@ -445,9 +443,7 @@ function animate(timestamp) {
     const step = particleSystem.step(deltaSeconds, {
       timeScale: Math.max(0, Number(props.timeScale) || 0),
     });
-    historyCursor = (historyCursor + 1) % historySize;
-    writeHistorySlot();
-    const segmentCount = drawParticles();
+    const segmentCount = drawParticles(deltaSeconds);
     if (timestamp - lastStatsAt >= 1_000) {
       lastStatsAt = timestamp;
       emit("stats", {
@@ -470,6 +466,7 @@ function onContextLost(event) {
   contextLost = true;
   gl = null;
   program = null;
+  fadeProgram = null;
   vertexBuffer = null;
   reportError(particleError("WEBGL_CONTEXT_LOST", "ERA5 wind WebGL context was lost"));
 }
@@ -499,7 +496,7 @@ onMounted(() => {
 });
 
 watch(
-  () => [props.field, props.particleCount, props.maxAge, props.trailLength, props.seed],
+  () => [props.field, props.particleCount, props.maxAge, props.seed],
   rebuildParticleSystem,
 );
 watch(
@@ -516,12 +513,6 @@ onBeforeUnmount(() => {
   canvas.value?.removeEventListener("webglcontextlost", onContextLost);
   canvas.value?.removeEventListener("webglcontextrestored", onContextRestored);
   particleSystem = null;
-  historyLon = null;
-  historyLat = null;
-  historyGeneration = null;
-  projectedX = null;
-  projectedY = null;
-  projectedVisible = null;
   vertexData = null;
   disposeWebGl();
 });
