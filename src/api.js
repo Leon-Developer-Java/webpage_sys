@@ -1,5 +1,9 @@
 import { ElMessage } from "element-plus";
 import router from "./router";
+import {
+  era5HistoryDatesPath,
+  era5HistoryDisplayPath,
+} from "./utils/era5History";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8002";
 const UPLOAD_BASE = import.meta.env.VITE_UPLOAD_BASE ?? "http://127.0.0.1:8003";
@@ -332,8 +336,12 @@ export async function getEra5HistoryStatus({ fresh = false } = {}) {
   return era5HistoryRequest(`/api/era5/history/status${fresh ? `?t=${Date.now()}` : ""}`);
 }
 
-export async function getEra5HistoryDisplay({ fresh = false } = {}) {
-  return era5HistoryRequest(`/api/era5/history/display${fresh ? `?t=${Date.now()}` : ""}`);
+export async function getEra5HistoryDates({ fresh = false } = {}) {
+  return era5HistoryRequest(era5HistoryDatesPath({ fresh }));
+}
+
+export async function getEra5HistoryDisplay({ date = "", fresh = false } = {}) {
+  return era5HistoryRequest(era5HistoryDisplayPath({ date, fresh }));
 }
 
 export async function triggerEra5HistoryUpdate() {

@@ -3,6 +3,31 @@
     <section class="history-workspace">
       <aside class="variable-panel panel">
         <div class="panel-heading">
+          <span>HISTORY DATE</span>
+          <small>{{ historyDateItems.length }} 天可用</small>
+        </div>
+        <section class="history-date-card">
+          <label for="era5-history-date">选择日期</label>
+          <select
+            id="era5-history-date"
+            :value="selectedDate"
+            :disabled="loading || !historyDateItems.length"
+            @change="onDateChange"
+          >
+            <option v-if="!historyDateItems.length" value="">暂无完整日期</option>
+            <option v-for="item in historyDateItems" :key="item.date" :value="item.date">
+              {{ item.date }}{{ item.active ? " · 最新" : "" }}
+            </option>
+          </select>
+          <div class="date-navigation">
+            <button :disabled="loading || !canSelectOlderDate" @click="stepDate(1)">较早</button>
+            <span>{{ historyAvailabilityLabel }}</span>
+            <button :disabled="loading || !canSelectNewerDate" @click="stepDate(-1)">较新</button>
+          </div>
+          <p>{{ historyWindowLabel }}</p>
+        </section>
+
+        <div class="panel-heading">
           <span>VARIABLES</span>
           <small>{{ variables.length }}/4</small>
         </div>
@@ -67,7 +92,7 @@
           <b>!</b>
           <strong>{{ errorTitle }}</strong>
           <span>{{ error }}</span>
-          <button @click="loadData">重新加载</button>
+          <button @click="loadData()">重新加载</button>
         </div>
 
         <div v-if="display && currentLayer" class="legend-card">
@@ -85,7 +110,7 @@
           <div :class="['run-state', statusTone]">
             <i></i>{{ statusLabel }}
           </div>
-          <button class="icon-button" :disabled="loading" title="刷新 ERA5 数据" @click="loadData">
+          <button class="icon-button" :disabled="loading" title="刷新 ERA5 数据" @click="loadData()">
             <span :class="{ spinning: loading }">↻</span>
           </button>
         </div>
@@ -209,12 +234,20 @@ import ProjMap from "../components/ProjMap.vue";
 import WebglLayer from "../components/WebglLayer.vue";
 import {
   era5HistoryAssetUrl,
+  getEra5HistoryDates,
   getEra5HistoryDisplay,
   getEra5HistoryStatus,
 } from "../api";
+import {
+  normalizeEra5HistoryDates,
+  selectEra5HistoryDate,
+  validateEra5HistoryDisplay,
+} from "../utils/era5History";
 
 const display = ref(null);
 const status = ref(null);
+const historyDates = ref(normalizeEra5HistoryDates(null));
+const selectedDate = ref("");
 const selectedVariable = ref("");
 const frameIndex = ref(0);
 const playing = ref(false);
@@ -226,6 +259,26 @@ let playTimer = null;
 let pollTimer = null;
 let lastActiveDate = "";
 
+const historyDateItems = computed(() => historyDates.value.dates);
+const selectedDateIndex = computed(() => historyDateItems.value.findIndex(item => item.date === selectedDate.value));
+const canSelectNewerDate = computed(() => selectedDateIndex.value > 0);
+const canSelectOlderDate = computed(() => (
+  selectedDateIndex.value >= 0
+  && selectedDateIndex.value < historyDateItems.value.length - 1
+));
+const historyAvailabilityLabel = computed(() => {
+  const available = historyDateItems.value.length;
+  const windowDays = historyDates.value.window_days;
+  if (!available) return "等待数据";
+  if (historyDates.value.complete) return `${available} 天完整`;
+  return windowDays ? `${available}/${windowDays} 天` : `${available} 天可用`;
+});
+const historyWindowLabel = computed(() => {
+  const start = historyDates.value.window_start_date;
+  const end = historyDates.value.window_end_date;
+  if (start && end) return `滚动窗口 ${start} 至 ${end}`;
+  return "仅列出已通过完整性校验的日期";
+});
 const variables = computed(() => display.value?.variables || []);
 const times = computed(() => display.value?.times || []);
 const currentLayer = computed(() => display.value?.variable_layers?.[selectedVariable.value] || null);
@@ -289,21 +342,43 @@ const phaseLabel = computed(() => ({
   cleanup: "正在清理旧数据",
 })[status.value?.current_phase] || "正在更新数据");
 
-async function loadData() {
+function applyDisplay(nextDisplay, requestedDate = "") {
+  const validated = validateEra5HistoryDisplay(nextDisplay, requestedDate);
+  display.value = validated;
+  selectedDate.value = validated.active_date;
+  const available = validated.variables?.map(item => item.name) || [];
+  if (!available.includes(selectedVariable.value)) {
+    selectedVariable.value = validated.default_variable || available[0] || "";
+  }
+  frameIndex.value = Math.min(frameIndex.value, Math.max(0, (validated.times?.length || 1) - 1));
+}
+
+function fallbackHistoryDates(nextStatus) {
+  const activeDate = String(nextStatus?.active_date || display.value?.active_date || "");
+  return normalizeEra5HistoryDates({
+    active_date: activeDate,
+    dates: activeDate ? [{ date: activeDate, dataset_id: display.value?.dataset_id || "", active: true }] : [],
+  });
+}
+
+async function loadData({ preferredDate = selectedDate.value } = {}) {
   if (loading.value) return;
   loading.value = true;
   error.value = "";
   try {
-    status.value = await getEra5HistoryStatus();
+    const nextStatus = await getEra5HistoryStatus({ fresh: true });
+    status.value = nextStatus;
     try {
-      const nextDisplay = await getEra5HistoryDisplay({ fresh: true });
-      display.value = nextDisplay;
-      lastActiveDate = nextDisplay.active_date;
-      const available = nextDisplay.variables?.map(item => item.name) || [];
-      if (!available.includes(selectedVariable.value)) {
-        selectedVariable.value = nextDisplay.default_variable || available[0] || "";
-      }
-      frameIndex.value = Math.min(frameIndex.value, Math.max(0, (nextDisplay.times?.length || 1) - 1));
+      historyDates.value = normalizeEra5HistoryDates(await getEra5HistoryDates({ fresh: true }));
+    } catch (datesError) {
+      if (datesError.status !== 404) throw datesError;
+      historyDates.value = fallbackHistoryDates(nextStatus);
+    }
+    lastActiveDate = historyDates.value.active_date || String(nextStatus.active_date || "");
+    const targetDate = selectEra5HistoryDate(historyDates.value, preferredDate);
+    try {
+      const nextDisplay = await getEra5HistoryDisplay({ date: targetDate, fresh: true });
+      applyDisplay(nextDisplay, targetDate);
       await nextTick();
       preloadNearby();
     } catch (displayError) {
@@ -317,13 +392,49 @@ async function loadData() {
   }
 }
 
+async function loadDate(targetDate) {
+  if (loading.value || !targetDate || targetDate === display.value?.active_date) return;
+  const previousDate = display.value?.active_date || selectedDate.value;
+  loading.value = true;
+  error.value = "";
+  playing.value = false;
+  try {
+    const nextDisplay = await getEra5HistoryDisplay({ date: targetDate, fresh: true });
+    applyDisplay(nextDisplay, targetDate);
+    await nextTick();
+    preloadNearby();
+  } catch (requestError) {
+    selectedDate.value = previousDate;
+    error.value = requestError.message || `无法读取 ${targetDate} 的 ERA5 历史数据。`;
+  } finally {
+    loading.value = false;
+  }
+}
+
+function onDateChange(event) {
+  const targetDate = String(event.target?.value || "");
+  selectedDate.value = targetDate;
+  void loadDate(targetDate);
+}
+
+function stepDate(offset) {
+  const nextIndex = selectedDateIndex.value + offset;
+  const targetDate = historyDateItems.value[nextIndex]?.date;
+  if (!targetDate) return;
+  selectedDate.value = targetDate;
+  void loadDate(targetDate);
+}
+
 async function pollStatus() {
   try {
     const nextStatus = await getEra5HistoryStatus({ fresh: true });
     const wasRunning = status.value?.running;
+    const wasFollowingLatest = !selectedDate.value || selectedDate.value === lastActiveDate;
     status.value = nextStatus;
     if ((wasRunning && !nextStatus.running) || (nextStatus.active_date && nextStatus.active_date !== lastActiveDate)) {
-      await loadData();
+      await loadData({
+        preferredDate: wasFollowingLatest ? nextStatus.active_date : selectedDate.value,
+      });
     }
   } catch {
     // Polling failures do not replace an already visible frame with an error.
@@ -503,6 +614,17 @@ onBeforeUnmount(() => {
 .detail-panel { display: flex; flex-direction: column; }
 .panel-heading { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; color: var(--text-dim); font: 700 10px/1 ui-monospace, monospace; letter-spacing: 1.5px; }
 .panel-heading small { color: var(--cyan); }
+.history-date-card { margin-bottom: 16px; padding: 11px; border: 1px solid rgba(59,216,208,.2); border-radius: 9px; background: rgba(59,216,208,.045); }
+.history-date-card label { display: block; margin-bottom: 7px; color: var(--text-dim); font-size: 9px; }
+.history-date-card select { width: 100%; height: 34px; padding: 0 9px; border: 1px solid rgba(59,216,208,.32); border-radius: 7px; outline: none; color: var(--text-main); background: #0a1b2b; font: 600 10px/1 ui-monospace, monospace; cursor: pointer; }
+.history-date-card select:focus { border-color: var(--cyan); box-shadow: 0 0 0 2px rgba(59,216,208,.1); }
+.history-date-card select:disabled { cursor: not-allowed; opacity: .55; }
+.date-navigation { display: grid; grid-template-columns: 44px minmax(0, 1fr) 44px; align-items: center; gap: 5px; margin-top: 8px; }
+.date-navigation button { height: 25px; border: 1px solid var(--line); border-radius: 6px; color: var(--text-dim); background: rgba(255,255,255,.025); font-size: 9px; cursor: pointer; }
+.date-navigation button:hover:not(:disabled) { color: var(--cyan); border-color: rgba(59,216,208,.4); }
+.date-navigation button:disabled { cursor: not-allowed; opacity: .35; }
+.date-navigation span { overflow: hidden; color: var(--cyan); font: 600 9px/1 ui-monospace, monospace; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
+.history-date-card p { margin: 8px 0 0; color: var(--text-dim); font-size: 8px; line-height: 1.45; }
 .status-strip { display: flex; align-items: center; gap: 7px; }
 .status-strip .run-state { flex: 1; min-width: 0; justify-content: center; padding: 0 7px; white-space: nowrap; }
 .status-strip .icon-button { flex-shrink: 0; }
