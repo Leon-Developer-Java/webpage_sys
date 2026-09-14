@@ -1,7 +1,7 @@
 import { createRouter, createWebHistory } from "vue-router";
 import Overview from "./views/Overview.vue";
 import Upload from "./views/Upload.vue";
-import Agent from "./views/Agent.vue";
+import NativeAgent from "./views/NativeAgent.vue";
 import Model from "./views/Model.vue";
 import Login from "./views/Login.vue";
 import Era5History from "./views/Era5History.vue";
@@ -10,7 +10,7 @@ import WrfStudio from "./views/WrfStudio.vue";
 const routes = [
   { path: "/", component: Overview },
   { path: "/upload", component: Upload },
-  { path: "/agent", component: Agent },
+  { path: "/agent", component: NativeAgent },
   { path: "/model", component: Model },
   { path: "/login", component: Login },
   { path: "/era5-history", component: Era5History },

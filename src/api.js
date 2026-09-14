@@ -407,6 +407,16 @@ export async function getModelRunResult(runId) {
   };
 }
 
+export async function getWinterIcingView(runId, startDate, endDate = startDate) {
+  const params = new URLSearchParams({ start_date: startDate, end_date: endDate });
+  const result = await modelRequest(`/api/model-runs/${encodeURIComponent(runId)}/icing-winter-view?${params}`);
+  return {
+    ...result,
+    icing_forecast_url: modelAssetUrl(result?.icing_forecast_url),
+    frames: (result?.frames ?? []).map(frame => ({ ...frame, raster_url: modelAssetUrl(frame.raster_url), grid_url: modelAssetUrl(frame.grid_url) })),
+  };
+}
+
 export async function getModelMetrics(url) {
   const response = await authedFetch(modelAssetUrl(url));
   const payload = await response.json();

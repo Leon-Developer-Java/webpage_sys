@@ -6,10 +6,10 @@
       </button>
       <template v-if="!leftCollapsed">
       <button class="new-btn" @click="newSession">
-        <el-icon><Plus /></el-icon>鏂板缓瀵硅瘽
+        <el-icon><Plus /></el-icon>新建对话
       </button>
       <div class="hist-list">
-        <div class="hist-sep">鍘嗗彶瀵硅瘽</div>
+        <div class="hist-sep">历史对话</div>
         <div
           v-for="s in sessions" :key="s.id"
           :class="['hist-item', { on: s.id === activeId }]"
@@ -28,7 +28,7 @@
             <div v-else class="hi-title">{{ s.title }}</div>
             <div class="hi-date">{{ fmtDay(s.createdAt) }}</div>
           </div>
-          <button class="hi-menu-btn" @click.stop="openMenu(s.id, $event)">路路路</button>
+          <button class="hi-menu-btn" @click.stop="openMenu(s.id, $event)">⋯</button>
         </div>
       </div>
       <div class="sb-foot">
@@ -45,19 +45,46 @@
     <div class="chat glass">
       <div class="chat-head">
         <span class="ch-title">{{ cur.title }}</span>
-        <span class="badge">鏁版嵁搴撳凡杩炴帴</span>
+        <label class="agent-mode">
+          对话模式
+          <select v-model="cur.mode" :disabled="streaming" @change="save">
+            <option value="legacy">原智能体</option>
+            <option value="workflow">气象智能体（AgentScope）</option>
+          </select>
+        </label>
+        <span class="badge">{{ cur.mode === 'workflow' ? 'AgentScope 覆冰 Agent' : 'backend_agent' }}</span>
+      </div>
+      <div v-if="cur.mode === 'workflow'" class="workflow-hint">
+        当前消息只发给 AgentScope 气象 Agent，不调用旧智能体。可用日常语言描述需求，缺少信息会追问；副作用操作执行前需要确认。
+        <a :href="`${WORKFLOW_BASE}/api/weather-agent/capabilities`" target="_blank" rel="noopener noreferrer">能力清单</a>
       </div>
       <div class="msgs" ref="msgsEl">
         <div
           v-for="m in cur.msgs" :key="m.id"
-          :class="['msg', { u: m.role === 'user' }]"
+          :class="['msg', { u: m.role === 'user', 'workflow-msg': !!m.workflow }]"
         >
           <div :class="['av', m.role === 'user' ? 'av-u' : 'av-ai']">
             {{ m.role === 'user' ? '我' : 'AI' }}
           </div>
           <div :class="['bub', m.role === 'user' ? 'bub-u' : 'bub-ai']">
             <span v-if="m.role === 'user'" class="plain">{{ m.content }}</span>
+            <template v-else-if="m.mode === 'workflow'"><span v-if="!m.workflow" class="md" v-html="renderMarkdown(m.content)"></span></template>
             <span v-else class="md" v-html="renderMarkdown(m.content)"></span><span v-if="m.streaming" class="cursor"></span>
+            <div v-if="m.mode" class="message-origin">{{ m.mode === 'workflow' ? 'AgentScope 气象 Agent' : '原智能体 · backend_agent' }}</div>
+            <AgentWorkflowResult
+              v-if="m.workflow"
+              :run="m.workflow"
+              :session-id="workflowSessionId(cur)"
+              :busy="streaming"
+              :locked="!!m.workflowConfirmationPending"
+              :error="m.workflowError || ''"
+              :image-url="url => messageImageUrl(m, url)"
+              :query-enabled="cur.mode === 'workflow'"
+              @confirm="confirmWorkflow(m)"
+              @reject="rejectWorkflow(m)"
+              @refresh="refreshWorkflow(m)"
+              @query="fillWorkflowQuery"
+            />
             <ToolCallCard v-for="tc in (m.toolCalls ?? [])" :key="tc.name" :tc="tc" />
             <div v-if="(m.processEvents ?? []).length" class="agent-process">
               <div class="ap-head">
@@ -85,7 +112,7 @@
                   </ul>
                 </div>
                 <div v-if="(ev.plan?.steps ?? []).length" class="plan-box">
-                  <div class="plan-title">鎵ц璁″垝</div>
+                  <div class="plan-title">执行计划</div>
                   <ol>
                     <li v-for="step in ev.plan.steps" :key="step">{{ step }}</li>
                   </ol>
@@ -98,42 +125,42 @@
                   <button
                     class="action-confirm-btn"
                     type="button"
-                    :disabled="streaming || ev.confirming || ev.confirmed"
+                    :disabled="streaming || ev.confirming || ev.confirmed || cur.mode === 'workflow'"
                     @click="confirmAction(ev)"
                   >
                     {{ ev.confirmed ? '已提交' : ev.confirming ? '提交中' : '确认执行' }}
                   </button>
                 </div>
                 <div v-if="(ev.sources ?? []).length" class="source-line">
-                  鏉ユ簮锛歿{ compactSources(ev.sources) }}
+                  来源：{{ compactSources(ev.sources) }}
                 </div>
               </div>
             </div>
             <a
-              v-for="(im, i) in (m.images ?? [])" :key="i"
-              :href="withToken(im.url)" target="_blank" class="msg-img-link"
+              v-for="(im, i) in (m.workflow ? [] : (m.images ?? []))" :key="i"
+              :href="messageImageUrl(m, im.url)" target="_blank" rel="noopener noreferrer" class="msg-img-link"
             >
-              <img :src="withToken(im.url)" :alt="im.caption || '鐢熸垚鍥惧儚'" class="msg-img" />
+              <img :src="messageImageUrl(m, im.url)" :alt="im.caption || '生成图像'" class="msg-img" />
               <span v-if="im.caption" class="msg-img-cap">{{ im.caption }}</span>
             </a>
             <div v-if="m.paramPrompt" class="pc">
-              <div class="pc-head">琛ュ叏鍙傛暟 路 {{ m.paramPrompt.modelName }}</div>
+              <div class="pc-head">补全参数 · {{ m.paramPrompt.modelName }}</div>
               <div v-for="f in m.paramPrompt.fields" :key="f.name" class="pc-field">
                 <div class="pc-label">{{ f.label }}<span v-if="f.required" class="pc-req">*</span></div>
                 <div v-if="(f.options || []).length" class="pc-opts">
                   <button
                     v-for="o in f.options" :key="o" class="pc-opt"
-                    :disabled="streaming" @click="answerParam(f, o)"
+                    :disabled="streaming || cur.mode === 'workflow'" @click="answerParam(f, o)"
                   >{{ o }}</button>
                 </div>
                 <div class="pc-input-row">
                   <input
                     class="pc-input" v-model="paramDraft[f.name]"
-                    :placeholder="f.placeholder || ('杈撳叆' + f.label)"
-                    :disabled="streaming"
+                    :placeholder="f.placeholder || ('输入' + f.label)"
+                    :disabled="streaming || cur.mode === 'workflow'"
                     @keydown.enter.prevent="answerParam(f, paramDraft[f.name])"
                   />
-                  <button class="pc-ok" :disabled="streaming" @click="answerParam(f, paramDraft[f.name])">纭畾</button>
+                  <button class="pc-ok" :disabled="streaming || cur.mode === 'workflow'" @click="answerParam(f, paramDraft[f.name])">确定</button>
                 </div>
               </div>
             </div>
@@ -145,6 +172,12 @@
             <AgentNowcastAnalysisCard
               v-if="m.nowcastAnalysis"
               :analysis="m.nowcastAnalysis"
+            />
+            <AgentIcingModelCard
+              v-if="m.icingModel"
+              :state="m.icingModel"
+              @expand="openIcingModel(m.icingModel)"
+              @change="save"
             />
           </div>
         </div>
@@ -158,7 +191,7 @@
             class="input-box"
             v-model="inputText"
             rows="1"
-            placeholder="输入问题，或点击快捷指令..."
+            :placeholder="cur.mode === 'workflow' ? '例如：帮我盘点一下现有数据；也可以直接回答上一条追问' : '输入问题，或点击快捷指令...'"
             @keydown.enter.exact.prevent="send"
           ></textarea>
           <button
@@ -176,7 +209,16 @@
       <button class="side-toggle right" type="button" @click="rightCollapsed = !rightCollapsed">
         {{ rightCollapsed ? '<' : '>' }}
       </button>
-      <WorkbenchPanel v-if="!rightCollapsed" @cmd="runCommand" />
+      <div v-if="!rightCollapsed && cur.mode === 'workflow'" class="workflow-help glass">
+        <b>AgentScope 覆冰能力</b>
+        <p>直接输入下方示例，不需要额外的模式前缀。</p>
+        <button v-for="prompt in workflowChips" :key="prompt" class="chip" @click="inputText = prompt">{{ prompt }}</button>
+        <p v-if="workflowCapabilityError" class="failed">{{ workflowCapabilityError }}</p>
+        <p>同一对话内可说“这个文件”或“刚才结果”。新建对话不会引用其他对话的产物。</p>
+        <p>结构化结果保留数据来源和执行状态；下载、解析或模型提交前必须由当前用户确认。</p>
+        <p>正式页面沿用登录身份，会话和确认状态由 AgentScope 服务恢复。</p>
+      </div>
+      <WorkbenchPanel v-else-if="!rightCollapsed" @cmd="runCommand" />
     </div>
   </div>
 
@@ -187,10 +229,20 @@
       :style="{ top: ddPos.top, left: ddPos.left }"
       @click.stop
     >
-      <button class="hi-dd-item" @click="startRename(menuId)">鏀瑰悕</button>
-      <button class="hi-dd-item hi-dd-del" @click="deleteSession(menuId); menuId = null">鍒犻櫎</button>
+      <button class="hi-dd-item" @click="startRename(menuId)">重命名</button>
+      <button class="hi-dd-item hi-dd-del" @click="deleteSession(menuId); menuId = null">删除</button>
     </div>
   </teleport>
+
+  <el-dialog v-model="icingModelDialog" fullscreen class="icing-model-dialog" :show-close="true" destroy-on-close>
+    <AgentIcingModelCard
+      v-if="expandedIcingModel"
+      :state="expandedIcingModel"
+      :expanded="true"
+      @expand="icingModelDialog = false"
+      @change="save"
+    />
+  </el-dialog>
 </template>
 
 <script setup>
@@ -200,29 +252,59 @@ import { chatStream, withToken } from "../api.js";
 import { renderMarkdown } from "../markdown.js";
 import AgentNowcastAnalysisCard from "../components/AgentNowcastAnalysisCard.vue";
 import AgentNowcastCard from "../components/AgentNowcastCard.vue";
+import AgentIcingModelCard from "../components/AgentIcingModelCard.vue";
 import ToolCallCard from "../components/ToolCallCard.vue";
 import WorkbenchPanel from "../components/WorkbenchPanel.vue";
+import AgentWorkflowResult from "../components/AgentWorkflowResult.vue";
+import {
+  WORKFLOW_BASE, WORKFLOW_RUNTIME, workflowChat, workflowConfirm, workflowReject, workflowGetRun, workflowSessionId,
+  workflowSummary, workflowImageUrls, workflowCapabilities, legacyMessages, canConfirmWorkflow, isWorkflowImage,
+} from "../workflow-api.js";
+import { agentScopeMessages } from "../agentscope-api.js";
 
 const SKEY = "agent_sessions";
 
-function initSessions() {
-  const stored = localStorage.getItem(SKEY);
-  if (stored) return JSON.parse(stored);
-  return [{
+function initialSession() {
+  return {
     id: crypto.randomUUID(),
     title: "新对话",
+    mode: "workflow",
     createdAt: Date.now(),
     msgs: [{
       id: "0",
       role: "assistant",
-      content: "您好，我是智慧气象智能体。您可以让我查询数据、调用 adapter 解析文件、运行分析逻辑，或对需要确认的 Action 进行预演和执行。",
+      mode: "workflow",
+      content: "您好，我是 AgentScope 覆冰 Agent。您可以直接查询数据和覆冰结果；下载、解析或模型提交会先请您确认。",
       toolCalls: [],
     }],
-  }];
+  };
 }
 
-const sessions = ref(initSessions());
-const activeId = ref(sessions.value[0].id);
+function initState() {
+  try {
+    const stored = localStorage.getItem(SKEY);
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      const storedSessions = Array.isArray(parsed) ? parsed : parsed.sessions;
+      if (Array.isArray(storedSessions) && storedSessions.length) {
+        const sessions = storedSessions.map(session => ({ ...session, mode: session.mode === 'workflow' ? 'workflow' : 'legacy' }));
+        const requestedActiveId = Array.isArray(parsed) ? "" : parsed.activeSessionId;
+        return {
+          sessions,
+          activeId: sessions.some(session => session.id === requestedActiveId) ? requestedActiveId : sessions[0].id,
+        };
+      }
+    }
+  } catch (error) {
+    console.warn("Agent conversation history could not be read", error);
+  }
+  const session = initialSession();
+  return { sessions: [session], activeId: session.id };
+}
+
+const savedState = initState();
+const sessions = ref(savedState.sessions);
+const activeId = ref(savedState.activeId);
 const inputText = ref("");
 const streaming = ref(false);
 const msgsEl = ref(null);
@@ -233,12 +315,22 @@ const editingId = ref(null);
 const editTitle = ref("");
 const leftCollapsed = ref(localStorage.getItem("agent_left_collapsed") === "1");
 const rightCollapsed = ref(localStorage.getItem("agent_right_collapsed") === "1");
+const icingModelDialog = ref(false);
+const expandedIcingModel = ref(null);
 
 const cur = computed(() => sessions.value.find(s => s.id === activeId.value));
-const quickChips = ["查看数据库里最新的 WRF 解析任务", "统计最新 WRF T2 按分辨率分组", "重试解析失败任务"];
+const workflowChips = ref(["列出功能清单", "巡检数据资产", "查询 ERA5 数据集"]);
+const workflowCapabilityError = ref("");
+const restoredAgentScopeSessions = new Set();
+const quickChips = computed(() => cur.value.mode === 'workflow' ? workflowChips.value : ["查看数据库里最新的 WRF 解析任务", "统计最新 WRF T2 按分辨率分组", "重试解析失败任务"]);
 
 const infoIdx = ref(0);
-const infoItems = computed(() => [
+const infoItems = computed(() => cur.value.mode === 'workflow' ? [
+  "自然语言理解，执行仅限已登记能力",
+  "工作流计划、步骤与运行记录",
+  `${sessions.value.length} 个会话`,
+  "AgentScope 原生服务 · 8012",
+] : [
   "DeepSeek 自然语言理解",
   "Agent 工具调用与过程展示",
   `${sessions.value.length} 个会话`,
@@ -247,8 +339,56 @@ const infoItems = computed(() => [
 ]);
 let tickTimer = null;
 
+function compactWorkflowResult(result) {
+  if (!result || typeof result !== "object") return result ?? null;
+  const fields = [
+    "model_id", "external_run_id", "archive_id", "selected_range", "approved_inputs", "guardrail", "plan",
+    "analysis", "risk_assessment", "control_recommendations", "process_analysis", "key_days",
+  ];
+  return Object.fromEntries(fields.filter(field => result[field] !== undefined).map(field => [field, result[field]]));
+}
+
+function compactWorkflowRun(run) {
+  if (!run || typeof run !== "object") return run ?? null;
+  const { result, action_results, events, ...rest } = run;
+  return {
+    ...rest,
+    result: compactWorkflowResult(result),
+    action_results: Array.isArray(action_results) ? action_results.slice(-12) : action_results,
+    events: Array.isArray(events) ? events.slice(-24) : events,
+  };
+}
+
+function compactMessageForStorage(message) {
+  return {
+    ...message,
+    workflow: compactWorkflowRun(message.workflow),
+    icingModel: message.icingModel ? { ...message.icingModel, result: null } : null,
+  };
+}
+
+function storageState(sessionList = sessions.value) {
+  return {
+    version: 2,
+    activeSessionId: activeId.value,
+    sessions: sessionList.map(session => ({
+      ...session,
+      msgs: (session.msgs || []).map(compactMessageForStorage),
+    })),
+  };
+}
+
 function save() {
-  localStorage.setItem(SKEY, JSON.stringify(sessions.value));
+  try {
+    localStorage.setItem(SKEY, JSON.stringify(storageState()));
+    return;
+  } catch (error) { /* fall through to a smaller, current-session copy */ }
+  const active = sessions.value.find(session => session.id === activeId.value) || sessions.value[0];
+  try {
+    localStorage.setItem(SKEY, JSON.stringify(storageState([{ ...active, msgs: active.msgs.slice(-48) }])));
+  } catch (error) {
+    console.warn("Agent conversation history was not saved locally", error);
+  }
 }
 
 function scrollBottom() {
@@ -259,7 +399,7 @@ function fmtDay(ts) {
   if (!ts) return '';
   const d = new Date(ts);
   const today = new Date();
-  if (d.toDateString() === today.toDateString()) return '浠婂ぉ';
+  if (d.toDateString() === today.toDateString()) return '今天';
   return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
@@ -297,14 +437,17 @@ function deleteSession(id) {
 }
 
 function newSession() {
+  const mode = "workflow";
   const s = {
     id: crypto.randomUUID(),
     title: "新对话",
+    mode,
     createdAt: Date.now(),
     msgs: [{
       id: crypto.randomUUID(),
       role: "assistant",
-      content: "您好，当前智能体可查询数据、调用工具、展示执行过程，并在需要时等待您确认 Action。",
+      mode,
+      content: "当前为 AgentScope 覆冰 Agent。可以说“帮我盘点一下现有数据”，缺少信息时我会追问；解析必须先预演，再通过确认按钮执行。",
       toolCalls: [],
     }],
   };
@@ -313,17 +456,155 @@ function newSession() {
   save();
 }
 
-function appendMsg(role, content) {
-  const m = { id: crypto.randomUUID(), role, content, toolCalls: [], processEvents: [], images: [], paramPrompt: null, nowcast: null, nowcastAnalysis: null, streaming: role === "assistant" };
-  cur.value.msgs.push(m);
+function appendMsg(role, content, session = cur.value, mode = "legacy") {
+  const m = { id: crypto.randomUUID(), role, content, mode, toolCalls: [], processEvents: [], images: [], paramPrompt: null, nowcast: null, nowcastAnalysis: null, icingModel: null, streaming: role === "assistant" };
+  session.msgs.push(m);
   scrollBottom();
-  return cur.value.msgs[cur.value.msgs.length - 1];
+  return session.msgs[session.msgs.length - 1];
+}
+
+function messageImageUrl(message, url) {
+  if (message.mode !== "workflow") return withToken(url);
+  if (isWorkflowImage(url)) return url;
+  // Only the configured legacy data host may receive its existing auth token.
+  try {
+    const parsed = new URL(url);
+    const dataBase = new URL(import.meta.env.VITE_API_BASE || "http://127.0.0.1:8002", window.location.origin);
+    if (parsed.origin === dataBase.origin && parsed.pathname.startsWith("/data/")) return withToken(url);
+  } catch { /* Keep invalid or unrelated URLs free of authentication data. */ }
+  return url;
+}
+
+function applyWorkflowRun(message, run) {
+  message.workflow = run;
+  message.content = workflowSummary(run);
+  message.images = workflowImageUrls(run).map(url => ({ url, caption: "AgentScope 覆冰结果" }));
+  const modelRunId = run?.result?.external_run_id;
+  if (run?.result?.model_id === "icing_prediction" && /^run_[A-Za-z0-9]+$/.test(String(modelRunId || ""))) {
+    const selected = run.result.selected_range;
+    const requested_range = selected?.start && selected?.end ? { start: selected.start, end: selected.end } : null;
+    message.icingModel = {
+      run_id: modelRunId,
+      result: null,
+      winterArchive: run.result.archive_id || "",
+      requested_range,
+      // A historical replay has an explicit requested range but no fixed
+      // winter archive view.  It should open the generic icing result map.
+      map_visible: ["season", "range"].includes(run.result.view) || Boolean(requested_range),
+    };
+  }
+}
+
+async function restoreAgentScopeSession(session) {
+  if (session.mode !== "workflow" || restoredAgentScopeSessions.has(session.id)) return;
+  restoredAgentScopeSessions.add(session.id);
+  try {
+    const remote = await agentScopeMessages(workflowSessionId(session));
+    if (!remote.length) return;
+    for (const message of remote) {
+      if (message.workflow) applyWorkflowRun(message, message.workflow);
+    }
+    session.msgs = remote;
+    save();
+    scrollBottom();
+  } catch (error) {
+    restoredAgentScopeSessions.delete(session.id);
+    workflowCapabilityError.value = `AgentScope 对话恢复失败：${error.message}`;
+  }
+}
+
+async function loadWorkflowCapabilities() {
+  try {
+    const data = await workflowCapabilities();
+    const prompts = Array.isArray(data.suggested_prompts) ? data.suggested_prompts.filter(item => typeof item === "string" && item.trim()) : [];
+    workflowChips.value = ["列出功能清单", ...prompts].slice(0, 7);
+    workflowCapabilityError.value = "";
+  } catch (error) {
+    workflowCapabilityError.value = "能力清单暂时无法读取，以上为基础示例。";
+  }
+}
+
+function fillWorkflowQuery(command) {
+  if (streaming.value || cur.value.mode !== "workflow") return;
+  inputText.value = command;
+}
+
+async function refreshWorkflow(message) {
+  if (streaming.value) return;
+  const sessionId = workflowSessionId(cur.value);
+  if (message.workflow.session_id !== sessionId) return;
+  streaming.value = true;
+  message.workflowError = "";
+  try {
+    const run = await workflowGetRun(message.workflow.run_id, sessionId);
+    applyWorkflowRun(message, run);
+    message.workflowConfirmationPending = false;
+  } catch (error) {
+    message.workflowError = error.message;
+  } finally {
+    streaming.value = false;
+    save();
+  }
+}
+
+async function confirmWorkflow(message) {
+  const sessionId = workflowSessionId(cur.value);
+  if (streaming.value || message.workflowConfirmationPending || !canConfirmWorkflow(message.workflow, sessionId)) return;
+  streaming.value = true;
+  message.workflowError = "";
+  // Persist the uncertainty marker before sending a write request. Never retry it automatically.
+  message.workflowConfirmationPending = true;
+  try {
+    save();
+    const run = await workflowConfirm(message.workflow, sessionId);
+    applyWorkflowRun(message, run);
+    message.workflowConfirmationPending = false;
+  } catch (error) {
+    message.workflowError = `${error.message} 请先刷新运行状态，核对是否已执行。`;
+  } finally {
+    streaming.value = false;
+    save();
+    scrollBottom();
+  }
+}
+
+async function rejectWorkflow(message) {
+  const sessionId = workflowSessionId(cur.value);
+  if (streaming.value || message.workflowConfirmationPending || !canConfirmWorkflow(message.workflow, sessionId)) return;
+  streaming.value = true;
+  message.workflowError = "";
+  message.workflowConfirmationPending = true;
+  try {
+    save();
+    const reply = await workflowReject(message.workflow, sessionId);
+    if (reply?.kind === "message") {
+      message.workflow = null;
+      message.content = reply.text;
+    } else {
+      applyWorkflowRun(message, reply);
+    }
+    message.workflowConfirmationPending = false;
+  } catch (error) {
+    message.workflowError = `${error.message} 请刷新会话确认当前状态。`;
+  } finally {
+    streaming.value = false;
+    save();
+    scrollBottom();
+  }
 }
 
 function latestNowcastRunId() {
   for (let index = cur.value.msgs.length - 1; index >= 0; index -= 1) {
     const message = cur.value.msgs[index];
     const runId = message.nowcast?.task?.run_id || message.nowcastAnalysis?.run_id;
+    if (/^run_[A-Za-z0-9]+$/.test(String(runId || ""))) return runId;
+  }
+  return "";
+}
+
+function latestIcingRunId() {
+  for (let index = cur.value.msgs.length - 1; index >= 0; index -= 1) {
+    const runId = cur.value.msgs[index].icingModel?.run_id;
     if (/^run_[A-Za-z0-9]+$/.test(String(runId || ""))) return runId;
   }
   return "";
@@ -363,6 +644,18 @@ function applyAnalysisResult(msg, ev) {
     tc.analysis = item;
     if (ev.summary) tc.result = ev.summary;
   }
+}
+
+function applyModelView(msg, ev) {
+  if (ev.model_id !== "icing_prediction" || !ev.run_id) return;
+  msg.icingModel = { run_id: ev.run_id, result: null, map_visible: true };
+}
+
+function openIcingModel(state) {
+  state.map_visible = true;
+  save();
+  expandedIcingModel.value = state;
+  icingModelDialog.value = true;
 }
 
 function processTitle(ev) {
@@ -409,7 +702,7 @@ function canConfirmAction(ev) {
 }
 
 async function confirmAction(ev) {
-  if (!canConfirmAction(ev) || streaming.value) return;
+  if (!canConfirmAction(ev) || streaming.value || cur.value.mode === "workflow") return;
   ev.confirming = true;
   inputText.value = ev.action.confirm_prompt || buildConfirmPrompt(ev.action);
   await send();
@@ -429,7 +722,7 @@ function buildConfirmPrompt(action) {
 
 function answerParam(field, value) {
   const v = (value ?? "").toString().trim();
-  if (!v || streaming.value) return;
+  if (!v || streaming.value || cur.value.mode === "workflow") return;
   for (let i = cur.value.msgs.length - 1; i >= 0; i--) {
     if (cur.value.msgs[i].paramPrompt) { cur.value.msgs[i].paramPrompt = null; break; }
   }
@@ -441,22 +734,42 @@ function answerParam(field, value) {
 async function send() {
   if (!inputText.value.trim() || streaming.value) return;
   const text = inputText.value.trim();
+  const session = cur.value;
+  const mode = session.mode || "legacy";
   inputText.value = "";
   if (cur.value.title === "新对话") cur.value.title = text.slice(0, 16);
-  appendMsg("user", text);
+  appendMsg("user", text, session, mode);
   streaming.value = true;
-  const aiMsg = appendMsg("assistant", "");
+  const aiMsg = appendMsg("assistant", "", session, mode);
+  if (mode === "workflow") {
+    aiMsg.content = "正在理解需求并检查可用覆冰能力…";
+    try {
+      const reply = await workflowChat(workflowSessionId(session), text);
+      if (reply?.kind === "message") aiMsg.content = reply.text;
+      else applyWorkflowRun(aiMsg, reply);
+    } catch (error) {
+      aiMsg.content = error.message;
+    } finally {
+      aiMsg.streaming = false;
+      streaming.value = false;
+      save();
+      scrollBottom();
+    }
+    return;
+  }
   try {
     for await (const ev of chatStream(
-      cur.value.msgs.slice(0, -1).map(m => ({ role: m.role, content: m.content })),
+      legacyMessages(session.msgs.slice(0, -1)),
       {
-        session_id: cur.value.id,
+        session_id: session.id,
         nowcast_run_id: latestNowcastRunId(),
+        icing_run_id: latestIcingRunId(),
       }
     )) {
       if (ev.type === "text") aiMsg.content += ev.value;
       else if (ev.type === "tool") applyToolEvent(aiMsg, ev);
       else if (ev.type === "analysis_result") applyAnalysisResult(aiMsg, ev);
+      else if (ev.type === "model_view") applyModelView(aiMsg, ev);
       else if (ev.type === "image") aiMsg.images.push({ url: ev.url, caption: ev.caption });
       else if (ev.type === "need_params") aiMsg.paramPrompt = { model: ev.model, modelName: ev.model_name, fields: ev.fields };
       else if (ev.type === "nowcast_confirmation") {
@@ -470,11 +783,11 @@ async function send() {
       else if (ev.type === "nowcast_analysis") {
         aiMsg.nowcastAnalysis = ev.analysis;
       }
-      else if (ev.type === "error") aiMsg.content += `\n鈿狅笍 ${ev.message}`;
+      else if (ev.type === "error") aiMsg.content += `\n⚠️ ${ev.message}`;
       scrollBottom();
     }
   } catch (e) {
-    aiMsg.content += `\n鈿狅笍 杩炴帴鏅鸿兘浣撳悗绔け璐ワ細${e.message}`;
+    aiMsg.content += `\n⚠️ 连接智能体后端失败：${e.message}`;
   }
   aiMsg.streaming = false;
   streaming.value = false;
@@ -484,9 +797,15 @@ async function send() {
 function onDocClick() { menuId.value = null; }
 watch(leftCollapsed, value => localStorage.setItem("agent_left_collapsed", value ? "1" : "0"));
 watch(rightCollapsed, value => localStorage.setItem("agent_right_collapsed", value ? "1" : "0"));
+watch(activeId, () => save());
+watch(activeId, () => restoreAgentScopeSession(cur.value));
 onMounted(() => {
+  // Rewrite legacy array storage into the versioned, compact form after it loads.
+  save();
   document.addEventListener("click", onDocClick);
   tickTimer = setInterval(() => infoIdx.value++, 3000);
+  loadWorkflowCapabilities();
+  restoreAgentScopeSession(cur.value);
 });
 onBeforeUnmount(() => {
   document.removeEventListener("click", onDocClick);
@@ -495,6 +814,15 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+.agent-mode { display: flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; }
+.agent-mode select { background: var(--field); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 5px; font: inherit; }
+.agent-mode option { background: var(--panel, #172334); color: var(--text); }
+.workflow-hint { padding: 8px 14px; font-size: 12px; line-height: 1.6; color: var(--muted); border-bottom: 1px solid var(--border); }
+.workflow-hint a { color: var(--accent); margin-left: 6px; }
+.message-origin { color: var(--muted); font-size: 10px; margin-top: 6px; }
+.workflow-help { padding: 14px; font-size: 12px; line-height: 1.7; width: 100%; overflow-y: auto; }
+.workflow-help .chip { display: block; margin: 7px 0; text-align: left; }
+.workflow-help p { color: var(--muted); }
 .agent {
   display: flex;
   gap: 10px;
@@ -916,7 +1244,7 @@ onBeforeUnmount(() => {
   gap: 10px;
   border-bottom: 1px solid var(--border);
 }
-.ch-title { font-size: 14px; font-weight: 600; flex: 1; }
+.ch-title { font-size: 14px; font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .badge {
   font-size: 10px;
   padding: 2px 9px;
@@ -939,6 +1267,8 @@ onBeforeUnmount(() => {
 
 .msg { display: flex; gap: 10px; max-width: 88%; }
 .msg.u { align-self: flex-end; flex-direction: row-reverse; }
+.msg.workflow-msg { width: 100%; max-width: 100%; }
+.workflow-msg .bub { min-width: 0; flex: 1; }
 
 .av {
   width: 28px;
