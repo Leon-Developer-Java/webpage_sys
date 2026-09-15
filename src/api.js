@@ -328,7 +328,7 @@ export function getWrfDisplay(taskId = "") {
 }
 
 async function era5HistoryRequest(path, options = {}) {
-  const response = await fetch(`${ERA5_HISTORY_BASE}${path}`, {
+  const response = await authedFetch(`${ERA5_HISTORY_BASE}${path}`, {
     ...options,
     cache: options.cache || "no-store",
     headers: { Accept: "application/json", ...(options.headers || {}) },
@@ -344,10 +344,11 @@ async function era5HistoryRequest(path, options = {}) {
 
 export function era5HistoryAssetUrl(path) {
   const value = String(path || "");
-  if (!value || /^(https?:|data:|blob:)/i.test(value)) return value;
+  if (!value || /^(data:|blob:)/i.test(value)) return value;
+  if (/^https?:/i.test(value)) return withToken(value);
   const configuredBase = ERA5_HISTORY_BASE.replace(/\/$/, "");
   const origin = configuredBase || window.location.origin;
-  return new URL(value, `${origin}/`).toString();
+  return withToken(new URL(value, `${origin}/`).toString());
 }
 
 export async function getEra5HistoryStatus({ fresh = false } = {}) {
