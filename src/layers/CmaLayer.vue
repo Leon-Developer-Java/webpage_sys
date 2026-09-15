@@ -175,9 +175,14 @@ function displayElementName(item, gridLike = null, unit = "") {
 }
 
 function apiUrl(path) {
-  if (!path) return "";
-  const url = /^https?:\/\//i.test(path) ? path : new URL(path, `${API_BASE}/`).toString();
-  return withToken(url);
+  const value = String(path || "").trim();
+  if (!value || /^(data:|blob:)/i.test(value)) return value;
+  const normalized = value.replaceAll("\\", "/");
+  const dataIndex = normalized.indexOf("/data/");
+  if (/^https?:\/\//i.test(normalized) && dataIndex < 0) return withToken(normalized);
+  const publicPath = dataIndex >= 0 ? normalized.slice(dataIndex) : normalized;
+  const suffix = publicPath.startsWith("/") ? publicPath : `/${publicPath}`;
+  return withToken(`${String(API_BASE || "").replace(/\/$/, "")}${suffix}`);
 }
 
 function displayImagePath(data) {
@@ -398,7 +403,26 @@ async function fetchCmaDisplay(variableName, levelIndex = 0, timeIndex = 0, reso
   if (!response.ok || payload.code !== 0) {
     throw new Error(payload.detail || "CMA 数据读取失败");
   }
-  return payload.data;
+  if (!exactFrame || catalogFrames.value.length <= 1) return payload.data;
+
+  const index = Math.min(Math.max(Math.floor(Number(timeIndex) || 0), 0), catalogFrames.value.length - 1);
+  const frame = catalogFrames.value[index] || {};
+  const meta = props.parsed?.meta || props.parsed?.meta_json || props.parsed || {};
+  const times = Array.isArray(meta.times) && meta.times.length
+    ? meta.times
+    : catalogFrames.value.map(item => item?.valid_time || item?.time || item?.time_label).filter(Boolean);
+  return {
+    ...payload.data,
+    frame_count: catalogFrames.value.length,
+    frames: catalogFrames.value,
+    times,
+    time_index: index,
+    frame: {
+      ...(payload.data?.frame || {}),
+      ...frame,
+      index,
+    },
+  };
 }
 
 async function fetchCachedDisplay(variableName, levelIndex, timeIndex, resolutionKey) {

@@ -4,6 +4,7 @@ import {
   era5HistoryDatesPath,
   era5HistoryDisplayPath,
 } from "./utils/era5History";
+import { requestCacheMode } from "./utils/requestCachePolicy";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8002";
 const UPLOAD_BASE = import.meta.env.VITE_UPLOAD_BASE ?? "http://127.0.0.1:8003";
@@ -102,8 +103,10 @@ async function ensureFreshToken() {
 
 export async function authedFetch(url, options = {}) {
   await ensureFreshToken();
+  const cache = requestCacheMode(url, options);
   const res = await fetch(url, {
     ...options,
+    ...(cache ? { cache } : {}),
     headers: { ...(options.headers || {}), Authorization: `Bearer ${getToken()}` },
   });
   if (res.status === 401) logout();
@@ -116,6 +119,22 @@ export function withToken(url) {
   if (!value.includes("/data/") && !value.includes("/outputs/")) return value;
   if (/(?:[?&])token=/.test(value)) return value;
   return `${value}${value.includes("?") ? "&" : "?"}token=${encodeURIComponent(getToken())}`;
+}
+
+export function resolveServiceUrl(path, base = API_BASE) {
+  const value = String(path || "").trim();
+  if (!value || /^(data:|blob:)/i.test(value)) return value;
+
+  const normalized = value.replaceAll("\\", "/");
+  const publicPathIndex = [normalized.indexOf("/data/"), normalized.indexOf("/outputs/")]
+    .filter(index => index >= 0)
+    .sort((left, right) => left - right)[0];
+  if (/^https?:\/\//i.test(normalized) && publicPathIndex === undefined) return normalized;
+
+  const publicPath = publicPathIndex === undefined ? normalized : normalized.slice(publicPathIndex);
+  const prefix = String(base || "").replace(/\/$/, "");
+  const suffix = publicPath.startsWith("/") ? publicPath : `/${publicPath}`;
+  return `${prefix}${suffix}`;
 }
 
 function apiError(payload, fallback = "请求失败") {
@@ -166,8 +185,7 @@ export function wrfAssetUrl(path) {
   const value = String(path || "");
   if (!value || /^(data:|blob:)/i.test(value)) return value;
   const base = WRF_BASE || globalThis.location?.origin || "http://127.0.0.1:8007";
-  const absolute = /^https?:/i.test(value) ? value : new URL(value, `${base.replace(/\/$/, "")}/`).toString();
-  return withToken(absolute);
+  return withToken(resolveServiceUrl(value, base));
 }
 
 export function getWrfHealth() {

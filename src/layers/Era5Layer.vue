@@ -43,7 +43,7 @@ import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } fr
 import LayerCard from "../components/LayerCard.vue";
 import WebglLayer from "../components/WebglLayer.vue";
 import Era5WindParticleLayer from "./Era5WindParticleLayer.vue";
-import { authedFetch } from "../api";
+import { authedFetch, resolveServiceUrl, withToken } from "../api";
 import { createEra5WindFrameSession } from "../utils/era5WindFrameSession.js";
 import {
   era5WindDisplayRange,
@@ -180,11 +180,7 @@ function fileName(path) {
 }
 
 function toPublicUrl(path) {
-  if (!path) return "";
-  if (/^https?:\/\//i.test(path)) return path;
-  const normalized = String(path).replaceAll("\\", "/");
-  const idx = normalized.indexOf("/data/");
-  return idx >= 0 ? `${API_BASE}${normalized.slice(idx)}` : normalized.startsWith("/data/") ? `${API_BASE}${normalized}` : "";
+  return withToken(resolveServiceUrl(path, API_BASE));
 }
 
 function formatTick(value) {

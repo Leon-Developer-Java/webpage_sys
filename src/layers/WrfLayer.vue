@@ -36,7 +36,7 @@
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import WebglLayer from "../components/WebglLayer.vue";
 import LayerCard from "../components/LayerCard.vue";
-import { authedFetch, withToken } from "../api";
+import { authedFetch, resolveServiceUrl, withToken } from "../api";
 
 const props = defineProps({
   timeIndex: { type: Number, default: 12 },
@@ -54,12 +54,7 @@ const display = ref(null);
 let displayRequestId = 0;
 
 function toPublicUrl(path) {
-  if (!path) return "";
-  if (/^https?:\/\//i.test(path) || path.startsWith("data:")) return withToken(path);
-  const normalized = String(path).replaceAll("\\", "/");
-  if (normalized.startsWith("data/")) return withToken(`${API_BASE}/${normalized}`);
-  const idx = normalized.indexOf("/data/");
-  return idx >= 0 ? withToken(`${API_BASE}${normalized.slice(idx)}`) : "";
+  return withToken(resolveServiceUrl(path, API_BASE));
 }
 
 async function loadWrfDisplay() {

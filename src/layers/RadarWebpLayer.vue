@@ -37,7 +37,7 @@
 <script setup>
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import LayerCard from "../components/LayerCard.vue";
-import { authedFetch, withToken } from "../api";
+import { authedFetch, resolveServiceUrl, withToken } from "../api";
 
 const props = defineProps({
   src: String,
@@ -187,9 +187,7 @@ function sampleHeightLevels(levels) {
 }
 
 function apiUrl(path) {
-  if (!path) return "";
-  if (/^https?:\/\//i.test(path) || String(path).startsWith("data:")) return path;
-  return new URL(path, `${API_BASE}/`).toString();
+  return resolveServiceUrl(path, API_BASE);
 }
 
 function resolvedImageUrl(path) {

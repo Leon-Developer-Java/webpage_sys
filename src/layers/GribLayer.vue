@@ -45,7 +45,7 @@
 <script setup>
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import LayerCard from "../components/LayerCard.vue";
-import { authedFetch } from "../api";
+import { authedFetch, resolveServiceUrl, withToken } from "../api";
 
 const props = defineProps({
   src: String,
@@ -73,7 +73,7 @@ const props = defineProps({
 
 const emit = defineEmits(["variable-change", "display-loaded"]);
 
-const API_BASE = "http://127.0.0.1:8002";
+const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8002";
 const FALLBACK_EXTENT = [-180, -90, 179.75, 90];
 
 const surface = inject("mapSurface", null);
@@ -508,22 +508,11 @@ function toPublicUrl(path) {
   if (!path) return "";
 
   const text = String(path);
-  if (/^https?:\/\//i.test(text) || text.startsWith("data:")) {
-    return text;
-  }
-
   const normalized = text.replaceAll("\\", "/");
-  const index = normalized.indexOf("/data/");
-
-  if (index >= 0) {
-    return `${API_BASE}${normalized.slice(index)}`;
-  }
-
-  if (normalized.startsWith("/")) {
-    return `${API_BASE}${normalized}`;
-  }
-
-  return `${API_BASE}/data/${sourceName.value}/${normalized}`;
+  const value = /^(https?:|data:|blob:)/i.test(normalized) || normalized.includes("/data/") || normalized.startsWith("/")
+    ? normalized
+    : `/data/${sourceName.value}/${normalized}`;
+  return withToken(resolveServiceUrl(value, API_BASE));
 }
 
 function formatTimeLabel(value) {
@@ -850,7 +839,7 @@ watch(
       applyDisplayData(value);
     }
   },
-  { immediate: true, deep: true }
+  { immediate: true }
 );
 
 watch(variableOptions, syncSelection);
@@ -894,8 +883,12 @@ watch(
 );
 
 onMounted(() => {
-  loadDisplay();
-  refreshTimer = window.setInterval(loadDisplay, 30000);
+  if (!props.parsed) {
+    loadDisplay();
+    refreshTimer = window.setInterval(() => {
+      if (!props.parsed) loadDisplay();
+    }, 30000);
+  }
 });
 
 onBeforeUnmount(() => {
