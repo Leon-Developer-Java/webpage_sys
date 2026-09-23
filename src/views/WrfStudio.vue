@@ -13,7 +13,6 @@
       <template v-if="tool === 'source'">
         <div class="service-summary" :class="{ offline: !serviceOnline }"><i></i><span>{{ serviceOnline ? `backend_wrf · 8007 · ${hpcModeLabel}` : 'WRF 服务未连接' }}</span><button v-if="!serviceOnline" @click="refreshAll(true)">重试</button></div>
         <p v-if="serviceError" class="service-error">{{ txLabText(serviceError) }}</p>
-        <p class="dock-hint">选择 WRF 驱动资料。GFS 与 ECMWF 使用同一套任务、数据池和结果流程。</p>
         <div class="source-list">
           <button v-for="source in sources" :key="source.id" :class="{ selected: selectedSource === source.id, disabled: source.status !== 'available' }" @click="selectSource(source)">
             <span class="source-icon"><el-icon><DataAnalysis /></el-icon></span>
@@ -21,7 +20,6 @@
             <span :class="['source-state', source.status]">{{ source.status === 'available' ? '已接入' : '待接入' }}</span>
           </button>
         </div>
-        <div class="source-note"><el-icon><InfoFilled /></el-icon><p>{{ selectedSourceLabel }} 由 tx-lab 后台持续预取；工作台只提交配置并拉取 WRF 结果。</p></div>
       </template>
       <template v-else-if="tool === 'proj'">
         <p class="dock-hint">WRF 结果使用单地图展示，切换投影不会改变原始数据。</p>
@@ -39,10 +37,11 @@
         <section class="center-workspace glass">
           <template v-if="workspaceView === 'result'">
             <header class="workspace-head">
-              <div><span>WRF VISUALIZATION</span><h2>数值预报结果</h2><small>{{ resultTaskId || '暂无成功任务' }}</small></div>
-              <div class="workspace-actions"><el-button type="primary" @click="openNewTask">新建任务</el-button></div>
+              <div><span>{{ isDownscale(resultTask) ? 'HIGH-RESOLUTION SCIENTIFIC PRODUCT' : 'WRF VISUALIZATION' }}</span><h2>{{ isDownscale(resultTask) ? '微尺度结果' : '数值预报结果' }}</h2><small>{{ resultTaskId || '暂无成功任务' }}</small></div>
+              <div class="workspace-actions"><el-button plain @click="openNewDownscaleTask">新建高分任务</el-button><el-button v-if="canCreateDownscale(resultTask)" text @click="openDownscaleFromWrf(resultTask)">复用此结果降尺度</el-button><el-button type="primary" @click="openNewTask">新建模拟任务</el-button></div>
             </header>
             <div v-if="!resultTaskId" class="result-empty"><el-icon><Picture /></el-icon><b>暂无 WRF 可视化结果</b><span>从右侧新建任务，任务完成后将在这里展示 WebP 预报图。</span><el-button type="primary" plain @click="openNewTask">新建模拟任务</el-button></div>
+            <DownscaleResultViewer v-else-if="isDownscale(resultTask)" :task="resultTask" @back="showLatestResult" />
             <template v-else>
               <div class="result-toolbar"><span><i></i>{{ resultSourceLabel }} · {{ visualInfo?.element || 'WRF 结果' }}</span><b>{{ currentVisualTime || '等待时次' }}</b></div>
               <div class="visual-map">
@@ -62,17 +61,20 @@
             </template>
           </template>
 
-          <WrfTaskConfig
-            v-else-if="workspaceView === 'new'"
-            :options="options"
-            :data-source="selectedSource"
-            :submitting="submitting"
-            :initial-request="restartContext?.request"
-            :retry-task-id="restartContext?.taskId || ''"
-            :attempt-no="restartContext?.attemptNo || 1"
-            @submit="submitTask"
-            @cancel="cancelConfig"
-          />
+          <template v-else-if="workspaceView === 'new'">
+            <WrfTaskConfig
+              v-if="activeNewTaskType === 'wrf'"
+              :options="options"
+              :data-source="selectedSource"
+              :submitting="submitting"
+              :initial-request="restartContext?.request"
+              :retry-task-id="restartContext?.taskId || ''"
+              :attempt-no="restartContext?.attemptNo || 1"
+              @submit="submitTask"
+              @cancel="cancelConfig"
+            />
+            <DownscaleTaskConfig v-else :options="options" :data-source="selectedSource" :submitting="submitting" :initial-context="downscaleContext" @submit="submitDownscaleTask" @cancel="cancelConfig" />
+          </template>
           <WrfTaskRun
             v-else
             :task="selectedTask"
@@ -85,6 +87,7 @@
             @render-partial="renderPartialTask"
             @attempt-change="selectLogAttempt"
             @result="showResult(selectedTask)"
+            @certify="submitCertificationRequest"
             @back="showLatestResult"
           />
         </section>
@@ -96,16 +99,16 @@
               <template v-if="hpcAuthenticated">
                 <div v-for="item in poolItems" :key="item.provider" class="pool-provider">
                   <div class="provider-head"><b>{{ item.label }}</b><span>{{ poolStatus(item.status) }}</span></div>
-                  <small class="pool-scope">0.25° · 后台预取 · 保留 2 周期</small>
+                  <small class="pool-scope">{{ poolDetail(item) }}</small>
                   <article
                     v-for="cycle in visiblePoolCycles(item)"
                     :key="cycle.cycle"
-                    :class="{ target: cycle.target, 'task-required': cycle.task_required }"
+                    :class="{ target: cycle.target, 'task-required': cycle.task_required || cycle.task_priority }"
                   >
                     <div class="cycle-head"><b>{{ formatCycle(cycle.cycle) }}</b><span :class="cycle.status">{{ cycleLabel(cycle) }}</span></div>
                     <small>{{ cycle.completed_files }}/{{ cycle.total_files }} 文件 · {{ formatBytes(cycle.size_bytes) }}</small>
-                    <div v-if="cycle.status === 'downloading' && cycle.partial_size_bytes" class="cycle-transfer">
-                      {{ formatBytes(cycle.partial_size_bytes) }} 下载中<template v-if="cycle.download_rate_bps >= 1024"> · {{ formatRate(cycle.download_rate_bps) }}</template>
+                    <div v-if="cycleTransferLabel(cycle)" class="cycle-transfer">
+                      {{ cycleTransferLabel(cycle) }}<template v-if="cycle.download_rate_bps >= 1024"> · {{ formatRate(cycle.download_rate_bps) }}</template>
                     </div>
                     <el-progress :percentage="cyclePercent(cycle)" :stroke-width="4" :show-text="false" />
                     <div v-if="cycle.auto_cleanup_allowed || cycle.cleanup_allowed || (cycle.protected && !cycle.target)" class="cycle-actions">
@@ -115,7 +118,7 @@
                       <em v-else>近期保留</em>
                     </div>
                   </article>
-                  <div v-if="!item.cycles?.length" class="side-empty">{{ txLabText(dataStatus?.message) || 'tx-lab 数据池暂无周期' }}</div>
+                  <article v-if="!item.cycles?.length" class="pool-summary"><div class="cycle-head"><b>{{ poolWindow(item) }}</b><span :class="item.status">{{ poolStatus(item.status) }}</span></div><small>{{ poolCoverage(item) }}</small></article>
                 </div>
               </template>
               <template v-else>
@@ -123,7 +126,7 @@
               </template>
             </div>
             <div class="side-card-actions">
-              <button v-if="hpcAuthenticated" class="side-action" :disabled="gfsActionBusy" @click="syncLatestRemoteForcing">{{ gfsActionBusy ? '正在同步…' : (autoCleanupPending ? `自动清理并同步 ${selectedSourceLabel} 00Z` : `同步 ${selectedSourceLabel} 最新 00Z`) }}</button>
+              <button v-if="hpcAuthenticated" class="side-action" :disabled="gfsActionBusy || hpcStorageLow" @click="prepareAllForcing">{{ hpcStorageLow ? '空间不足，暂停预取' : (gfsActionBusy ? '正在准备…' : '检查并准备资料') }}</button>
               <button v-else class="side-action" @click="refreshHpcConnection">检查 tx-lab 连接</button>
             </div>
           </section>
@@ -133,12 +136,13 @@
             <div class="task-items">
               <article v-for="task in historyTasks" :key="task.id" :class="{ selected: task.id === activeTaskId }" :title="task.id" @click="openHistoryTask(task)">
                 <div><b>{{ taskDateRange(task) }}</b><span :class="['mini-status', task.status]">{{ taskStatus(task.status) }}</span></div>
-                <small>{{ task.request?.domains?.length || 0 }} 域 · {{ String(task.request?.data_source || 'gfs').toUpperCase() }} · {{ formatCycle(task.runtime?.forcing_cycle || task.runtime?.gfs_cycle || task.runtime?.ecmwf_cycle) || '周期待定' }}</small>
+                <small>{{ isDownscale(task) ? highresTaskLabel(task) : `${task.request?.domains?.length || 0} 域 · ${String(task.request?.data_source || 'gfs').toUpperCase()} · ${formatCycle(task.runtime?.forcing_cycle || task.runtime?.gfs_cycle || task.runtime?.ecmwf_cycle) || '周期待定'}` }}</small>
                 <button class="delete-task" title="删除本地任务数据" aria-label="删除本地任务数据" @click.stop="confirmDelete(task)">×</button>
               </article>
               <div v-if="!historyTasks.length" class="side-empty">暂无历史任务</div>
             </div>
-            <button class="new-task" @click="openNewTask">＋ 新建任务</button>
+            <button class="new-task" @click="openNewTask">＋ 新建模拟任务</button>
+            <button class="new-task" @click="openNewDownscaleTask">＋ 新建高分任务</button>
           </section>
 
           <section class="side-card glass running-card">
@@ -169,30 +173,39 @@ import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
   ArrowLeft, ArrowRight, Check, Close, DArrowLeft, DArrowRight, DataAnalysis, Grid,
-  InfoFilled, MapLocation, Moon, Picture, Position, Sunny, VideoPause, VideoPlay,
+  MapLocation, Moon, Picture, Position, Sunny, VideoPause, VideoPlay,
 } from "@element-plus/icons-vue";
 import {
-  cancelWrfTask, cleanupWrfForcing, createWrfTask, deleteWrfTask, getWrfDataStatus,
-  getWrfHealth, getWrfOptions, getWrfTaskLogs, getWrfTaskRestartPlan, listWrfTasks,
-  renderPartialWrfTask, restartWrfTask, resumeWrfTask, retryWrfTaskOutputs, syncLatestWrfForcing,
+  cancelDownscaleTask, cancelWrfTask, cleanupWrfForcing, createDownscaleTask, createWrfTask, deleteWrfTask, getDownscaleTaskLogs, getWrfDataStatus,
+  getWrfHealth, getWrfOptions, getWrfTaskLogs, getWrfTaskRestartPlan, listWorkbenchTasks,
+  prepareWrfForcing, renderPartialWrfTask, requestDownscaleCertification, restartWrfTask, resumeWrfTask, retryDownscaleTask, retryWrfTaskOutputs, syncLatestWrfForcing,
 } from "../api.js";
 import ProjMap from "../components/ProjMap.vue";
 import WrfTaskConfig from "../components/WrfTaskConfig.vue";
+import DownscaleTaskConfig from "../components/DownscaleTaskConfig.vue";
 import WrfTaskRun from "../components/WrfTaskRun.vue";
 import WrfResultLayer from "../components/WrfResultLayer.vue";
+import DownscaleResultViewer from "../components/DownscaleResultViewer.vue";
 
 const route = useRoute();
 const router = useRouter();
 const theme = inject("theme", ref(true));
 const FINAL = new Set(["succeeded", "partial_success", "failed", "waiting_restart", "cancelled"]);
 const sources = [
-  { id: "gfs", name: "GFS 全球预报", description: "0.25° WRF 边界场，tx-lab 共享数据池", provider: "NOAA NOMADS Grib Filter", status: "available" },
-  { id: "ecmwf", name: "ECMWF IFS", description: "0.25° IFS 完整文件，tx-lab 共享数据池", provider: "ECMWF Open Data", status: "available" },
-  { id: "era5", name: "ERA5 再分析", description: "历史再分析驱动资料", provider: "Copernicus CDS", status: "planned" },
+  { id: "gfs", name: "GFS 全球预报", description: "0.25° 全球边界场", provider: "NOAA NOMADS", status: "available" },
+  { id: "ecmwf", name: "ECMWF IFS", description: "0.25° 全球边界场", provider: "ECMWF Open Data", status: "available" },
 ];
 const projections = ["等经纬", "墨卡托", "正弦", "罗宾逊", "兰博托", "卫星正视", "北极", "南极"];
 const basemaps = ["矢量底图", "影像底图", "地形晕渲", "全球境界"];
-const initialWorkspaceView = ["result", "new", "run"].includes(String(route.query.view)) ? String(route.query.view) : "result";
+function taskCreationTypeForPath(path) {
+  if (path === "/wrf/high-resolution") return "downscale";
+  if (path === "/wrf/new") return "wrf";
+  return "";
+}
+
+const initialCreationType = taskCreationTypeForPath(route.path);
+const initialQueryView = ["result", "new", "run"].includes(String(route.query.view)) ? String(route.query.view) : "result";
+const initialWorkspaceView = initialCreationType ? "new" : initialQueryView;
 
 const tool = ref("source");
 const selectedSource = ref("gfs");
@@ -216,6 +229,8 @@ const logs = ref("");
 const logOffset = ref(0);
 const logAttemptNo = ref(null);
 const restartContext = ref(null);
+const newTaskType = ref(initialCreationType || "wrf");
+const downscaleContext = ref(null);
 const visualTimes = ref([]);
 const visualTimeIndex = ref(0);
 const visualInfo = ref(null);
@@ -230,15 +245,17 @@ const downloadSamples = new Map();
 
 const serviceOnline = computed(() => health.value?.status === "online" && !serviceError.value);
 const selectedTask = computed(() => tasks.value.find(task => task.id === selectedTaskId.value) || null);
+const resultTask = computed(() => tasks.value.find(task => task.id === resultTaskId.value) || null);
 const successfulTasks = computed(() => tasks.value.filter(task => isDisplayable(task)));
 const historyTasks = computed(() => tasks.value.filter(task => FINAL.has(task.status)));
 const runningTasks = computed(() => tasks.value.filter(task => !FINAL.has(task.status)));
 const activeTaskId = computed(() => selectedTaskId.value || resultTaskId.value || health.value?.active_task_id || "");
 const hpcModeLabel = computed(() => health.value?.hpc?.connection_mode === "direct" ? "tx-lab 直连" : "远端连接");
-const hpcAuthenticated = computed(() => health.value?.hpc?.status === "ready");
+const hpcStorageLow = computed(() => health.value?.hpc?.status === "storage_low");
+const hpcAuthenticated = computed(() => ["ready", "storage_low"].includes(health.value?.hpc?.status));
 const activeTaskCount = computed(() => Number(health.value?.active_task_count) || 0);
 const maxConcurrentTasks = computed(() => Number(health.value?.max_concurrent_tasks || options.value?.capabilities?.max_concurrent_tasks) || 1);
-const selectedSourceLabel = computed(() => selectedSource.value === "ecmwf" ? "ECMWF" : "GFS");
+const selectedSourceLabel = computed(() => ({ ecmwf: "ECMWF", gfs: "GFS" })[selectedSource.value] || "GFS");
 const footerTaskSummary = computed(() => {
   if (selectedTaskId.value || resultTaskId.value) return selectedTaskId.value || resultTaskId.value;
   if (activeTaskCount.value) return `${activeTaskCount.value}/${maxConcurrentTasks.value} 个任务执行中`;
@@ -256,6 +273,8 @@ const poolItems = computed(() => {
 const autoCleanupPending = computed(() => poolItems.value.some(item =>
   (item.cycles || []).some(cycle => cycle.auto_cleanup_allowed),
 ));
+const creationPageType = computed(() => taskCreationTypeForPath(route.path));
+const activeNewTaskType = computed(() => creationPageType.value || newTaskType.value);
 const dockTitle = computed(() => ({ source: "数据源选择", proj: "投影方式", base: "底图图层" })[tool.value]);
 
 function openTool(name) { if (dockOpen.value && tool.value === name) dockOpen.value = false; else { tool.value = name; dockOpen.value = true; } }
@@ -267,27 +286,48 @@ function selectSource(source) {
   selectedSource.value = source.id;
   refreshAll(true);
 }
-function isDisplayable(task) { return Boolean(task && ["succeeded", "partial_success"].includes(task.status)); }
-function taskStatus(value) { return ({ queued: "待调度", prefetching: "准备数据", uploading: "准备 tx-lab", running: "运行", rendering: "渲染", succeeded: "成功", partial_success: "部分完成", failed: "失败", waiting_restart: "待调整", paused_external: "等待连接", cancelled: "已取消", cancel_pending: "取消中", reconciling: "恢复连接" })[value] || value; }
-function taskStage(value) { return ({ queued: "等待执行名额", retrying_outputs: "等待恢复结果下载", retrying_partial_render: "等待部分结果渲染", checking_remote_outputs: "确认远端 WRF 结果", selecting_cycle: `选择 ${selectedSourceLabel.value} 00Z 周期`, waiting_for_gfs_cache: "等待 tx-lab 驱动数据", checking_hpc_gfs: "校验 tx-lab 驱动数据池", checking_hpc_forcing: "校验 tx-lab 驱动数据池", waiting_for_hpc_gfs: "等待 tx-lab 驱动数据补齐", waiting_for_hpc_forcing: "等待 tx-lab 驱动数据补齐", remote_gfs_ready: "tx-lab 驱动数据已就绪", remote_forcing_ready: "tx-lab 驱动数据已就绪", preparing_hpc: "提交任务配置", running: "WPS / WRF 运行中", reconciling: "正在恢复 tx-lab 连接", paused_external: "等待重新连接 tx-lab", cancel_pending: "正在取消远端进程", cancelled: "任务已取消", downloading_outputs: "拉取 wrfout 结果", rendering: "生成 WebP", done: "任务完成", failed: "本次尝试已停止" })[value] || value || "等待开始"; }
+function isDownscale(task) { return task?.task_type === "high_resolution_downscale"; }
+function isOneKmWrf(task) {
+  const domains = task?.request?.domains || [];
+  const finalDx = Number(domains.at(-1)?.dx || 0);
+  return !isDownscale(task) && task?.status === "succeeded" && Math.abs(finalDx - 1000) < 0.001;
+}
+function canCreateDownscale(task) { return isOneKmWrf(task); }
+function canCreateCfd(task) { return isDownscale(task) && task?.request?.execution_scope === "forcing_only" && task?.status === "succeeded" && task?.quality?.status === "complete" && task?.runtime?.forcing_manifest?.schema_version === "mesoscale-forcing/v2"; }
+function highresTaskLabel(task) { const count = Number(task?.runtime?.mesoscale_window?.available_times) || (task?.request?.end_time && task?.request?.start_time ? Math.round((Date.parse(task.request.end_time) - Date.parse(task.request.start_time)) / 3600000) + 1 : 49); return task?.request?.execution_scope === "forcing_only" ? `约 10 m forcing · ${count} 时次 · ${task.publication?.status || 'blocked'}` : `${task?.request?.upstream_mode === 'reuse_10m' ? '约 10 m forcing → ' : ''}${String(task.request?.cfd?.solver_family || 'rans').toUpperCase()} · ${task.request?.aoi?.width_m || '—'} × ${task.request?.aoi?.height_m || '—'} m · ${task.publication?.status || 'blocked'}`; }
+function isDisplayable(task) { return Boolean(task && (isDownscale(task) ? task.quality?.status === "complete" && ["published", "success", "internal_preview"].includes(task.publication?.status) : ["succeeded", "partial_success"].includes(task.status))); }
+function taskStatus(value) { return ({ pending_review: "等待审核", queued: "待调度", prefetching: "准备数据", uploading: "准备 tx-lab", running: "运行", rendering: "渲染", succeeded: "成功", partial_success: "部分完成", failed: "失败", waiting_restart: "待调整", waiting_upstream: "等待约 10 m forcing", preparing_forcing: "构建 CFD 强迫", cfd_1m_prepare: "准备 CFD 1 m", meshing: "构建分级网格", cfd_1m_mesh: "检查 CFD 网格", solving: "CFD / LES 求解", cfd_1m_solver: "CFD / LES 求解", generating_products: "生成微尺度产品", cfd_1m_export: "导出可视化图层", downloading_products: "校验产品包", publishing: "发布审核中", paused_external: "等待连接", cancelled: "已取消", cancel_pending: "取消中", reconciling: "恢复连接" })[value] || value; }
+function taskStage(value) { return ({ resource_scientific_review: "等待资源与科学审核", queued: "等待执行名额", waiting_upstream: "等待约 10 m forcing", source_forcing_handoff: "校验已完成约 10 m forcing", preparing_forcing: "构建 CFD 边界转换", cfd_1m_prepare: "准备 OpenFOAM CFD 任务", cfd_1m_interface: "从 d08 forcing 生成边界剖面", meshing: "构建一次复用的分级网格", cfd_1m_mesh: "构建并检查 CFD 网格", solving: "执行 RANS 快照或 LES 时段", cfd_1m_solver: "执行 RANS 快照或 LES 时段", generating_products: "按 AGL 采样并生成三维浏览资产", cfd_1m_export: "按 AGL 高度导出 VTK 图层", downloading_products: "校验标准科学数据包", publishing: "质量门与原子发布", retrying_outputs: "等待恢复结果下载", retrying_partial_render: "等待部分结果渲染", checking_remote_outputs: "确认远端 WRF 结果", selecting_cycle: `选择 ${selectedSourceLabel.value} 00Z 周期`, waiting_for_gfs_cache: "等待 tx-lab 驱动数据补齐", checking_hpc_gfs: "校验 tx-lab 驱动数据池", checking_hpc_forcing: "校验 tx-lab 驱动数据池", waiting_for_hpc_gfs: "等待 tx-lab 驱动数据补齐", waiting_for_hpc_forcing: "等待 tx-lab 驱动数据补齐", remote_gfs_ready: "tx-lab 驱动数据已就绪", remote_forcing_ready: "tx-lab 驱动数据已就绪", preparing_hpc: "提交任务配置", running: "WPS / WRF 运行中", reconciling: "正在恢复 tx-lab 连接", paused_external: "等待重新连接 tx-lab", cancel_pending: "取消中", cancelled: "已取消", downloading_outputs: "拉取 wrfout 结果", rendering: "生成 WebP", done: "任务完成", failed: "本次尝试已停止" })[value] || value || "等待开始"; }
 function txLabText(value) { return String(value || "").replaceAll("超算", "tx-lab"); }
-function poolStatus(value) { return ({ ready: "已就绪", downloading: "下载中", checking: "检查中", partial: "部分就绪", missing: "待下载", unavailable: "不可用", error: "需处理", idle: "等待" })[value] || value || "等待"; }
+function poolStatus(value) {
+  return ({ ready: "已就绪", downloading: "下载中", rate_limited: "限流等待", waiting_publish: "等待发布", failed: "下载失败", error: "下载失败", partial: "待补齐", storage_low: "空间不足", blocked_storage: "空间不足", idle: "待检查" })[value] || "待检查";
+}
+function poolDetail() { return "0.25° · 全球 · 00Z · 保留 2 周期"; }
+function poolCoverage() { return "空间：全球 · 时效：f000–f072"; }
+function poolWindow() { return "时间：最近两个 00Z 周期"; }
 function visiblePoolCycles(item) {
-  const priority = cycle => cycle.task_required ? 0 : cycle.status === "downloading" ? 1 : cycle.prefetch_target ? 2 : cycle.retained ? 3 : 4;
+  const priority = cycle => (cycle.task_required || cycle.task_priority) ? 0 : ["downloading", "rate_limited"].includes(cycle.status) ? 1 : cycle.prefetch_target ? 2 : cycle.retained ? 3 : 4;
   return [...(item?.cycles || [])]
     .sort((left, right) => priority(left) - priority(right) || String(right.cycle).localeCompare(String(left.cycle)));
 }
 function cycleNeedsCleanup(cycle) { return /CLEANUP_REQUIRED/i.test(String(cycle?.download_message || "")); }
 function cycleLabel(cycle) {
   const status = poolStatus(cycle?.status);
-  if (cycle?.task_required) return `任务所需 · ${status}`;
+  if (cycle?.task_required || cycle?.task_priority) return `任务优先 · ${status}`;
   if (cycle?.target && cycleNeedsCleanup(cycle)) return "等待自动清理";
   if (cycle?.prefetch_target) return `后台预取 · ${status}`;
   if (cycle?.retained) return `保留 · ${status}`;
   return cycle?.complete ? "旧周期" : status;
 }
+function cycleTransferLabel(cycle) {
+  if (cycle?.status === "waiting_publish") return "等待 f072 发布确认";
+  if (cycle?.status === "rate_limited") return cycle.retry_at ? `遵从限流等待至 ${new Date(Number(cycle.retry_at) * 1000).toLocaleTimeString()}` : "遵从限流等待";
+  if (cycle?.status === "failed") return cycle.queue_message || "必需文件达到重试上限";
+  if (cycle?.status === "downloading") return `${cycle.current_file || "下一文件"} 下载中`;
+  return "";
+}
 function syncActionMessage(result) {
-  const labels = { ready: "已就绪", started: "已启动", running: "下载中", failed: "启动失败" };
+  const labels = { ready: "已就绪", started: "已启动", queued: "已进入队列", running: "下载中", failed: "启动失败" };
   const actions = Array.isArray(result?.actions) ? result.actions : [];
   const deleted = result?.auto_cleanup?.deleted?.length || 0;
   const prefix = deleted ? `已自动清理 ${deleted} 个旧周期；` : "";
@@ -323,31 +363,34 @@ function trackDownloadMetrics(status) {
       const received = (Number(cycle.size_bytes) || 0) + (Number(cycle.partial_size_bytes) || 0);
       const previous = downloadSamples.get(key);
       let rate = 0;
-      if (cycle.status === "downloading" && previous) {
+      if (cycle.status === "downloading" && previous && !(Number(cycle.download_rate_bps) >= 1024)) {
         const elapsed = Math.max(1, (now - previous.at) / 1000);
         const measured = Math.max(0, received - previous.received) / elapsed;
         rate = measured >= 1024
           ? (previous.rate > 0 ? previous.rate * 0.6 + measured * 0.4 : measured)
           : 0;
       }
-      cycle.download_rate_bps = Math.round(rate);
+      if (!(Number(cycle.download_rate_bps) >= 1024)) cycle.download_rate_bps = Math.round(rate);
       downloadSamples.set(key, { at: now, received, rate });
     }
   }
   for (const key of downloadSamples.keys()) if (!seen.has(key)) downloadSamples.delete(key);
   return status;
 }
-function taskDateRange(task) { const start = String(task.request?.start_time || "").slice(0, 10); const end = String(task.request?.end_time || "").slice(0, 10); return start && end ? `${start} → ${end}` : task.id; }
+function taskDateRange(task) { const start = String(task.request?.start_time || "").slice(0, 10); const end = String(task.request?.end_time || "").slice(0, 10); return start && end ? `${start} → ${end}` : (isDownscale(task) && start ? `${start} · 高分` : task.id); }
 
 function routeTo(view, taskId = "", replace = false) {
-  const query = { view };
+  const query = {};
+  if (view !== "new") query.view = view;
   if (taskId) query.task_id = taskId;
   router[replace ? "replace" : "push"]({ path: "/wrf", query });
 }
 function syncRoute() {
-  const view = ["result", "new", "run"].includes(String(route.query.view)) ? String(route.query.view) : "result";
+  const creationType = taskCreationTypeForPath(route.path);
+  const view = creationType ? "new" : (["result", "new", "run"].includes(String(route.query.view)) ? String(route.query.view) : "result");
   const taskId = String(route.query.task_id || "");
   workspaceView.value = view;
+  if (view === "new") newTaskType.value = creationType || "wrf";
   if (view === "run") { selectedTaskId.value = taskId; resetLogs(); }
   if (view === "result") {
     const requested = tasks.value.find(task => task.id === taskId && isDisplayable(task));
@@ -355,7 +398,46 @@ function syncRoute() {
     resetVisualization();
   }
 }
-function openNewTask() { stopPlayback(); restartContext.value = null; routeTo("new"); }
+function routeToTaskCreation(type) {
+  router.push({ path: type === "downscale" ? "/wrf/high-resolution" : "/wrf/new" });
+}
+function openNewTask() { stopPlayback(); restartContext.value = null; downscaleContext.value = null; newTaskType.value = "wrf"; routeToTaskCreation("wrf"); }
+function openNewDownscaleTask() { stopPlayback(); restartContext.value = null; downscaleContext.value = null; newTaskType.value = "downscale"; routeToTaskCreation("downscale"); }
+function openDownscaleFromWrf(task) {
+  if (!canCreateDownscale(task)) {
+    ElMessage.warning("请先完成最细域为 1 km 的普通 WRF 任务，再创建高分辨率降尺度任务");
+    return;
+  }
+  stopPlayback();
+  restartContext.value = null;
+  downscaleContext.value = {
+    source_wrf_task_id: task.id,
+    start_time: task.request?.start_time || "",
+    end_time: task.request?.end_time || "",
+    center: task.request?.center || task.request?.aoi?.center || null,
+  };
+  newTaskType.value = "downscale";
+  routeToTaskCreation("downscale");
+}
+function openCfdFromForcing(task) {
+  if (!canCreateCfd(task)) {
+    ElMessage.warning("请先完成约 10 m forcing 并通过质量门");
+    return;
+  }
+  stopPlayback();
+  restartContext.value = null;
+  downscaleContext.value = {
+    execution_scope: "wrf_cfd",
+    upstream_mode: "reuse_10m",
+    source_forcing_task_id: task.id,
+    source_wrf_task_id: task.runtime?.source_wrf?.task_id || task.request?.source_wrf_task_id || "",
+    start_time: task.request?.start_time || task.runtime?.mesoscale_window?.start_utc || "",
+    end_time: task.request?.end_time || task.runtime?.mesoscale_window?.end_utc || "",
+    center: { lat: task.request?.aoi?.center_lat, lon: task.request?.aoi?.center_lon },
+  };
+  newTaskType.value = "downscale";
+  routeToTaskCreation("downscale");
+}
 async function cancelConfig() {
   try { await ElMessageBox.confirm("当前未提交的任务配置不会保存，确定返回可视化？", "离开配置", { type: "warning" }); restartContext.value = null; showLatestResult(); } catch (error) { if (error !== "cancel" && error !== "close") ElMessage.error(error.message); }
 }
@@ -385,7 +467,7 @@ async function refreshAll(showMessage = false, includeRemote = hpcAuthenticated.
       dataStatus.value = { status: "locked", message: "等待 tx-lab 连接", pool_items: [] };
     }
     try {
-      tasks.value = await listWrfTasks();
+      tasks.value = await listWorkbenchTasks();
       if (workspaceView.value === "result" && !tasks.value.some(task => task.id === resultTaskId.value && isDisplayable(task))) resultTaskId.value = successfulTasks.value[0]?.id || "";
       if (workspaceView.value === "run" && selectedTaskId.value) await refreshLogs();
     } catch (error) { if (showMessage) ElMessage.error(error.message); }
@@ -396,10 +478,13 @@ async function refreshAll(showMessage = false, includeRemote = hpcAuthenticated.
 async function refreshLogs() {
   if (!selectedTaskId.value) return;
   try {
-    const chunk = await getWrfTaskLogs(selectedTaskId.value, logOffset.value, logAttemptNo.value);
+    const task = selectedTask.value;
+    const chunk = isDownscale(task)
+      ? await getDownscaleTaskLogs(selectedTaskId.value, logOffset.value)
+      : await getWrfTaskLogs(selectedTaskId.value, logOffset.value, logAttemptNo.value);
     logs.value += chunk.text || "";
     if (logs.value.length > MAX_LOG_CHARS) logs.value = `… 已省略较早日志 …\n${logs.value.slice(-MAX_LOG_CHARS)}`;
-    logOffset.value = chunk.offset || logOffset.value;
+    logOffset.value = chunk.offset ?? chunk.next_offset ?? logOffset.value;
   } catch { /* 主轮询会继续重试 */ }
 }
 async function ensureHpcReady(_actionLabel, forceRefresh = false) {
@@ -460,8 +545,39 @@ async function submitTask(payload) {
     if (error !== "cancel" && error !== "close") ElMessage.error(error.message);
   } finally { submitting.value = false; }
 }
+async function submitDownscaleTask(payload) {
+  if (submitting.value) return;
+  submitting.value = true;
+  try {
+    await ensureHpcReady("认证并提交");
+    const task = await createDownscaleTask(payload, `highres-${payload.confirmation_token.split(".")[0]}`);
+    ElMessage.success("高分辨率任务已通过预检并进入受管队列");
+    await refreshAll();
+    showRun(task);
+  } catch (error) {
+    if (error !== "cancel" && error !== "close") ElMessage.error(error.message);
+  } finally { submitting.value = false; }
+}
+async function submitCertificationRequest() {
+  const task = selectedTask.value;
+  if (!task) return;
+  try {
+    const { value } = await ElMessageBox.prompt(
+      "可选：填写区域对照报告、观测验证或敏感性试验的受控引用。审核通过后会冻结当前科学配置哈希。",
+      "提交配置认证审核",
+      { inputPlaceholder: "例如 evidence/regional-comparison-v1", confirmButtonText: "提交审核", cancelButtonText: "取消" },
+    );
+    await requestDownscaleCertification(task.id, { evidence: value ? [value] : [], note: "由 WRF 工作台提交" });
+    ElMessage.success("已提交配置认证审核；当前产品仍保持内部预览，直到审核通过。");
+    await refreshAll();
+  } catch (error) { if (error !== "cancel" && error !== "close") ElMessage.error(error.message); }
+}
 async function cancelTask() {
   const task = selectedTask.value; if (!task) return;
+  if (isDownscale(task)) {
+    try { await ElMessageBox.confirm(`将取消高分辨率任务 ${task.id}。已生成的 smoke 或未通过质量门的产物不会发布。`, "取消高分辨率任务", { type: "warning", confirmButtonText: "确认取消" }); await cancelDownscaleTask(task.id); await refreshAll(); } catch (error) { if (error !== "cancel" && error !== "close") ElMessage.error(error.message); }
+    return;
+  }
   const launched = Boolean(task.runtime?.remote_pid);
   const message = launched
     ? `将终止任务 ${task.id} 对应的 tx-lab 远端进程，是否继续？`
@@ -471,6 +587,10 @@ async function cancelTask() {
 async function editAndRestart() {
   const task = selectedTask.value;
   if (!task) return;
+  if (isDownscale(task)) {
+    try { const retried = await retryDownscaleTask(task.id); ElMessage.success("高分辨率任务已重回受管队列"); await refreshAll(); showRun(retried); } catch (error) { ElMessage.error(error.message); }
+    return;
+  }
   try {
     await ensureHpcReady("认证并检查重跑路径");
     const plan = await getWrfTaskRestartPlan(task.id);
@@ -480,7 +600,7 @@ async function editAndRestart() {
       attemptNo: Number(task.attempt_no || 1),
       request: JSON.parse(JSON.stringify(task.request || {})),
     };
-    routeTo("new");
+    routeToTaskCreation("wrf");
   } catch (error) { ElMessage.error(error.message); }
 }
 async function resumeTask() {
@@ -532,6 +652,17 @@ async function syncLatestRemoteForcing() {
   catch (error) { ElMessage.error(error.message); }
   finally { gfsActionBusy.value = false; }
 }
+async function prepareAllForcing() {
+  gfsActionBusy.value = true;
+  try {
+    await ensureHpcReady("检查资料");
+    const result = await prepareWrfForcing();
+    const providers = Object.keys(result?.providers || {}).join("、") || "资料池";
+    ElMessage.success(`${providers} 已完成检查并启动必要准备`);
+    await refreshAll(false, true, true);
+  } catch (error) { ElMessage.error(error.message); }
+  finally { gfsActionBusy.value = false; }
+}
 
 async function confirmCleanupCycle(cycle) {
   const path = String(cycle?.remote_path || "");
@@ -553,7 +684,7 @@ async function confirmCleanupCycle(cycle) {
   }
 }
 
-watch(() => [route.query.view, route.query.task_id], syncRoute);
+watch(() => [route.path, route.query.view, route.query.task_id], syncRoute);
 watch(theme, value => { mapDark.value = Boolean(value); });
 onMounted(async () => {
   try { options.value = await getWrfOptions(); } catch (error) { serviceError.value = error.message; }
@@ -566,12 +697,13 @@ onBeforeUnmount(() => { clearInterval(refreshTimer); stopPlayback(); });
 
 <style scoped>
 .wrf-studio { height: calc(100vh - 70px); display: flex; gap: 10px; padding: 0 8px 8px; overflow: hidden; background: var(--bg); color: var(--text); font-size: 13px; }.glass { border: 1px solid var(--border); background: var(--glass); backdrop-filter: blur(14px); box-shadow: var(--shadow); }
+.task-type-switch{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:14px 18px 0}.task-type-switch button{display:grid;gap:4px;padding:11px 13px;border:1px solid var(--border);border-radius:10px;background:var(--field);color:var(--text);text-align:left;cursor:pointer}.task-type-switch button b{font-size:13px}.task-type-switch button span{color:var(--muted);font-size:10px;line-height:1.4}.task-type-switch button.active{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent-soft);background:var(--accent-soft)}.task-type-switch button:disabled{cursor:not-allowed;opacity:.65}
 .tool-rail { flex-shrink: 0; width: 70px; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 8px 5px; border-radius: 14px; }.tool-rail button { width: 56px; min-height: 58px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; border: 0; border-radius: 11px; background: transparent; color: var(--muted); font: inherit; font-size: 10px; cursor: pointer; }.tool-rail button .el-icon, .tool-rail button b { font-size: 17px; }.tool-rail button.on { color: #fff; background: var(--accent); box-shadow: 0 8px 20px #3b82f630; }
 .tool-dock { flex-shrink: 0; width: 282px; padding: 16px; overflow-y: auto; border-radius: 14px; scrollbar-width: none; }.tool-dock header, .side-card header, .workspace-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }.tool-dock header { padding-bottom: 13px; border-bottom: 1px solid var(--border); }.tool-dock header span, .side-card header span, .workspace-head > div > span { color: var(--accent); font-size: 9px; font-weight: 800; letter-spacing: 1.2px; }.tool-dock h3, .side-card h3 { margin: 3px 0 0; font-size: 16px; }.tool-dock header > .el-icon { color: var(--muted); cursor: pointer; }.dock-hint { color: var(--muted); font-size: 10px; line-height: 1.55; }.service-summary { display: flex; align-items: center; gap: 7px; margin-top: 13px; padding: 9px; border-radius: 9px; color: #22c55e; background: #22c55e12; font-size: 10px; }.service-summary.offline { color: #f87171; background: #ef444414; }.service-summary i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 8px currentColor; }.service-summary span { flex: 1; }.service-summary button { border: 0; background: none; color: inherit; cursor: pointer; }.service-error { color: #f87171; font-size: 10px; word-break: break-word; }
 .source-list, .picker { display: grid; gap: 8px; }.source-list > button { position: relative; display: flex; align-items: center; gap: 9px; min-height: 78px; padding: 11px; border: 1px solid var(--border); border-radius: 11px; background: var(--field); color: var(--text); text-align: left; }.source-list > button.selected { border-color: var(--accent); background: var(--accent-soft); }.source-list > button.disabled { opacity: .55; }.source-icon { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 9px; color: var(--accent); background: var(--accent-soft); }.source-copy { min-width: 0; display: grid; flex: 1; gap: 2px; }.source-copy b { font-size: 12px; }.source-copy small { color: var(--muted); font-size: 9px; line-height: 1.4; }.source-copy em { color: var(--accent); font-size: 8px; font-style: normal; }.source-state { position: absolute; top: 7px; right: 8px; color: var(--muted); font-size: 8px; }.source-state.available { color: #22c55e; }.source-note { display: flex; gap: 7px; margin-top: 10px; padding: 9px; border: 1px solid var(--border); border-radius: 9px; color: var(--muted); }.source-note .el-icon { flex-shrink: 0; color: var(--accent); }.source-note p { margin: 0; font-size: 9px; line-height: 1.5; }
 .picker button, .map-theme { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 10px 11px; border: 1px solid var(--border); border-radius: 9px; background: var(--field); color: var(--text); font: inherit; font-size: 11px; cursor: pointer; }.picker button.on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }.map-theme { justify-content: center; gap: 7px; margin-top: 10px; }
 .studio-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 9px; }.content-row { flex: 1; min-height: 0; display: flex; gap: 10px; }.center-workspace { flex: 1; min-width: 0; position: relative; overflow: auto; border-radius: 14px; scrollbar-width: thin; }.workspace-head { padding: 14px 16px; border-bottom: 1px solid var(--border); }.workspace-head h2 { display: inline; margin: 0 9px 0 0; font-size: 18px; }.workspace-head small { color: var(--muted); font: 9px monospace; }.workspace-actions { display: flex; }.result-empty { height: calc(100% - 70px); min-height: 430px; display: grid; place-content: center; justify-items: center; gap: 9px; color: var(--muted); text-align: center; }.result-empty .el-icon { color: var(--accent); font-size: 38px; }.result-empty b { color: var(--text); font-size: 16px; }.result-empty span { font-size: 10px; }.result-toolbar { display: flex; justify-content: space-between; padding: 8px 12px; color: var(--muted); font-size: 10px; }.result-toolbar span { display: flex; align-items: center; gap: 6px; }.result-toolbar i { width: 7px; height: 7px; border-radius: 50%; background: #22c55e; }.result-toolbar b { color: var(--text); font: 10px monospace; }.visual-map { position: relative; height: calc(100% - 164px); min-height: 430px; margin: 0 10px; overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: #07101e; }.timebar { display: flex; align-items: center; gap: 7px; margin: 9px 10px 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--field); }.timebar :deep(.el-slider) { flex: 1; margin: 0 8px; }.timebar time { min-width: 138px; font: 9px monospace; }.timebar > span { min-width: 38px; color: var(--muted); font-size: 9px; text-align: right; }
-.right-sidebar { flex-shrink: 0; width: 272px; height: 100%; min-height: 0; display: grid; grid-template-rows: minmax(0, 3fr) minmax(0, 4fr) minmax(0, 3fr); align-self: stretch; gap: 9px; overflow: hidden; }.side-card { min-height: 0; display: flex; flex-direction: column; padding: 11px; overflow: hidden; border-radius: 13px; }.side-card header { flex-shrink: 0; padding-bottom: 8px; border-bottom: 1px solid var(--border); }.side-card header h3 { font-size: 14px; }.side-card header > span { color: var(--muted); }.side-card header > .panel-count { min-width: 24px; padding: 3px 7px; border: 1px solid var(--border); border-radius: 999px; color: var(--text); background: var(--field); font-size: 10px; letter-spacing: 0; text-align: center; }.side-card header > i { width: 7px; height: 7px; border-radius: 50%; background: #94a3b8; }.side-card header > i.ready { background: #22c55e; box-shadow: 0 0 8px #22c55e88; }.side-card header > i.error { background: #ef4444; box-shadow: 0 0 8px #ef444466; }.side-card-body, .task-items { flex: 1; min-height: 0; padding-right: 3px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }.side-card-actions { flex-shrink: 0; margin-top: 7px; padding-top: 7px; border-top: 1px solid var(--border); }.pool-provider { padding-top: 8px; }.provider-head { display: flex; justify-content: space-between; font-size: 10px; }.provider-head span { color: var(--muted); }.pool-provider article, .task-items article { position: relative; margin-top: 6px; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--field); transition: border-color .16s ease, background .16s ease, transform .16s ease; }.pool-provider article.target { border-color: #22c55e66; }.cycle-head, .task-items article > div { display: flex; align-items: center; justify-content: space-between; gap: 6px; }.pool-provider article b, .task-items article b { font-size: 10px; }.pool-provider article span { color: #22c55e; font-size: 8px; }.pool-provider article span.downloading { color: #38bdf8; }.pool-provider article span.missing, .pool-provider article span.partial { color: #f59e0b; }.pool-provider article span.error { color: #f87171; }.pool-provider article small, .task-items article small { display: block; margin-top: 4px; padding-right: 16px; overflow: hidden; color: var(--muted); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }.pool-provider article :deep(.el-progress), .running-card article :deep(.el-progress) { margin-top: 5px; }.cycle-actions { display: flex; align-items: center; min-height: 15px; margin-top: 3px; }.cycle-actions em { color: #f59e0b; font-size: 8px; font-style: normal; }.cycle-cleanup { padding: 0; border: 0; background: transparent; color: #f87171; font-size: 8px; cursor: pointer; }.side-empty { display: grid; min-height: 54px; place-items: center; padding: 12px 5px; color: var(--muted); font-size: 9px; text-align: center; }.side-empty.compact { padding: 8px 4px 2px; }.cleanup-warning { display: grid; gap: 4px; margin-top: 8px; padding: 8px; border-radius: 8px; color: #f87171; background: #ef444414; font-size: 9px; }.cleanup-warning button, .side-action { border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }.side-action { width: 100%; min-height: 30px; margin: 0; padding: 6px 8px; border-radius: 7px; color: var(--accent); background: var(--accent-soft); font-size: 9px; text-align: center; }.side-action:hover { background: #3b82f626; }.side-action:disabled, .cycle-cleanup:disabled { cursor: wait; opacity: .55; }
+.right-sidebar { flex-shrink: 0; width: 272px; height: 100%; min-height: 0; display: grid; grid-template-rows: minmax(0, 3fr) minmax(0, 4fr) minmax(0, 3fr); align-self: stretch; gap: 9px; overflow: hidden; }.side-card { min-height: 0; display: flex; flex-direction: column; padding: 11px; overflow: hidden; border-radius: 13px; }.side-card header { flex-shrink: 0; padding-bottom: 8px; border-bottom: 1px solid var(--border); }.side-card header h3 { font-size: 14px; }.side-card header > span { color: var(--muted); }.side-card header > .panel-count { min-width: 24px; padding: 3px 7px; border: 1px solid var(--border); border-radius: 999px; color: var(--text); background: var(--field); font-size: 10px; letter-spacing: 0; text-align: center; }.side-card header > i { width: 7px; height: 7px; border-radius: 50%; background: #94a3b8; }.side-card header > i.ready { background: #22c55e; box-shadow: 0 0 8px #22c55e88; }.side-card header > i.storage_low { background: #f59e0b; box-shadow: 0 0 8px #f59e0b88; }.side-card header > i.error { background: #ef4444; box-shadow: 0 0 8px #ef444466; }.side-card-body, .task-items { flex: 1; min-height: 0; padding-right: 3px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }.side-card-actions { flex-shrink: 0; margin-top: 7px; padding-top: 7px; border-top: 1px solid var(--border); }.pool-provider { padding-top: 8px; }.provider-head { display: flex; justify-content: space-between; font-size: 10px; }.provider-head span { color: var(--muted); }.pool-provider article, .task-items article { position: relative; margin-top: 6px; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--field); transition: border-color .16s ease, background .16s ease, transform .16s ease; }.pool-provider article.target { border-color: #22c55e66; }.cycle-head, .task-items article > div { display: flex; align-items: center; justify-content: space-between; gap: 6px; }.pool-provider article b, .task-items article b { font-size: 10px; }.pool-provider article span { color: #22c55e; font-size: 8px; }.pool-provider article span.downloading { color: #38bdf8; }.pool-provider article span.missing, .pool-provider article span.partial { color: #f59e0b; }.pool-provider article span.error { color: #f87171; }.pool-provider article small, .task-items article small { display: block; margin-top: 4px; padding-right: 16px; overflow: hidden; color: var(--muted); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }.pool-provider article :deep(.el-progress), .running-card article :deep(.el-progress) { margin-top: 5px; }.cycle-actions { display: flex; align-items: center; min-height: 15px; margin-top: 3px; }.cycle-actions em { color: #f59e0b; font-size: 8px; font-style: normal; }.cycle-cleanup { padding: 0; border: 0; background: transparent; color: #f87171; font-size: 8px; cursor: pointer; }.side-empty { display: grid; min-height: 54px; place-items: center; padding: 12px 5px; color: var(--muted); font-size: 9px; text-align: center; }.side-empty.compact { padding: 8px 4px 2px; }.cleanup-warning { display: grid; gap: 4px; margin-top: 8px; padding: 8px; border-radius: 8px; color: #f87171; background: #ef444414; font-size: 9px; }.cleanup-warning button, .side-action { border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }.side-action { width: 100%; min-height: 30px; margin: 0; padding: 6px 8px; border-radius: 7px; color: var(--accent); background: var(--accent-soft); font-size: 9px; text-align: center; }.side-action:hover { background: #3b82f626; }.side-action:disabled, .cycle-cleanup:disabled { cursor: wait; opacity: .55; }
 .cycle-transfer { margin-top: 4px; overflow: hidden; color: #38bdf8; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 .pool-scope { display: block; margin-top: 3px; color: var(--muted); font-size: 9px; }
 .pool-provider article.task-required { border-color: #60a5fa99; box-shadow: inset 2px 0 0 #60a5fa; }

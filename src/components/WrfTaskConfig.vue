@@ -1,67 +1,43 @@
 <template>
   <section class="task-config">
     <header class="panel-head">
-      <div><span>{{ retryTaskId ? 'RESTART WRF TASK' : 'NEW WRF RUN' }}</span><h2>{{ retryTaskId ? `调整参数 · 第 ${Number(attemptNo || 1) + 1} 次尝试` : '新建模拟任务' }}</h2></div>
-      <div class="head-actions"><el-tag>{{ sourceLabel }} · TX-LAB</el-tag><el-tag type="info" effect="plain">CPU 运行 · Spin-up {{ fixedSpinupHours }} 小时</el-tag><el-button text @click="emit('cancel')">取消</el-button></div>
+      <div><span>{{ retryTaskId ? 'RESTART WRF TASK' : 'NEW WRF RUN' }}</span><h2>{{ retryTaskId ? `调整参数 · 第 ${Number(attemptNo || 1) + 1} 次尝试` : highResolution ? '新建高分任务' : '新建模拟任务' }}</h2></div>
+      <div class="head-actions"><el-tag>{{ sourceLabel }} · TX-LAB</el-tag><el-switch v-model="expertOpen" active-text="专家模式" /><el-button text @click="emit('cancel')">取消</el-button></div>
     </header>
 
     <div class="config-grid">
       <div class="form-column">
         <el-form label-position="top" @submit.prevent>
-          <div class="basic-grid">
-            <el-form-item label="开始时间（UTC）"><el-input v-model="form.startTime" type="datetime-local" /></el-form-item>
-            <el-form-item label="结束时间（UTC）"><el-input v-model="form.endTime" type="datetime-local" /></el-form-item>
-            <el-form-item label="中心纬度"><el-input-number v-model="form.center.lat" :min="-85" :max="85" :precision="3" /></el-form-item>
-            <el-form-item label="中心经度"><el-input-number v-model="form.center.lon" :min="-180" :max="180" :precision="3" /></el-form-item>
-            <el-form-item label="任务边界场间隔">
-              <el-select v-model="form.interval"><el-option v-for="value in intervals" :key="value" :label="`${value} 小时`" :value="value" /></el-select>
+          <div class="step-title"><i>1</i><div><h3>选择时间</h3><span>什么时候开始，计算多长时间</span></div></div>
+          <div class="basic-grid time-grid">
+            <el-form-item label="开始时间（UTC）"><el-input v-model="form.startTime" type="datetime-local" /><small>{{ localTime(form.startTime) }}</small></el-form-item>
+            <el-form-item label="结束时间（UTC）"><el-input v-model="form.endTime" type="datetime-local" /><small>{{ localTime(form.endTime) }}</small></el-form-item>
+            <el-form-item v-if="expertOpen" label="输出时间间隔">
+              <el-select :disabled="highResolution" v-model="form.interval"><el-option v-for="value in intervals" :key="value" :label="`${value} 小时`" :value="value" /></el-select>
             </el-form-item>
-            <el-form-item label="同化方案">
-              <el-select v-model="form.assimilation"><el-option v-for="item in assimilationOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select>
+            <el-form-item v-if="expertOpen" label="资料同化方案">
+              <el-select v-model="form.assimilation" :disabled="highResolution"><el-option v-for="item in assimilationOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select>
             </el-form-item>
           </div>
-
-          <div class="sub-head">
-            <div><h3>嵌套域参数</h3><span>地图范围为配置预览，最终范围以 wrfout 为准</span></div>
-            <el-select v-model="domainCount" size="small" @change="resetDomains"><el-option v-for="n in 4" :key="n" :label="`${n} 层`" :value="n" /></el-select>
-          </div>
-          <div class="domain-cards">
-            <article
-              v-for="(domain, index) in form.domains"
-              :key="domain.id"
-              :class="{ active: activeDomain === index, outer: index === 0 }"
-              @click="activeDomain = index"
-            >
-              <b>{{ domain.id.toUpperCase() }}</b>
-              <label>网格距
-                <el-select :model-value="domain.dx" size="small" @update:model-value="value => setDomainDx(index, value)">
-                  <el-option v-for="value in domainDxOptions(index)" :key="value" :label="formatResolution(value)" :value="value" />
-                </el-select>
-              </label>
-              <label>e_we<el-input-number v-model="domain.e_we" :min="10" :max="500" size="small" controls-position="right" /></label>
-              <label>e_sn<el-input-number v-model="domain.e_sn" :min="10" :max="500" size="small" controls-position="right" /></label>
-              <template v-if="index > 0">
-                <label>i start<el-input-number v-model="domain.i_parent_start" :min="1" size="small" controls-position="right" /></label>
-                <label>j start<el-input-number v-model="domain.j_parent_start" :min="1" size="small" controls-position="right" /></label>
-              </template>
-            </article>
-          </div>
+          <div v-if="expertOpen" class="coordinate-grid"><el-form-item label="中心纬度"><el-input-number v-model="form.center.lat" :min="-85" :max="85" :precision="3" /></el-form-item><el-form-item label="中心经度"><el-input-number v-model="form.center.lon" :min="-180" :max="180" :precision="3" /></el-form-item></div>
         </el-form>
       </div>
 
       <div class="map-column">
-        <div class="map-title"><div><b>区域与嵌套域</b><span>选择域后可拖动位置或重画矩形</span></div><span>D{{ String(activeDomain + 1).padStart(2, '0') }}</span></div>
+        <div class="step-title map-step"><i>2</i><div><h3>选择位置</h3><span>{{ expertOpen ? (highResolution ? '拖动任一范围调整整体位置，计算结构固定' : '拖动或重画当前计算范围') : '在地图上拖动蓝色范围，确定计算区域' }}</span></div></div>
         <div :class="['region-note', { invalid: !domainCoverage.inside }]">
-          <span>当前 {{ sourceLabel }} 覆盖：{{ formatBounds(gfsBounds) }}</span>
-          <b>{{ domainCoverage.inside ? 'D01 范围有效' : 'D01 超出数据范围' }}</b>
+          <span>{{ expertOpen ? `当前 ${sourceLabel} 覆盖：${formatBounds(gfsBounds)}` : `数据源：${sourceLabel}` }}</span>
+          <b>{{ domainCoverage.inside ? (expertOpen ? 'D01 范围有效' : '所选区域可以计算') : '所选区域超出数据范围' }}</b>
         </div>
         <div class="domain-map">
           <ProjMap basemap="矢量底图" projection="等经纬" grid vector :dark="Boolean(theme)">
             <WrfDomainEditor
               :domains="form.domains"
-              :center="form.center"
+              :fixed-topology="highResolution"
+              :simple="!expertOpen"
+              :center="mapCenter"
               :active-index="activeDomain"
-              @update:domains="value => form.domains = value"
+              @update:domains="value => { if (!highResolution) form.domains = value }"
               @update:center="updateCenter"
               @update:active-index="value => activeDomain = value"
               @invalid="message => ElMessage.warning(message)"
@@ -71,13 +47,28 @@
       </div>
     </div>
 
-    <section class="physics-panel">
+    <section v-if="expertOpen" class="expert-panel">
+      <div class="sub-head">
+        <div><h3>{{ highResolution ? '固定上游网格' : '嵌套网格' }}</h3><span>{{ highResolution ? '高分任务固定使用 27→9→3→1 km，上游结构不可修改' : '普通任务默认 D01 一层，可在此增加嵌套' }}</span></div>
+        <el-select :disabled="highResolution" v-model="domainCount" size="small" @change="resetDomains"><el-option v-for="n in 4" :key="n" :label="`${n} 层`" :value="n" /></el-select>
+      </div>
+      <fieldset :disabled="highResolution" style="border:0;padding:0;margin:0"><div class="domain-cards">
+        <article v-for="(domain, index) in form.domains" :key="domain.id" :class="{ active: activeDomain === index, outer: index === 0 }" @click="activeDomain = index">
+          <b>{{ domain.id.toUpperCase() }}</b>
+          <label>网格距<el-select :disabled="highResolution" :model-value="domain.dx" size="small" @update:model-value="value => setDomainDx(index, value)"><el-option v-for="value in domainDxOptions(index)" :key="value" :label="formatResolution(value)" :value="value" /></el-select></label>
+          <label>东西网格数<el-input-number :disabled="highResolution" v-model="domain.e_we" :min="10" :max="500" size="small" controls-position="right" /></label>
+          <label>南北网格数<el-input-number :disabled="highResolution" v-model="domain.e_sn" :min="10" :max="500" size="small" controls-position="right" /></label>
+          <template v-if="index > 0"><label>父域起点 i<el-input-number :disabled="highResolution" v-model="domain.i_parent_start" :min="1" size="small" controls-position="right" /></label><label>父域起点 j<el-input-number :disabled="highResolution" v-model="domain.j_parent_start" :min="1" size="small" controls-position="right" /></label></template>
+        </article>
+      </div></fieldset>
+    </section>
+
+    <section v-if="expertOpen" class="physics-panel">
       <div class="sub-head physics-head">
         <div><h3>物理方案</h3><span>常用配置使用预设，必要时展开专家参数</span></div>
         <div class="physics-actions">
           <el-button type="primary" plain :loading="recommending" @click="requestRecommendation">{{ recommending ? 'geogrid 分析中' : '根据区域推荐' }}</el-button>
           <el-select v-model="form.preset" size="small" @change="applyPreset"><el-option v-for="(_, name) in selectablePhysicsPresets" :key="name" :label="name" :value="name" /></el-select>
-          <el-button text @click="expertOpen = !expertOpen">{{ expertOpen ? '收起专家参数' : '展开专家参数' }}</el-button>
         </div>
       </div>
       <div v-if="recommendation" :class="['recommendation-note', { stale: recommendationStale }]">
@@ -88,16 +79,17 @@
         <ul><li v-for="reason in recommendation.reasons" :key="reason">{{ reason }}</li></ul>
         <el-button size="small" type="primary" :disabled="recommendationStale" @click="applyRecommendation">确认应用推荐</el-button>
       </div>
-      <el-collapse-transition>
-        <div v-show="expertOpen" class="physics-grid">
-          <label v-for="field in physicsFields" :key="field.key">{{ field.label }}<el-input-number v-model="form.physics[field.key]" :min="0" controls-position="right" /></label>
-        </div>
-      </el-collapse-transition>
+      <div class="physics-grid"><label v-for="field in physicsFields.filter(item => !highResolution || !['sf_urban_physics', 'num_soil_layers', 'num_land_cat'].includes(item.key))" :key="field.key">{{ field.label }}<el-input-number v-model="form.physics[field.key]" :min="0" controls-position="right" /></label></div>
     </section>
 
-    <footer class="config-footer">
-      <div><b>预计 {{ form.domains.length }} 个嵌套域</b><span>{{ form.startTime }} 至 {{ form.endTime }} · UTC</span></div>
-      <el-button type="primary" size="large" :loading="submitting" @click="submit">{{ retryTaskId ? '确认参数并重新运行原任务' : '提交至 tx-lab 动态调度' }}</el-button>
+    <section v-if="!highResolution && !expertOpen" class="result-step simple-result">
+      <div class="step-title"><i>3</i><div><h3>确认结果</h3><span>系统已使用适合常规区域模拟的默认配置</span></div></div>
+      <div class="summary-grid"><div><span>任务类型</span><b>区域天气模拟</b></div><div><span>计算范围</span><b>D01 · 27 km · 1 层</b></div><div><span>物理方案</span><b>{{ form.preset }}</b></div><div><span>输出</span><b>逐 {{ form.interval }} 小时气象场</b></div></div>
+    </section>
+    <slot name="additional" :expert-open="expertOpen" />
+    <footer v-if="!hideFooter" class="config-footer">
+      <div><b>{{ highResolution ? '完整高分链路' : `区域天气模拟 · ${form.domains.length} 层` }}</b><span>{{ durationLabel }} · {{ centerLabel }}</span></div>
+      <el-button type="primary" size="large" :loading="submitting" @click="submit">{{ retryTaskId ? '确认参数并重新运行原任务' : '创建模拟任务' }}</el-button>
     </footer>
   </section>
 </template>
@@ -107,17 +99,21 @@ import { computed, inject, onBeforeUnmount, reactive, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { createWrfRecommendation, getWrfRecommendation } from "../api.js";
 import ProjMap from "./ProjMap.vue";
+import { highresReferencePoint } from "../utils/highresGeometry.js";
 import WrfDomainEditor from "./WrfDomainEditor.vue";
 
 const props = defineProps({
   options: Object,
+  highResolution: Boolean,
+  hideFooter: Boolean,
   dataSource: { type: String, default: "gfs" },
   submitting: Boolean,
   initialRequest: Object,
+  expertMode: { type: Boolean, default: null },
   retryTaskId: { type: String, default: "" },
   attemptNo: { type: Number, default: 1 },
 });
-const emit = defineEmits(["submit", "cancel"]);
+const emit = defineEmits(["submit", "cancel", "change", "update:expertMode"]);
 const theme = inject("theme", ref(true));
 
 const fallbackDomains = [
@@ -137,16 +133,20 @@ const later = new Date(now.getTime() + 6 * 3600 * 1000);
 const form = reactive({
   startTime: utcInput(now), endTime: utcInput(later), center: { lat: 32.048, lon: 118.825 },
   interval: 1, assimilation: "off", preset: "默认通用",
-  domains: fallbackDomains.slice(0, 2).map(item => ({ ...item })), physics: { ...fallbackPhysics },
+  domains: fallbackDomains.slice(0, props.highResolution ? 4 : 1).map(item => ({ ...item })), physics: { ...fallbackPhysics },
 });
-const domainCount = ref(2);
+const domainCount = ref(props.highResolution ? 4 : 1);
 const activeDomain = ref(0);
-const expertOpen = ref(false);
+const localExpertOpen = ref(Boolean(props.retryTaskId || props.initialRequest));
+const expertOpen = computed({
+  get: () => props.expertMode == null ? localExpertOpen.value : props.expertMode,
+  set: value => { localExpertOpen.value = value; emit("update:expertMode", value); },
+});
 const recommending = ref(false);
 const recommendation = ref(null);
 const recommendationInputSignature = ref("");
 let recommendationGeneration = 0;
-const intervals = computed(() => props.options?.forecast_intervals || [1, 3, 6]);
+const intervals = computed(() => props.dataSource === "ecmwf" ? [3] : (props.options?.forecast_intervals || [1, 3, 6]));
 const fixedSpinupHours = computed(() => Number(props.options?.capabilities?.fixed_spinup_hours || 6));
 const assimilationOptions = computed(() => props.options?.assimilation_schemes || [
   { value: "off", label: "关闭" }, { value: "fdda_weak", label: "弱网格松弛" },
@@ -167,8 +167,14 @@ const recommendationSignature = computed(() => JSON.stringify({
 const recommendationStale = computed(() => Boolean(
   recommendation.value && recommendationInputSignature.value !== recommendationSignature.value,
 ));
-const sourceLabel = computed(() => props.dataSource === "ecmwf" ? "ECMWF" : "GFS");
-const gfsBounds = computed(() => props.options?.capabilities?.gfs_bounds || [65, 5, 145, 60]);
+const mapCenter = computed(() => ({ ...form.center, ...(props.highResolution ? highresReferencePoint() : {}) }));
+const sourceLabel = computed(() => ({ ecmwf: "ECMWF", gfs: "GFS" })[props.dataSource] || "GFS");
+const centerLabel = computed(() => `${Number(form.center.lat).toFixed(3)}°, ${Number(form.center.lon).toFixed(3)}°`);
+const durationLabel = computed(() => {
+  const hours = (Date.parse(`${form.endTime}:00Z`) - Date.parse(`${form.startTime}:00Z`)) / 3600000;
+  return Number.isFinite(hours) && hours > 0 ? `${hours} 小时 · ${form.startTime.replace("T", " ")} UTC 起` : "请设置有效时间";
+});
+const gfsBounds = computed(() => [-180, -90, 180, 90]);
 const domainCoverage = computed(() => {
   const outer = form.domains[0] || fallbackDomains[0];
   const metersPerDegree = 111320;
@@ -177,14 +183,13 @@ const domainCoverage = computed(() => {
   const halfHeight = (Number(outer.e_sn) - 1) * Number(outer.dy || outer.dx) / metersPerDegree / 2;
   const bounds = [
     Number(form.center.lon) - halfWidth - 1,
-    Number(form.center.lat) - halfHeight - 1,
+    Number(form.center.lat) - ((mapCenter.value.grid_y || (outer.e_sn + 1) / 2) - 1) * outer.dy / metersPerDegree - 1,
     Number(form.center.lon) + halfWidth + 1,
-    Number(form.center.lat) + halfHeight + 1,
+    Number(form.center.lat) + (outer.e_sn - (mapCenter.value.grid_y || (outer.e_sn + 1) / 2)) * outer.dy / metersPerDegree + 1,
   ];
-  const allowed = gfsBounds.value.map(Number);
   return {
     bounds,
-    inside: bounds[0] >= allowed[0] && bounds[1] >= allowed[1] && bounds[2] <= allowed[2] && bounds[3] <= allowed[3],
+    inside: bounds[1] >= -90 && bounds[3] <= 90,
   };
 });
 const recommendationFactorSummary = computed(() => {
@@ -206,8 +211,14 @@ const physicsFields = [
 watch(() => props.options, value => {
   if (!value) return;
   if (props.initialRequest) return;
+  const configuredCount = props.highResolution ? 4 : Number(value.default_domain_count);
+  if (Number.isInteger(configuredCount) && configuredCount >= 1 && configuredCount <= 4) domainCount.value = configuredCount;
   resetDomains();
   applyPreset();
+}, { immediate: true });
+watch(() => props.dataSource, value => {
+  if (value === "ecmwf") form.interval = 3;
+  else if (props.highResolution) form.interval = 1;
 }, { immediate: true });
 watch(() => props.initialRequest, value => {
   if (!value) return;
@@ -216,17 +227,17 @@ watch(() => props.initialRequest, value => {
   form.endTime = inputTime(value.end_time);
   form.center = { lat: Number(value.center?.lat), lon: Number(value.center?.lon) };
   form.interval = Number(value.forecast_interval_hours || 1);
-  form.assimilation = value.assimilation_scheme || "off";
+  form.assimilation = props.highResolution ? "off" : (value.assimilation_scheme || "off");
   form.preset = value.physics?.preset || "默认通用";
   form.physics = { ...fallbackPhysics, ...(value.physics || {}) };
-  form.domains = (value.domains || fallbackDomains.slice(0, 2)).map(item => ({ ...item }));
+  form.domains = (props.highResolution ? fallbackDomains : (value.domains || fallbackDomains.slice(0, 1))).map(item => ({ ...item }));
   domainCount.value = form.domains.length;
   activeDomain.value = 0;
   recommendation.value = null;
 }, { immediate: true });
 
 function resetDomains() {
-  const defaults = props.options?.default_domains || fallbackDomains;
+  const defaults = props.highResolution ? fallbackDomains : (props.options?.default_domains || fallbackDomains);
   form.domains = defaults.slice(0, domainCount.value).map(item => ({ ...item }));
   activeDomain.value = Math.min(activeDomain.value, form.domains.length - 1);
 }
@@ -239,7 +250,7 @@ async function requestRecommendation() {
   recommendationInputSignature.value = "";
   try {
     const job = await createWrfRecommendation({
-      center: { ...form.center }, domains: form.domains.map(item => ({ ...item })),
+      center: { ...mapCenter.value }, domains: form.domains.map(item => ({ ...item })),
       start_time: `${form.startTime}:00Z`,
     });
     let current = job;
@@ -267,7 +278,7 @@ function applyRecommendation() {
   const value = recommendation.value;
   form.physics = { ...value.physics };
   form.preset = value.physics?.preset || "规则推荐";
-  form.assimilation = value.assimilation_scheme || "off";
+  form.assimilation = props.highResolution ? "off" : (value.assimilation_scheme || "off");
   ElMessage.success("推荐参数已应用，提交前仍可继续调整");
 }
 function updateCenter(value) { form.center.lat = Number(value.lat.toFixed(3)); form.center.lon = Number(value.lon.toFixed(3)); }
@@ -288,12 +299,22 @@ function setDomainDx(index, value) {
 }
 function formatResolution(value) { return Number(value) >= 1000 ? `${Number(value / 1000)} km` : `${value} m`; }
 function formatBounds(bounds) { return `${bounds[0]}–${bounds[2]}°E · ${bounds[1]}–${bounds[3]}°N`; }
+function localTime(value) {
+  const parsed = Date.parse(`${value}:00Z`);
+  if (!Number.isFinite(parsed)) return "";
+  return `北京时间 ${new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(parsed))}`;
+}
+function currentRequest() {
+  return { data_source: props.dataSource, start_time: `${form.startTime}:00Z`, end_time: `${form.endTime}:00Z`, center: { ...mapCenter.value }, domains: form.domains.map(item => ({ ...item })), physics: { ...form.physics }, forecast_interval_hours: form.interval, assimilation_scheme: form.assimilation };
+}
+watch(form, () => emit("change", currentRequest()), { deep: true, immediate: true });
+defineExpose({ validateForm, currentRequest });
 function submit() {
   const validationError = validateForm();
   if (validationError) return ElMessage.warning(validationError);
   emit("submit", {
     data_source: props.dataSource || "gfs",
-    start_time: `${form.startTime}:00Z`, end_time: `${form.endTime}:00Z`, center: { ...form.center },
+    start_time: `${form.startTime}:00Z`, end_time: `${form.endTime}:00Z`, center: { ...mapCenter.value },
     forecast_interval_hours: form.interval,
     domains: form.domains.map((item, index) => ({ ...item, dy: item.dx, parent_id: index ? index : 0 })),
     physics: { preset: form.preset, ...form.physics }, assimilation_scheme: form.assimilation,
@@ -338,7 +359,7 @@ onBeforeUnmount(() => { recommendationGeneration += 1; });
 .task-config { min-height: 100%; display: flex; flex-direction: column; padding: 18px; color: var(--text); font-size: 13px; }
 .panel-head, .sub-head, .map-title, .config-footer { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
 .panel-head { padding-bottom: 14px; border-bottom: 1px solid var(--border); }.panel-head span { color: var(--accent); font-size: 11px; font-weight: 800; letter-spacing: 1.4px; }.panel-head h2 { margin: 4px 0 0; font-size: 20px; }.head-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
-.config-grid { display: grid; grid-template-columns: minmax(380px, .86fr) minmax(460px, 1.14fr); gap: 16px; padding: 16px 0; }.form-column, .map-column, .physics-panel { border: 1px solid var(--border); border-radius: 13px; background: var(--field); }.form-column { min-width: 0; padding: 14px; }.basic-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; }.basic-grid > :deep(.el-form-item) { min-width: 0; }.basic-grid :deep(.el-input), .basic-grid :deep(.el-input-number), .basic-grid :deep(.el-select) { width: 100%; min-width: 0; }.basic-grid :deep(.el-input__wrapper) { min-width: 0; padding-right: 9px; padding-left: 9px; }.basic-grid :deep(input[type="datetime-local"]) { width: 100%; min-width: 0; font-size: 12px; font-variant-numeric: tabular-nums; }
+.config-grid { display: grid; grid-template-columns: minmax(280px, .86fr) minmax(320px, 1.14fr); gap: 16px; padding: 16px 0; }.form-column, .map-column, .physics-panel { border: 1px solid var(--border); border-radius: 13px; background: var(--field); }.form-column { min-width: 0; padding: 14px; }.basic-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; }.basic-grid > :deep(.el-form-item) { min-width: 0; }.basic-grid :deep(.el-input), .basic-grid :deep(.el-input-number), .basic-grid :deep(.el-select) { width: 100%; min-width: 0; }.basic-grid :deep(.el-input__wrapper) { min-width: 0; padding-right: 9px; padding-left: 9px; }.basic-grid :deep(input[type="datetime-local"]) { width: 100%; min-width: 0; font-size: 12px; font-variant-numeric: tabular-nums; }
 .sub-head { margin: 5px 0 10px; padding-top: 12px; border-top: 1px solid var(--border); }.sub-head h3 { margin: 0; font-size: 14px; }.sub-head span { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; }.sub-head :deep(.el-select) { width: 88px; }
 .domain-cards { display: grid; grid-template-columns: 1fr; gap: 8px; }.domain-cards article { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 7px; padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--glass); cursor: pointer; }.domain-cards article.outer { grid-template-columns: repeat(3, minmax(0, 1fr)); }.domain-cards article.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-soft); }.domain-cards b { grid-column: 1/-1; color: var(--accent); font-size: 12px; }.domain-cards label { display: grid; gap: 3px; min-width: 0; color: var(--muted); font-size: 9px; }.domain-cards :deep(.el-input-number), .domain-cards :deep(.el-select) { width: 100%; }
 .map-column { min-width: 0; padding: 12px; }.map-title { height: 38px; }.map-title div { display: grid; gap: 2px; }.map-title b { font-size: 13px; }.map-title span { color: var(--muted); font-size: 11px; }.map-title > span { color: var(--accent); font: 700 11px monospace; }.domain-map { position: relative; height: 430px; overflow: hidden; border-radius: 10px; background: var(--bg); }
@@ -348,6 +369,17 @@ onBeforeUnmount(() => { recommendationGeneration += 1; });
 .recommendation-note { display: grid; grid-template-columns: minmax(160px, .7fr) minmax(320px, 2fr) auto; align-items: center; gap: 12px; margin-top: 10px; padding: 10px; border: 1px solid var(--accent); border-radius: 9px; background: var(--accent-soft); }.recommendation-note.stale { border-color: #f59e0b; background: #f59e0b14; }.recommendation-note.stale b { color: #f59e0b; }.recommendation-summary { display: grid; gap: 4px; }.recommendation-note b { color: var(--accent); font-size: 12px; }.recommendation-note span { color: var(--text); font-size: 11px; line-height: 1.45; }.recommendation-note ul { max-height: 84px; margin: 0; padding-left: 16px; overflow-y: auto; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .domain-cards label { font-size: 11px; }
 .task-config :deep(.el-form-item__label) { color: var(--muted); font-size: 12px; line-height: 1.35; }
-@media (max-width: 1500px) { .config-grid { grid-template-columns: 1fr; }.physics-grid { grid-template-columns: repeat(3, 1fr); }.recommendation-note { grid-template-columns: 1fr auto; }.recommendation-note ul { grid-column: 1/-1; grid-row: 2; } }
-@media (max-width: 720px) { .basic-grid { grid-template-columns: 1fr; }.domain-cards article, .domain-cards article.outer { grid-template-columns: repeat(2, minmax(0, 1fr)); }.physics-grid { grid-template-columns: repeat(2, 1fr); }.config-footer { align-items: stretch; flex-direction: column; }.config-footer .el-button { width: 100%; } }
+.basic-grid small { display: block; margin-top: 5px; color: var(--muted); font-size: 10px; }
+.coordinate-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding-top: 6px; border-top: 1px solid var(--border); }
+.coordinate-grid :deep(.el-input-number) { width: 100%; }
+.step-title { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.step-title i { display: grid; width: 25px; height: 25px; flex: 0 0 25px; place-items: center; border-radius: 50%; color: #fff; background: var(--accent); font-style: normal; font-weight: 800; }
+.step-title h3 { margin: 0; font-size: 15px; }.step-title span { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }.map-step { margin: 0 0 10px; }
+.expert-panel, .result-step { padding: 12px 14px; border: 1px solid var(--border); border-radius: 13px; background: var(--field); }.expert-panel { margin-bottom: 12px; }
+.simple-result { margin-top: 2px; }.summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; }.summary-grid div { display: grid; gap: 5px; padding: 11px; border-radius: 9px; background: var(--glass); }.summary-grid span { color: var(--muted); font-size: 10px; }.summary-grid b { font-size: 12px; }
+.physics-actions { gap: 8px; }
+.config-footer { position: sticky; bottom: 0; z-index: 20; margin-right: -18px; margin-bottom: -18px; margin-left: -18px; padding: 13px 18px; background: color-mix(in srgb, var(--bg) 94%, transparent); backdrop-filter: blur(12px); }
+@media (max-width: 900px) { .config-grid { grid-template-columns: 1fr; }.physics-grid { grid-template-columns: repeat(3, 1fr); }.recommendation-note { grid-template-columns: 1fr auto; }.recommendation-note ul { grid-column: 1/-1; grid-row: 2; } }
+@media (max-width: 900px) { .summary-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 720px) { .basic-grid, .coordinate-grid { grid-template-columns: 1fr; }.domain-cards article, .domain-cards article.outer { grid-template-columns: repeat(2, minmax(0, 1fr)); }.physics-grid, .summary-grid { grid-template-columns: 1fr; }.config-footer { align-items: stretch; flex-direction: column; }.config-footer .el-button { width: 100%; } }
 </style>

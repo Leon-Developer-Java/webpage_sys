@@ -26,7 +26,8 @@ npm run dev
 | --- | --- | --- |
 | `backend` | `http://127.0.0.1:8002` | 展示接口和 `/data` 资源 |
 | `backend_upload` | `http://127.0.0.1:8003` | 上传、任务、目录和自动采集 |
-| `backend_agent` | `http://127.0.0.1:8004` | 智能体 NDJSON 流式接口 |
+| AgentScope Web UI | `http://127.0.0.1:5173/chat` | `/agent` 嵌入的原生智能体界面 |
+| `weather_agentscope` | `http://127.0.0.1:8012` | 智能体编排、会话、工具和业务 Agent |
 | `backend_auth` | `http://127.0.0.1:8005` | 登录、注册和用户管理 |
 | `backend_model` | `http://127.0.0.1:8006` | 模型运行与结果资源 |
 | WRF 服务 | `http://127.0.0.1:8007` | WRF 任务与展示 |
@@ -37,7 +38,9 @@ npm run dev
 ```text
 VITE_API_BASE
 VITE_UPLOAD_BASE
-VITE_AGENT_BASE
+VITE_AGENTSCOPE_WEB_URL
+VITE_AGENTSCOPE_BASE
+VITE_AGENT_BASE             # AgentScope API，默认 http://127.0.0.1:8012
 VITE_AUTH_BASE
 VITE_MODEL_BASE
 VITE_WRF_BASE
@@ -54,7 +57,7 @@ VITE_ERA5_HISTORY_API_BASE
 | `/` | 多屏气象总览 | role 1 |
 | `/era5-history` | ERA5 历史数据 | 未登录可访问 |
 | `/upload` | 数据上传与解析状态 | role 2 |
-| `/agent` | 智能体 | role 2 |
+| `/agent` | 嵌入式 AgentScope 智能体 | role 2 |
 | `/model` | 模型运行 | role 2 |
 | `/wrf` | WRF 工作台 | role 2 |
 

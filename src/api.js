@@ -8,7 +8,7 @@ import { requestCacheMode } from "./utils/requestCachePolicy";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8002";
 const UPLOAD_BASE = import.meta.env.VITE_UPLOAD_BASE ?? "http://127.0.0.1:8003";
-const AGENT_BASE = import.meta.env.VITE_AGENT_BASE ?? "http://127.0.0.1:8004";
+const AGENT_BASE = import.meta.env.VITE_AGENT_BASE ?? "http://127.0.0.1:8012";
 const AUTH_BASE = import.meta.env.VITE_AUTH_BASE ?? "http://127.0.0.1:8005";
 const MODEL_BASE = import.meta.env.VITE_MODEL_BASE ?? "http://127.0.0.1:8006";
 const ERA5_HISTORY_BASE = import.meta.env.VITE_ERA5_HISTORY_API_BASE
@@ -240,6 +240,10 @@ export function syncLatestWrfForcing(dataSource) {
   return wrfRequest(`/api/wrf/forcing/${encodeURIComponent(dataSource)}/sync-latest`, { method: "POST" });
 }
 
+export function prepareWrfForcing() {
+  return wrfRequest("/api/wrf/forcing/prepare", { method: "POST" });
+}
+
 export function cleanupWrfForcing(dataSource, paths) {
   return wrfRequest(`/api/wrf/forcing/${encodeURIComponent(dataSource)}/cleanup`, {
     method: "POST",
@@ -271,6 +275,67 @@ export function createWrfTask(input) {
 export async function listWrfTasks(limit = 50) {
   const data = await wrfRequest(`/api/wrf/tasks?limit=${encodeURIComponent(limit)}`);
   return data?.items ?? [];
+}
+
+export async function listWorkbenchTasks(limit = 50) {
+  const data = await wrfRequest(`/api/wrf/workbench/tasks?limit=${encodeURIComponent(limit)}`);
+  return data?.items ?? [];
+}
+
+export function getDownscaleTerrainAssets() {
+  return wrfRequest("/api/wrf/downscale/terrain-assets");
+}
+
+export function resolveDownscaleTerrainAssets(aoi) {
+  return wrfRequest("/api/wrf/downscale/terrain-assets/resolve", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ aoi }),
+  });
+}
+
+export function getDownscaleTemplates() {
+  return wrfRequest("/api/wrf/downscale/templates");
+}
+
+export function submitDownscaleTerrainAsset(input) {
+  return wrfRequest("/api/wrf/downscale/terrain-assets/submissions", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input),
+  });
+}
+
+export function validateDownscaleTask(input) {
+  return wrfRequest("/api/wrf/downscale/validate", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input),
+  });
+}
+
+export function createDownscaleTask(input, idempotencyKey = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`) {
+  return wrfRequest("/api/wrf/downscale/tasks", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify(input),
+  });
+}
+
+export function getDownscaleTaskLogs(taskId, after = 0) {
+  return wrfRequest(`/api/wrf/downscale/tasks/${encodeURIComponent(taskId)}/logs?after=${encodeURIComponent(after)}`);
+}
+
+export function cancelDownscaleTask(taskId) {
+  return wrfRequest(`/api/wrf/downscale/tasks/${encodeURIComponent(taskId)}/cancel`, { method: "POST" });
+}
+
+export function retryDownscaleTask(taskId) {
+  return wrfRequest(`/api/wrf/downscale/tasks/${encodeURIComponent(taskId)}/retry`, { method: "POST" });
+}
+
+export function getDownscaleTaskResult(taskId) {
+  return wrfRequest(`/api/wrf/downscale/tasks/${encodeURIComponent(taskId)}/result`);
+}
+
+export function requestDownscaleCertification(taskId, input) {
+  return wrfRequest(`/api/wrf/downscale/tasks/${encodeURIComponent(taskId)}/certification-requests`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input),
+  });
 }
 
 export function getWrfTask(taskId) {
@@ -522,20 +587,40 @@ async function agentJson(path, options = {}) {
   return payload.data;
 }
 
-export function createAgentWrfConfirmation(request) {
+export function createAgentWrfConfirmation(request, sessionId) {
   return agentJson("/api/agent/wrf/confirmations", {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ request }),
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ request, session_id: sessionId }),
   });
 }
 
-export function submitAgentWrfTask(request) {
+export function submitAgentWrfTask(confirmationId, sessionId) {
   return agentJson("/api/agent/wrf/tasks", {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ request }),
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ confirmation_id: confirmationId, session_id: sessionId, confirmed: true }),
+  });
+}
+
+export function cancelAgentWrfConfirmation(confirmationId, sessionId) {
+  return agentJson(`/api/agent/wrf/confirmations/${encodeURIComponent(confirmationId)}/cancel`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: sessionId }),
   });
 }
 
 export function getAgentWrfDiagnosis(taskId) {
   return agentJson(`/api/agent/wrf/tasks/${encodeURIComponent(taskId)}/diagnosis`);
+}
+
+export function listWrfEvidence(offset = 0) {
+  return wrfRequest(`/api/wrf/evidence?offset=${offset}&limit=20`, { cache: "no-store" });
+}
+export function getWrfEvidence(id) {
+  return wrfRequest(`/api/wrf/evidence/${encodeURIComponent(id)}`, { cache: "no-store" });
+}
+export function createWrfEvidence(draft) {
+  return wrfRequest('/api/wrf/evidence', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(draft) });
+}
+export function reviewWrfEvidence(id, decision) {
+  return wrfRequest(`/api/wrf/evidence/${encodeURIComponent(id)}/review`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(decision) });
 }
 
 function abortError() {
@@ -559,7 +644,7 @@ async function agentRequest(path, options = {}) {
     response = await authedFetch(`${AGENT_BASE}${path}`, options);
   } catch (error) {
     if (error instanceof TypeError) {
-      throw new Error("无法连接智能体服务，请确认 backend_agent 已启动并监听 8004 端口。");
+      throw new Error("无法连接 AgentScope 服务，请确认 8012 端口已启动。");
     }
     throw error;
   }

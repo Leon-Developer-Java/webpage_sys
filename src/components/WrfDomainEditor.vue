@@ -15,12 +15,12 @@
           :class="['domain-shape', { active: shape.index === activeIndex }]"
           :style="{ stroke: shape.color }"
         />
-        <text :x="shape.label.x" :y="shape.label.y" :fill="shape.color">{{ shape.id.toUpperCase() }}</text>
+        <text v-if="!simple" :x="shape.label.x" :y="shape.label.y" :fill="shape.color">{{ shape.id.toUpperCase() }}</text>
       </template>
     </svg>
 
     <div class="domain-tools">
-      <div class="domain-tabs">
+      <div v-if="!simple" class="domain-tabs">
         <button
           v-for="(domain, index) in domains"
           :key="domain.id"
@@ -31,10 +31,11 @@
           {{ domain.id.toUpperCase() }}
         </button>
       </div>
-      <button class="draw-button" :class="{ active: drawing }" @click="toggleDrawing">
+      <button v-if="!fixedTopology" class="draw-button" :class="{ active: drawing }" @click="toggleDrawing">
         {{ drawing ? '取消重画' : '重画当前域' }}
       </button>
-      <span>{{ drawing ? '在地图上按住并拖拽绘制矩形' : '拖动当前域可调整位置' }}</span>
+      <button v-else class="draw-button" :class="{ active: repositioning }" @click="toggleRepositioning">{{ repositioning ? '取消定位' : '点选中心位置' }}</button>
+      <span>{{ drawing ? '在地图上按住并拖拽绘制矩形' : repositioning ? '点击地图，将固定计算范围移动到该位置' : (simple ? '可拖动范围，或点选新的中心位置' : '高分网格尺寸固定，可整体移动位置') }}</span>
     </div>
   </div>
 </template>
@@ -43,6 +44,8 @@
 import { computed, inject, nextTick, onMounted, ref, watch } from "vue";
 
 const props = defineProps({
+  fixedTopology: Boolean,
+  simple: Boolean,
   domains: { type: Array, default: () => [] },
   center: { type: Object, default: () => ({ lat: 32.048, lon: 118.825 }) },
   activeIndex: { type: Number, default: 0 },
@@ -52,6 +55,7 @@ const projector = inject("mapProjector", null);
 const flyToExtent = inject("flyToExtent", null);
 const overlay = ref(null);
 const drawing = ref(false);
+const repositioning = ref(false);
 const interaction = ref(null);
 const draftBounds = ref(null);
 
@@ -79,12 +83,16 @@ function calculatedBounds() {
       const lon = Number(props.center.lon);
       const halfWidth = (Math.max(1, Number(domain.e_we) - 1) * Number(domain.dx)) / metersPerLongitude(lat) / 2;
       const halfHeight = (Math.max(1, Number(domain.e_sn) - 1) * Number(domain.dy || domain.dx)) / METERS_PER_DEGREE / 2;
-      result.push({ west: lon - halfWidth, east: lon + halfWidth, south: lat - halfHeight, north: lat + halfHeight });
+      const x = props.center.grid_x || (Number(domain.e_we) + 1) / 2;
+      const y = props.center.grid_y || (Number(domain.e_sn) + 1) / 2;
+      const west = lon - (x - 1) * Number(domain.dx) / metersPerLongitude(lat);
+      const south = lat - (y - 1) * Number(domain.dy || domain.dx) / METERS_PER_DEGREE;
+      result.push({ west, east: west + 2 * halfWidth, south, north: south + 2 * halfHeight });
       return;
     }
     const parent = props.domains[index - 1];
     const parentBounds = result[index - 1];
-    const referenceLat = (parentBounds.south + parentBounds.north) / 2;
+    const referenceLat = props.fixedTopology ? Number(props.center.lat) : (parentBounds.south + parentBounds.north) / 2;
     const west = parentBounds.west + (Math.max(1, Number(domain.i_parent_start)) - 1) * Number(parent.dx) / metersPerLongitude(referenceLat);
     const south = parentBounds.south + (Math.max(1, Number(domain.j_parent_start)) - 1) * Number(parent.dy || parent.dx) / METERS_PER_DEGREE;
     const width = (Math.max(1, Number(domain.e_we) - 1) * Number(domain.dx)) / metersPerLongitude(referenceLat);
@@ -128,6 +136,12 @@ function toggleDrawing() {
   emit("drawing", drawing.value);
 }
 
+function toggleRepositioning() {
+  repositioning.value = !repositioning.value;
+  interaction.value = null;
+  draftBounds.value = null;
+}
+
 function point(event) {
   return projector?.unproject?.(event.clientX, event.clientY) || null;
 }
@@ -135,8 +149,14 @@ function point(event) {
 function onPointerDown(event) {
   const value = point(event);
   if (!value) return;
+  if (props.fixedTopology && repositioning.value) {
+    emit("update:center", { lat: value.lat, lon: value.lon });
+    repositioning.value = false;
+    return;
+  }
   const targetIndex = Number(event.target?.dataset?.domainIndex);
-  if (!drawing.value && targetIndex !== props.activeIndex) return;
+  if (!drawing.value && targetIndex !== props.activeIndex && !props.fixedTopology) return;
+  if (!drawing.value && !Number.isInteger(targetIndex)) return;
   overlay.value?.setPointerCapture?.(event.pointerId);
   const original = domainBounds.value[props.activeIndex];
   interaction.value = {
@@ -153,7 +173,7 @@ function onPointerDown(event) {
 function clampMoved(bounds, index) {
   const width = bounds.east - bounds.west;
   const height = bounds.north - bounds.south;
-  if (index === 0) {
+  if (index === 0 || props.fixedTopology) {
     const west = Math.max(-180, Math.min(180 - width, bounds.west));
     const south = Math.max(-85, Math.min(85 - height, bounds.south));
     return { west, east: west + width, south, north: south + height };
@@ -204,6 +224,11 @@ function inside(child, parent) {
 
 function commitBounds(bounds, index) {
   const value = normalized(bounds);
+  if (props.fixedTopology) {
+    const original = domainBounds.value[index];
+    emit("update:center", { lat: props.center.lat + (value.south - original.south), lon: props.center.lon + (value.west - original.west) });
+    return true;
+  }
   if (value.east - value.west < 0.02 || value.north - value.south < 0.02) {
     emit("invalid", "绘制范围过小，请拖拽更大的矩形");
     return false;
@@ -233,7 +258,7 @@ function commitBounds(bounds, index) {
     const segmentsY = snappedSegments(heightMeters, Number(domain.dy || domain.dx), ratio);
     domain.e_we = segmentsX + 1;
     domain.e_sn = segmentsY + 1;
-    const referenceLat = (parentBounds.south + parentBounds.north) / 2;
+    const referenceLat = props.fixedTopology ? Number(props.center.lat) : (parentBounds.south + parentBounds.north) / 2;
     const rawI = Math.round((value.west - parentBounds.west) * metersPerLongitude(referenceLat) / Number(parent.dx)) + 1;
     const rawJ = Math.round((value.south - parentBounds.south) * METERS_PER_DEGREE / Number(parent.dy || parent.dx)) + 1;
     domain.i_parent_start = Math.max(1, Math.min(Math.floor(Number(parent.e_we) - segmentsX / ratio), rawI));

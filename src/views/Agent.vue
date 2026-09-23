@@ -59,6 +59,8 @@
             <span v-if="m.role === 'user'" class="plain">{{ m.content }}</span>
             <span v-else class="md" v-html="renderMarkdown(m.content)"></span><span v-if="m.streaming" class="cursor"></span>
             <ToolCallCard v-for="tc in (m.toolCalls ?? [])" :key="tc.name" :tc="tc" />
+            <WrfRecommendationCard v-for="(event, index) in (m.wrfRecommendations || [])" :key="index" :event="event" />
+            <WrfConfirmationCard v-for="event in (m.wrfConfirmations || [])" :key="event.confirmation_id" :event="event" @update="Object.assign(event, $event); save()" />
             <div v-if="(m.processEvents ?? []).length" class="agent-process">
               <div class="ap-head">
                 <span>Agent 过程</span>
@@ -201,6 +203,8 @@ import { renderMarkdown } from "../markdown.js";
 import AgentNowcastAnalysisCard from "../components/AgentNowcastAnalysisCard.vue";
 import AgentNowcastCard from "../components/AgentNowcastCard.vue";
 import ToolCallCard from "../components/ToolCallCard.vue";
+import WrfRecommendationCard from "../components/WrfRecommendationCard.vue";
+import WrfConfirmationCard from "../components/WrfConfirmationCard.vue";
 import WorkbenchPanel from "../components/WorkbenchPanel.vue";
 
 const SKEY = "agent_sessions";
@@ -457,6 +461,8 @@ async function send() {
       if (ev.type === "text") aiMsg.content += ev.value;
       else if (ev.type === "tool") applyToolEvent(aiMsg, ev);
       else if (ev.type === "analysis_result") applyAnalysisResult(aiMsg, ev);
+      else if (ev.type === "wrf_recommendation") (aiMsg.wrfRecommendations ??= []).push(ev);
+      else if (ev.type === "wrf_confirmation") (aiMsg.wrfConfirmations ??= []).push(ev);
       else if (ev.type === "image") aiMsg.images.push({ url: ev.url, caption: ev.caption });
       else if (ev.type === "need_params") aiMsg.paramPrompt = { model: ev.model, modelName: ev.model_name, fields: ev.fields };
       else if (ev.type === "nowcast_confirmation") {
