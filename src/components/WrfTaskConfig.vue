@@ -12,13 +12,17 @@
           <div class="basic-grid time-grid">
             <el-form-item label="开始时间（UTC）"><el-input v-model="form.startTime" type="datetime-local" /><small>{{ localTime(form.startTime) }}</small></el-form-item>
             <el-form-item label="结束时间（UTC）"><el-input v-model="form.endTime" type="datetime-local" /><small>{{ localTime(form.endTime) }}</small></el-form-item>
-            <el-form-item v-if="expertOpen" label="输出时间间隔">
+            <el-form-item v-if="expertOpen" label="边界资料间隔">
               <el-select :disabled="highResolution" v-model="form.interval"><el-option v-for="value in intervals" :key="value" :label="`${value} 小时`" :value="value" /></el-select>
+            </el-form-item>
+            <el-form-item v-if="!highResolution" label="结果输出间隔">
+              <el-select v-model="form.historyInterval"><el-option v-for="value in historyIntervals" :key="value" :label="`${value} 分钟`" :value="value" /></el-select>
             </el-form-item>
             <el-form-item v-if="expertOpen" label="资料同化方案">
               <el-select v-model="form.assimilation" :disabled="highResolution"><el-option v-for="item in assimilationOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select>
             </el-form-item>
           </div>
+          <p v-if="!highResolution" class="region-note">固定运行策略：CPU · 6 小时 spin-up · 88 垂直层 · general 预报关注方向。</p>
           <div v-if="expertOpen" class="coordinate-grid"><el-form-item label="中心纬度"><el-input-number v-model="form.center.lat" :min="-85" :max="85" :precision="3" /></el-form-item><el-form-item label="中心经度"><el-input-number v-model="form.center.lon" :min="-180" :max="180" :precision="3" /></el-form-item></div>
         </el-form>
       </div>
@@ -73,7 +77,7 @@
       </div>
       <div v-if="recommendation" :class="['recommendation-note', { stale: recommendationStale }]">
         <div class="recommendation-summary">
-          <b>{{ recommendationStale ? '区域或时段已变化，请重新推荐' : `推荐置信度 ${Math.round((recommendation.confidence || 0) * 100)}%` }}</b>
+          <b>{{ recommendationStale ? '区域或时段已变化，请重新推荐' : '规则建议 · 未作个例准确率验证' }}</b>
           <span v-if="recommendation.factors">{{ recommendationFactorSummary }}</span>
         </div>
         <ul><li v-for="reason in recommendation.reasons" :key="reason">{{ reason }}</li></ul>
@@ -84,7 +88,7 @@
 
     <section v-if="!highResolution && !expertOpen" class="result-step simple-result">
       <div class="step-title"><i>3</i><div><h3>确认结果</h3><span>系统已使用适合常规区域模拟的默认配置</span></div></div>
-      <div class="summary-grid"><div><span>任务类型</span><b>区域天气模拟</b></div><div><span>计算范围</span><b>D01 · 27 km · 1 层</b></div><div><span>物理方案</span><b>{{ form.preset }}</b></div><div><span>输出</span><b>逐 {{ form.interval }} 小时气象场</b></div></div>
+      <div class="summary-grid"><div><span>任务类型</span><b>区域天气模拟</b></div><div><span>计算范围</span><b>D01 · 27 km · 1 层</b></div><div><span>物理方案</span><b>{{ form.preset }}</b></div><div><span>输出</span><b>每 {{ form.historyInterval }} 分钟气象场</b></div></div>
     </section>
     <slot name="additional" :expert-open="expertOpen" />
     <footer v-if="!hideFooter" class="config-footer">
@@ -132,7 +136,7 @@ const later = new Date(now.getTime() + 6 * 3600 * 1000);
 
 const form = reactive({
   startTime: utcInput(now), endTime: utcInput(later), center: { lat: 32.048, lon: 118.825 },
-  interval: 1, assimilation: "off", preset: "默认通用",
+  interval: 1, historyInterval: 60, assimilation: "off", preset: "默认通用",
   domains: fallbackDomains.slice(0, props.highResolution ? 4 : 1).map(item => ({ ...item })), physics: { ...fallbackPhysics },
 });
 const domainCount = ref(props.highResolution ? 4 : 1);
@@ -147,6 +151,7 @@ const recommendation = ref(null);
 const recommendationInputSignature = ref("");
 let recommendationGeneration = 0;
 const intervals = computed(() => props.dataSource === "ecmwf" ? [3] : (props.options?.forecast_intervals || [1, 3, 6]));
+const historyIntervals = computed(() => props.options?.history_intervals_minutes || [10, 30, 60, 180, 360]);
 const fixedSpinupHours = computed(() => Number(props.options?.capabilities?.fixed_spinup_hours || 6));
 const assimilationOptions = computed(() => props.options?.assimilation_schemes || [
   { value: "off", label: "关闭" }, { value: "fdda_weak", label: "弱网格松弛" },
@@ -227,6 +232,7 @@ watch(() => props.initialRequest, value => {
   form.endTime = inputTime(value.end_time);
   form.center = { lat: Number(value.center?.lat), lon: Number(value.center?.lon) };
   form.interval = Number(value.forecast_interval_hours || 1);
+  form.historyInterval = Number(value.history_interval_minutes || 60);
   form.assimilation = props.highResolution ? "off" : (value.assimilation_scheme || "off");
   form.preset = value.physics?.preset || "默认通用";
   form.physics = { ...fallbackPhysics, ...(value.physics || {}) };
@@ -302,10 +308,10 @@ function formatBounds(bounds) { return `${bounds[0]}–${bounds[2]}°E · ${boun
 function localTime(value) {
   const parsed = Date.parse(`${value}:00Z`);
   if (!Number.isFinite(parsed)) return "";
-  return `北京时间 ${new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(parsed))}`;
+  return `北京时间 ${new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(parsed))}`;
 }
 function currentRequest() {
-  return { data_source: props.dataSource, start_time: `${form.startTime}:00Z`, end_time: `${form.endTime}:00Z`, center: { ...mapCenter.value }, domains: form.domains.map(item => ({ ...item })), physics: { ...form.physics }, forecast_interval_hours: form.interval, assimilation_scheme: form.assimilation };
+  return { data_source: props.dataSource, start_time: `${form.startTime}:00Z`, end_time: `${form.endTime}:00Z`, center: { ...mapCenter.value }, domains: form.domains.map(item => ({ ...item })), physics: { ...form.physics }, forecast_interval_hours: form.interval, history_interval_minutes: props.highResolution ? 60 : form.historyInterval, assimilation_scheme: form.assimilation };
 }
 watch(form, () => emit("change", currentRequest()), { deep: true, immediate: true });
 defineExpose({ validateForm, currentRequest });
@@ -316,6 +322,7 @@ function submit() {
     data_source: props.dataSource || "gfs",
     start_time: `${form.startTime}:00Z`, end_time: `${form.endTime}:00Z`, center: { ...mapCenter.value },
     forecast_interval_hours: form.interval,
+    history_interval_minutes: props.highResolution ? 60 : form.historyInterval,
     domains: form.domains.map((item, index) => ({ ...item, dy: item.dx, parent_id: index ? index : 0 })),
     physics: { preset: form.preset, ...form.physics }, assimilation_scheme: form.assimilation,
   });
@@ -329,6 +336,7 @@ function validateForm() {
   const spanHours = (end - start) / 3600000;
   if (spanHours > 30 * 24) return "模拟时间跨度不能超过 30 天";
   if (spanHours < interval) return `${sourceLabel.value} 文件间隔不能大于模拟时长`;
+  if (!props.highResolution && (spanHours * 60 < Number(form.historyInterval) || (spanHours * 60) % Number(form.historyInterval))) return "模拟时长必须是结果输出间隔的整数倍";
   if (start.getUTCHours() % interval || end.getUTCHours() % interval) return `开始和结束时刻必须与 ${sourceLabel.value} 文件间隔对齐`;
   if (!domainCoverage.value.inside) return `D01（含 1° 缓冲）必须位于当前 ${sourceLabel.value} 覆盖 ${formatBounds(gfsBounds.value)} 内`;
   for (let index = 1; index < form.domains.length; index += 1) {

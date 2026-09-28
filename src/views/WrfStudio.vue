@@ -176,8 +176,8 @@ import {
   MapLocation, Moon, Picture, Position, Sunny, VideoPause, VideoPlay,
 } from "@element-plus/icons-vue";
 import {
-  cancelDownscaleTask, cancelWrfTask, cleanupWrfForcing, createDownscaleTask, createWrfTask, deleteWrfTask, getDownscaleTaskLogs, getWrfDataStatus,
-  getWrfHealth, getWrfOptions, getWrfTaskLogs, getWrfTaskRestartPlan, listWorkbenchTasks,
+  cancelDownscaleTask, cancelWrfTask, cleanupWrfForcing, createDownscaleTask, createWrfTask, deleteWrfTask, getDownscaleTaskLogs, getWrfDataStatus, getWrfSubmission, getUser,
+  getWrfHealth, getWrfOptions, getWrfTask, getWrfTaskLogs, getWrfTaskRestartPlan, listWorkbenchTasks,
   prepareWrfForcing, renderPartialWrfTask, requestDownscaleCertification, restartWrfTask, resumeWrfTask, retryDownscaleTask, retryWrfTaskOutputs, syncLatestWrfForcing,
 } from "../api.js";
 import ProjMap from "../components/ProjMap.vue";
@@ -519,9 +519,9 @@ async function refreshHpcConnection() {
 async function submitTask(payload) {
   submitting.value = true;
   try {
-    await ensureHpcReady("认证并提交");
     let task;
     if (restartContext.value) {
+      await ensureHpcReady("认证并提交");
       const plan = await getWrfTaskRestartPlan(restartContext.value.taskId);
       const paths = [
         ...(plan.local_paths || []).map(path => `本地：${path}`),
@@ -536,7 +536,29 @@ async function submitTask(payload) {
       restartContext.value = null;
       ElMessage.success(`原任务已开始第 ${task.attempt_no} 次尝试`);
     } else {
-      task = await createWrfTask(payload);
+      const userId = String(getUser()?.uuid || getUser()?.id || 'unknown');
+      const digestBytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(payload)));
+      const digest = Array.from(new Uint8Array(digestBytes), byte => byte.toString(16).padStart(2, '0')).join('');
+      const ledgerKey = `wrf:pending:${userId}:${digest}`;
+      const pending = JSON.parse(localStorage.getItem(ledgerKey) || 'null');
+      if (pending?.digest === digest) {
+        const status = await getWrfSubmission(pending.key);
+        if (!status.task_id) throw new Error('上次提交结果尚未确认；已只读对账，未重新提交。请稍后再查或联系管理员。');
+        task = await getWrfTask(status.task_id);
+        localStorage.removeItem(ledgerKey);
+      } else {
+        await ensureHpcReady("认证并提交");
+        const key = `wrf-ui-${crypto.randomUUID()}`;
+        localStorage.setItem(ledgerKey, JSON.stringify({ digest, key }));
+        try {
+          task = await createWrfTask(payload, key);
+          localStorage.removeItem(ledgerKey);
+        } catch (error) {
+          if ([400, 401, 403, 409, 422, 503].includes(error?.status)) localStorage.removeItem(ledgerKey);
+          else throw new Error('WRF 提交响应不明；已保留幂等键，请重新打开本页执行只读对账，勿盲目重复提交。', { cause: error });
+          throw error;
+        }
+      }
       ElMessage.success("WRF 任务已开始动态并行调度");
     }
     await refreshAll();

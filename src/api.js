@@ -176,16 +176,23 @@ async function wrfRequest(path, options = {}) {
     throw new Error(`WRF 服务返回了无法解析的响应（HTTP ${response.status}）`);
   }
   if (!response.ok || payload?.code !== 0) {
-    throw new Error(apiError(payload, `WRF 服务请求失败（HTTP ${response.status}）`));
+    throw Object.assign(new Error(apiError(payload, `WRF 服务请求失败（HTTP ${response.status}）`)), { status: response.status });
   }
   return payload.data;
 }
 
-export function wrfAssetUrl(path) {
+export async function fetchWrfAsset(path, signal) {
   const value = String(path || "");
-  if (!value || /^(data:|blob:)/i.test(value)) return value;
-  const base = WRF_BASE || globalThis.location?.origin || "http://127.0.0.1:8007";
-  return withToken(resolveServiceUrl(value, base));
+  if (!value.startsWith("/data/WRF/") || value.includes("..")) throw new Error("WRF 资源路径无效");
+  const base = value.startsWith("/data/WRF/workbench/")
+    ? (API_BASE || globalThis.location?.origin || "http://127.0.0.1:8002")
+    : (WRF_BASE || globalThis.location?.origin || "http://127.0.0.1:8007");
+  await ensureFreshToken();
+  const response = await fetch(resolveServiceUrl(value, base), {
+    headers: { Authorization: `Bearer ${getToken()}` }, signal, cache: "no-store",
+  });
+  if (!response.ok) throw new Error(`WRF 资源读取失败（${response.status}）`);
+  return response.blob();
 }
 
 export function getWrfHealth() {
@@ -264,12 +271,16 @@ export function getWrfRecommendation(jobId) {
   return wrfRequest(`/api/wrf/recommendations/${encodeURIComponent(jobId)}`);
 }
 
-export function createWrfTask(input) {
+export function createWrfTask(input, idempotencyKey) {
   return wrfRequest("/api/wrf/tasks", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
     body: JSON.stringify(input),
   });
+}
+
+export function getWrfSubmission(idempotencyKey) {
+  return wrfRequest(`/api/wrf/submissions/${encodeURIComponent(idempotencyKey)}`);
 }
 
 export async function listWrfTasks(limit = 50) {

@@ -31,6 +31,8 @@ npm run dev
 | `backend_auth` | `http://127.0.0.1:8005` | 登录、注册和用户管理 |
 | `backend_model` | `http://127.0.0.1:8006` | 模型运行与结果资源 |
 | WRF 服务 | `http://127.0.0.1:8007` | WRF 任务与展示 |
+
+普通 WRF 工作台使用 `backend_wrf:8007` 创建、校验及查询任务；独立的边界资料间隔和结果输出间隔分别传入 `forecast_interval_hours` 与 `history_interval_minutes`。提交使用本地持久化幂等键，网络响应不明时仅通过本人对账接口查询，不自动重提。私有运行图片从 8007 读取，已登记的共享工作台图片从 `backend_system:8002` 读取；图片使用 Bearer 请求取得 Blob，不把 Token 拼入资源 URL。旧版无精确地理定位的产品只显示原始图片，不作为精确地图叠加。
 | ERA5 历史服务 | `http://127.0.0.1:8010` | ERA5 历史状态、更新和展示 |
 
 对应环境变量：
