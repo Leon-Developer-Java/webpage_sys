@@ -9,8 +9,8 @@ import { requestCacheMode } from "./utils/requestCachePolicy";
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8002";
 const UPLOAD_BASE = import.meta.env.VITE_UPLOAD_BASE ?? "http://127.0.0.1:8003";
 const AGENT_BASE = import.meta.env.VITE_AGENT_BASE ?? "http://127.0.0.1:8012";
-const AUTH_BASE = import.meta.env.VITE_AUTH_BASE ?? "http://127.0.0.1:8005";
 const MODEL_BASE = import.meta.env.VITE_MODEL_BASE ?? "http://127.0.0.1:8006";
+const AUTH_BASE = import.meta.env.VITE_AUTH_BASE ?? "http://127.0.0.1:8005";
 const ERA5_HISTORY_BASE = import.meta.env.VITE_ERA5_HISTORY_API_BASE
   ?? (import.meta.env.DEV ? "http://127.0.0.1:8010" : "");
 const WRF_BASE = import.meta.env.VITE_WRF_BASE ?? "http://127.0.0.1:8007";
@@ -31,11 +31,13 @@ export function getUser() {
 function saveSession(data) {
   localStorage.setItem("token", data.token);
   localStorage.setItem("user", JSON.stringify(data.user));
+  window.dispatchEvent(new Event("weather-auth-changed"));
 }
 
 export function logout() {
   localStorage.removeItem("token");
   localStorage.removeItem("user");
+  window.dispatchEvent(new Event("weather-auth-changed"));
   if (router.currentRoute.value.path !== "/login") router.push("/login");
 }
 
@@ -81,7 +83,7 @@ function tokenPayload(token) {
 
 let refreshPromise = null;
 
-async function ensureFreshToken() {
+export async function ensureFreshToken() {
   const token = getToken();
   const payload = token && tokenPayload(token);
   if (!payload?.iat || !payload?.exp) return;
@@ -93,10 +95,15 @@ async function ensureFreshToken() {
   })
     .then(async res => {
       const data = await res.json();
-      if (!res.ok || data.code !== 0) throw new Error("refresh 失败");
+      if (res.status === 401 || res.status === 403) {
+        localStorage.removeItem("token");
+        localStorage.removeItem("user");
+        window.dispatchEvent(new Event("weather-auth-changed"));
+        throw new Error("登录已失效，请重新登录");
+      }
+      if (!res.ok || data.code !== 0) throw new Error("认证服务暂时不可用");
       saveSession(data.data);
     })
-    .catch(() => logout())
     .finally(() => { refreshPromise = null; });
   await refreshPromise;
 }
@@ -158,9 +165,15 @@ async function wrfRequest(path, options = {}) {
   let response = null;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
-      response = await authedFetch(`${WRF_BASE}${path}`, options);
+      const controller = new AbortController();
+      const abort = () => controller.abort(options.signal?.reason);
+      if(options.signal?.aborted)abort();else options.signal?.addEventListener('abort',abort,{once:true});
+      const timer = globalThis.setTimeout(()=>controller.abort(new Error('WRF request timeout')),method==='GET'?15000:60000);
+      try { response = await authedFetch(`${WRF_BASE}${path}`, {...options,signal:controller.signal}); }
+      finally { globalThis.clearTimeout(timer);options.signal?.removeEventListener('abort',abort); }
       break;
     } catch (cause) {
+      if(options.signal?.aborted)throw cause;
       if (attempt + 1 < attempts) {
         await new Promise(resolve => globalThis.setTimeout(resolve, 350));
         continue;
@@ -176,7 +189,7 @@ async function wrfRequest(path, options = {}) {
     throw new Error(`WRF 服务返回了无法解析的响应（HTTP ${response.status}）`);
   }
   if (!response.ok || payload?.code !== 0) {
-    throw Object.assign(new Error(apiError(payload, `WRF 服务请求失败（HTTP ${response.status}）`)), { status: response.status });
+    throw Object.assign(new Error(apiError(payload, `WRF 服务请求失败（HTTP ${response.status}）`)), { status: response.status, code: payload?.detail?.code, operationId: payload?.detail?.operation_id });
   }
   return payload.data;
 }
@@ -196,7 +209,7 @@ export async function fetchWrfAsset(path, signal) {
 }
 
 export function getWrfHealth() {
-  return wrfRequest("/api/health");
+  return wrfRequest("/api/health?cached=true");
 }
 
 export function getWrfOptions() {
@@ -251,24 +264,40 @@ export function prepareWrfForcing() {
   return wrfRequest("/api/wrf/forcing/prepare", { method: "POST" });
 }
 
-export function cleanupWrfForcing(dataSource, paths) {
-  return wrfRequest(`/api/wrf/forcing/${encodeURIComponent(dataSource)}/cleanup`, {
+export function refreshWrfForcing() {return wrfRequest('/api/wrf/forcing/refresh',{method:'POST'});}
+export function getWrfForcingRefresh() {return wrfRequest('/api/wrf/forcing/refresh');}
+export function deleteWrfForcingCycle(source,cycle) {return wrfRequest(`/api/wrf/forcing/${encodeURIComponent(source)}/cycles/${encodeURIComponent(cycle)}/delete`,{method:'POST'});}
+export function deleteWrfTaskDirect(taskId) {return wrfRequest(`/api/wrf/tasks/${encodeURIComponent(taskId)}/delete`,{method:'POST'});}
+
+export function getWrfForcingPolicy() {return wrfRequest('/api/wrf/forcing/policy');}
+export function patchWrfForcingPolicy(policy) {return wrfRequest('/api/wrf/forcing/policy',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(policy)});}
+export function submitWrfForcingDownload(source,cycle,start_hour,end_hour,key) {return wrfRequest('/api/wrf/forcing/downloads',{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':key},body:JSON.stringify({source,cycle,start_hour,end_hour})});}
+export function getWrfForcingDownload(id) {return wrfRequest(`/api/wrf/forcing/downloads/${encodeURIComponent(id)}`);}
+export function listWrfForcingDownloads() {return wrfRequest('/api/wrf/forcing/downloads');}
+export function cancelWrfForcingDownload(id) {return wrfRequest(`/api/wrf/forcing/downloads/${encodeURIComponent(id)}/cancel`,{method:'POST'});}
+export function previewWrfForcingCleanup(source, retentionUpgrade = false) {return wrfRequest(`/api/wrf/forcing/${encodeURIComponent(source)}/cleanup-plans?retention_upgrade=${retentionUpgrade}`,{method:'POST'});}
+export function getWrfForcingCleanupPlan(id) {return wrfRequest(`/api/wrf/forcing/cleanup-plans/${encodeURIComponent(id)}`);}
+
+export function cleanupWrfForcing(planId, digest) {
+  return wrfRequest(`/api/wrf/forcing/cleanup-plans/${encodeURIComponent(planId)}/execute`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ paths, confirm: true }),
+    body: JSON.stringify({ digest }),
   });
 }
 
-export function createWrfRecommendation(input) {
-  return wrfRequest("/api/wrf/recommendations", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(input),
-  });
+
+
+export function previewWrfDomains(input, signal) {
+  return wrfRequest('/api/wrf/domains/preview', { method: 'POST', signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
 }
 
-export function getWrfRecommendation(jobId) {
-  return wrfRequest(`/api/wrf/recommendations/${encodeURIComponent(jobId)}`);
+export function resolveWrfNamelist(input, signal) {
+  return wrfRequest('/api/wrf/namelist/resolve', { method: 'POST', signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
+}
+
+export function validateWrfTask(input) {
+  return wrfRequest('/api/wrf/tasks/validate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
 }
 
 export function createWrfTask(input, idempotencyKey) {
@@ -283,71 +312,58 @@ export function getWrfSubmission(idempotencyKey) {
   return wrfRequest(`/api/wrf/submissions/${encodeURIComponent(idempotencyKey)}`);
 }
 
+export async function listWrfTaskPage(filters = {}) {
+  const query = new URLSearchParams();
+  for (const [key,value] of Object.entries(filters)) if (value !== undefined && value !== null && value !== '') query.set(key,String(value));
+  return wrfRequest(`/api/wrf/tasks?${query}`);
+}
+
 export async function listWrfTasks(limit = 50) {
-  const data = await wrfRequest(`/api/wrf/tasks?limit=${encodeURIComponent(limit)}`);
+  const data = await listWrfTaskPage({limit});
   return data?.items ?? [];
 }
 
-export async function listWorkbenchTasks(limit = 50) {
-  const data = await wrfRequest(`/api/wrf/workbench/tasks?limit=${encodeURIComponent(limit)}`);
+export function patchWrfTaskMetadata(taskId, metadata) {
+  return wrfRequest(`/api/wrf/tasks/${encodeURIComponent(taskId)}/metadata`, {
+    method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(metadata),
+  });
+}
+
+export function diagnoseWrfTask(taskId) {
+  return wrfRequest(`/api/wrf/tasks/${encodeURIComponent(taskId)}/diagnosis`);
+}
+export function planWrfTaskRecovery(taskId, eventId, action, request, purpose='repair') {
+  return wrfRequest(`/api/wrf/tasks/${encodeURIComponent(taskId)}/recovery-plans`, {
+    method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({event_id:eventId,action,purpose,...(request?{request}:{})}),
+  });
+}
+export function getWrfTaskRecovery(taskId, planId) {
+  return wrfRequest(`/api/wrf/tasks/${encodeURIComponent(taskId)}/recovery-plans/${encodeURIComponent(planId)}`);
+}
+export function executeWrfTaskRecovery(taskId, planId) {
+  return wrfRequest(`/api/wrf/tasks/${encodeURIComponent(taskId)}/recovery-plans/${encodeURIComponent(planId)}/execute`, {
+    method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmed:true}),
+  });
+}
+
+export async function listWorkbenchTasks(limit = 50, archived = false) {
+  const data = await wrfRequest(`/api/wrf/workbench/tasks?limit=${encodeURIComponent(limit)}&archived=${Boolean(archived)}`);
   return data?.items ?? [];
 }
 
-export function getDownscaleTerrainAssets() {
-  return wrfRequest("/api/wrf/downscale/terrain-assets");
-}
 
-export function resolveDownscaleTerrainAssets(aoi) {
-  return wrfRequest("/api/wrf/downscale/terrain-assets/resolve", {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ aoi }),
-  });
-}
 
-export function getDownscaleTemplates() {
-  return wrfRequest("/api/wrf/downscale/templates");
-}
 
-export function submitDownscaleTerrainAsset(input) {
-  return wrfRequest("/api/wrf/downscale/terrain-assets/submissions", {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input),
-  });
-}
 
-export function validateDownscaleTask(input) {
-  return wrfRequest("/api/wrf/downscale/validate", {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input),
-  });
-}
 
-export function createDownscaleTask(input, idempotencyKey = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`) {
-  return wrfRequest("/api/wrf/downscale/tasks", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
-    body: JSON.stringify(input),
-  });
-}
 
-export function getDownscaleTaskLogs(taskId, after = 0) {
-  return wrfRequest(`/api/wrf/downscale/tasks/${encodeURIComponent(taskId)}/logs?after=${encodeURIComponent(after)}`);
-}
 
-export function cancelDownscaleTask(taskId) {
-  return wrfRequest(`/api/wrf/downscale/tasks/${encodeURIComponent(taskId)}/cancel`, { method: "POST" });
-}
 
-export function retryDownscaleTask(taskId) {
-  return wrfRequest(`/api/wrf/downscale/tasks/${encodeURIComponent(taskId)}/retry`, { method: "POST" });
-}
 
-export function getDownscaleTaskResult(taskId) {
-  return wrfRequest(`/api/wrf/downscale/tasks/${encodeURIComponent(taskId)}/result`);
-}
 
-export function requestDownscaleCertification(taskId, input) {
-  return wrfRequest(`/api/wrf/downscale/tasks/${encodeURIComponent(taskId)}/certification-requests`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input),
-  });
-}
+
+
+
 
 export function getWrfTask(taskId) {
   return wrfRequest(`/api/wrf/tasks/${encodeURIComponent(taskId)}`);
@@ -386,11 +402,21 @@ export function renderPartialWrfTask(taskId) {
   return wrfRequest(`/api/wrf/tasks/${encodeURIComponent(taskId)}/render-partial`, { method: "POST" });
 }
 
-export function deleteWrfTask(taskId) {
-  return wrfRequest(`/api/wrf/tasks/${encodeURIComponent(taskId)}`, {
-    method: "DELETE",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ confirm_task_id: taskId }),
+export function createWrfTaskDeletionPlan(taskId, asynchronous = false) {
+  return wrfRequest(`/api/wrf/tasks/${encodeURIComponent(taskId)}/deletion-plans?asynchronous=${asynchronous}`, {method:'POST'});
+}
+export function getWrfTaskDeletionPlan(taskId, planId) {
+  return wrfRequest(`/api/wrf/tasks/${encodeURIComponent(taskId)}/deletion-plans/${encodeURIComponent(planId)}`);
+}
+export function executeWrfTaskDeletion(taskId, planId, digest, asynchronous = false) {
+  return wrfRequest(`/api/wrf/tasks/${encodeURIComponent(taskId)}/deletion-plans/${encodeURIComponent(planId)}/execute?asynchronous=${asynchronous}`, {
+    method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmed:true,digest}),
+  });
+}
+
+export function reconcileWrfTaskDeletion(taskId, planId) {
+  return wrfRequest(`/api/wrf/tasks/${encodeURIComponent(taskId)}/deletion-plans/${encodeURIComponent(planId)}/reconcile`, {
+    method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmed:true}),
   });
 }
 
@@ -442,6 +468,7 @@ export async function getEra5HistoryDisplay({ date = "", fresh = false } = {}) {
 export async function triggerEra5HistoryUpdate() {
   return era5HistoryRequest("/api/era5/history/run", { method: "POST" });
 }
+
 
 async function modelRequest(path, options = {}) {
   let response;
@@ -1123,4 +1150,16 @@ export function displayKeyFromParseResult(result, fallbackName = "") {
     || displayKeyFromFileName(result?.file_name)
     || displayKeyFromFileName(result?.meta?.file)
     || displayKeyFromFileName(fallbackName);
+}
+
+export function assessWrfConfiguration(request) { return wrfRequest("/api/wrf/planning/assess", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request) }); }
+
+export function publishWrfTask(taskId) {
+  return wrfRequest(`/api/wrf/tasks/${encodeURIComponent(taskId)}/publish`, {method: "POST"});
+}
+
+export function pageWorkbenchTasks(limit = 20, cursor = null) {
+ const query = new URLSearchParams({limit:String(limit),include_archived:"true",paginated:"true"});
+ if(cursor)query.set("cursor",cursor);
+ return wrfRequest(`/api/wrf/workbench/tasks?${query}`);
 }

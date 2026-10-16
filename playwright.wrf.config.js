@@ -1,0 +1,2 @@
+import {defineConfig} from '@playwright/test';
+export default defineConfig({testDir:'./tests/browser',testMatch:'wrf-shared.spec.mjs',workers:1,outputDir:process.env.WRF_TEST_OUTPUT_DIR||'/private/tmp/wrf-shared-browser',reporter:'list',use:{baseURL:'http://127.0.0.1:5198',channel:'chrome',headless:true,viewport:{width:1360,height:980},trace:'off'},webServer:{command:'npm run dev -- --port 5198 --strictPort',url:'http://127.0.0.1:5198/tests/browser/wrf-shared.html',reuseExistingServer:false}});

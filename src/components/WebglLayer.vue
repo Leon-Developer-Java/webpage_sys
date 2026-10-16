@@ -16,6 +16,7 @@ const props = defineProps({
   product: String,
   missing: { type: Number, default: -9999 },
   alpha: { type: Number, default: 1 },
+  crs: { type: String, default: "EPSG:4326" },
 });
 const canvas = ref(null);
 const surface = inject("mapSurface", null);
@@ -103,6 +104,7 @@ function pushSurface() {
   surface.setData(canvas.value.toDataURL("image/png"), props.extent, props.alpha, {
     source: "WebglLayer",
     mode: "grid-rendered",
+    mercator: props.crs === "EPSG:3857",
   });
 }
 
@@ -173,6 +175,7 @@ async function updateTexture() {
     surface?.setData?.(props.src, props.extent, props.alpha, {
       source: "WebglLayer",
       mode: "image",
+      mercator: props.crs === "EPSG:3857",
       ...(cached ? { image: cached } : {}),
     });
     if (!cached) {
@@ -181,6 +184,7 @@ async function updateTexture() {
         surface?.setData?.(props.src, props.extent, props.alpha, {
           source: "WebglLayer",
           mode: "image",
+          mercator: props.crs === "EPSG:3857",
           image,
         });
       }
@@ -213,7 +217,7 @@ onMounted(() => {
   updateTexture();
 });
 
-watch(() => [props.src, props.values, props.width, props.height, props.product, props.missing, props.extent], updateTexture, { deep: true });
+watch(() => [props.src, props.values, props.width, props.height, props.product, props.missing, props.extent, props.crs], updateTexture, { deep: true });
 watch(() => props.alpha, pushSurface);
 
 onBeforeUnmount(() => {

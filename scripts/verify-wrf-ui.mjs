@@ -1,0 +1,12 @@
+import {createHash} from 'node:crypto';
+import {readFileSync} from 'node:fs';
+import {dirname,resolve} from 'node:path';
+import {fileURLToPath} from 'node:url';
+const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
+const read=path=>JSON.parse(readFileSync(resolve(root,path),'utf8'));
+const release=read('wrf-ui.lock.json'),lock=read('package-lock.json');
+const installed=read('node_modules/@zhihuiqixiang/wrf-ui/package.json');
+const entry=lock.packages['node_modules/@zhihuiqixiang/wrf-ui'];
+const bundle=createHash('sha256').update(readFileSync(resolve(root,'node_modules/@zhihuiqixiang/wrf-ui/dist/wrf-ui.js'))).digest('hex');
+if(entry?.integrity!==release.integrity||entry?.version!==release.version||installed.version!==release.version||bundle!==release.bundle_sha256)throw new Error('Installed WRF UI differs from wrf-ui.lock.json. Build the canonical artifact, then install the exact locked tarball. Do not reuse a cached different artifact under the same version.');
+console.log(`WRF UI ${release.version} verified: ${release.integrity}`);

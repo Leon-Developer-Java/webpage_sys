@@ -1,13 +1,13 @@
 <template>
-  <section class="task-run">
+  <section class="task-run"><!-- Ordinary run view restored from c177766; capabilities remain server-authoritative. -->
     <header class="run-head">
-      <div><span>{{ isDownscale ? 'HIGH-RESOLUTION DOWNSCALING' : `WRF TASK · ATTEMPT ${task?.attempt_no || 1}` }}</span><h2>{{ task?.id || '任务运行详情' }}</h2></div>
-      <span v-if="task" :class="['status', task.status]">{{ statusLabel(task.status) }}</span>
+      <div><span>WRF TASK · ATTEMPT {{ task?.attempt_no || 1 }}</span><h2>{{ task?.id || '任务运行详情' }}</h2></div>
+      <span v-if="task" :class="['status', task.status]">{{ wrfTaskSummary(task) }}</span>
     </header>
     <div v-if="!task" class="run-empty">请选择右侧正在运行或历史任务</div>
     <template v-else>
       <div class="progress-card">
-        <div><span>{{ stageLabel(task.stage) }}</span><b>{{ task.progress || 0 }}%</b></div>
+        <div><span>{{ stageLabel(task.stage) }}</span><b>{{ task.progress || 0 }}% · {{ ['failed','waiting_restart','cancelled'].includes(task.status)?'最后观测流程进度':'流程进度' }}</b></div>
         <el-progress :percentage="task.progress || 0" :stroke-width="8" :show-text="false" />
         <div class="stage-flow" :style="{ gridTemplateColumns: `repeat(${stages.length}, minmax(0, 1fr))` }">
           <span v-for="stage in stages" :key="stage.key" :class="stageClass(stage.min)"><i></i>{{ stage.label }}</span>
@@ -16,47 +16,40 @@
       <div class="run-grid">
         <section class="summary-card">
           <h3>任务参数</h3>
-          <dl v-if="isDownscale">
-            <div><dt>中尺度 forcing</dt><dd>{{ formatTime(task.runtime?.mesoscale_window?.start_utc || task.request?.start_time) }} 起<br />{{ forcingDurationHours }} 小时 · {{ forcingDurationHours + 1 }} 个逐小时时次</dd></div>
-            <div><dt>微尺度语义</dt><dd>{{ microscaleSummary }}<br v-if="!isForcingOnly" />{{ !isForcingOnly ? '非连续 1 m 预报' : '第一阶段仅生成 WRF forcing' }}</dd></div>
-            <div v-if="!isForcingOnly"><dt>产品范围</dt><dd>{{ productFootprint }}<br />1 m 采样</dd></div>
-            <div v-if="!isForcingOnly"><dt>CFD 外域</dt><dd>{{ task.runtime?.cfd_domain?.width_m || '—' }} m × {{ task.runtime?.cfd_domain?.height_m || '—' }} m<br />缓冲 {{ task.runtime?.cfd_domain?.buffer_m ?? '—' }} m</dd></div>
-            <div v-if="!isForcingOnly"><dt>地表模型</dt><dd>{{ task.runtime?.surface?.mode === 'auto_flat' ? '理想化平坦地表' : (task.runtime?.terrain?.id || '审核真实地形') }}<br />{{ task.runtime?.surface?.geometry?.version || task.runtime?.terrain?.version || 'v1' }}</dd></div>
-            <div><dt>质量 / 发布</dt><dd>{{ task.quality?.status || 'pending' }} / {{ task.publication?.status || 'blocked' }}</dd></div>
-            <div><dt>认证状态</dt><dd>{{ task.certification?.status || 'research' }}<br />{{ task.certification?.profile_id || '待专家审核' }}</dd></div>
-            <div v-if="!isForcingOnly"><dt>计算方案</dt><dd>{{ task.runtime?.parameterization?.label || task.request?.parameterization_profile_id || '标准业务 RANS' }}<br />{{ task.runtime?.parameterization?.configuration_status === 'customized_research' ? '自定义研究配置 · 内部预览' : `${task.runtime?.parameterization?.version || 'v1'} · ${task.runtime?.parameterization?.release_mode === 'internal_preview' ? '内部预览' : '受管发布'}` }}</dd></div>
-            <div v-if="!isForcingOnly"><dt>边界模板</dt><dd>{{ task.request?.cfd?.turbulence?.boundary_template_id || 'wrf-flux-aware-mixed-open/v2' }}</dd></div>
-            <div><dt>上游模式</dt><dd>{{ task.request?.upstream_mode === 'reuse_34m' ? '复用认证 34 m forcing' : task.request?.upstream_mode === 'reuse_10m' ? `复用约 10 m forcing · ${task.request?.source_forcing_task_id || '—'}` : '完整 27 km → 约 10 m forcing' }}</dd></div>
-          </dl>
-          <dl v-else>
+          <dl>
             <div><dt>模拟时段</dt><dd>{{ formatTime(task.request?.start_time) }}<br />{{ formatTime(task.request?.end_time) }}</dd></div>
-            <div><dt>中心点</dt><dd>{{ task.request?.center?.lat }}, {{ task.request?.center?.lon }}</dd></div>
+            <div><dt>中心点</dt><dd>{{ Number(task.request?.center?.lat).toFixed(4) }}, {{ Number(task.request?.center?.lon).toFixed(4) }}</dd></div>
             <div><dt>嵌套域</dt><dd>{{ task.request?.domains?.length || 0 }} 层</dd></div>
             <div><dt>{{ forcingLabel }}</dt><dd>{{ forcingValue }}</dd></div>
             <div><dt>运行配置</dt><dd>{{ runtimeProfileLabel }}<br v-if="task.runtime?.fallback_used" /><span v-if="task.runtime?.fallback_used">GPU 异常后已自动回退</span></dd></div>
             <div><dt>驱动资料</dt><dd>{{ forcingProgressLabel }}<br v-if="transferSummary" /><span v-if="transferSummary">{{ transferSummary }}</span></dd></div>
             <div><dt>物理方案</dt><dd>{{ task.request?.physics?.preset || '默认通用' }}</dd></div>
-            <div><dt>Spin-up</dt><dd>{{ task.runtime?.spinup_hours ?? task.request?.spinup?.hours ?? 0 }} 小时<br />模型起报 {{ formatTime(task.runtime?.model_start_time) }}</dd></div>
-          </dl>
-          <p v-if="isDownscale" class="gfs-demand">当前阶段只会在审核 forcing、地形和资源全部通过后启动受管远端运行器；smoke 产物不会转为正式发布。</p>
-          <p v-else-if="gfsDemandHint" class="gfs-demand">{{ gfsDemandHint }}</p>
+            <div><dt>Spin-up</dt><dd>{{ task.runtime?.spinup_hours ?? task.request?.spinup?.hours ?? '未记录' }} 小时<br />模型起报 {{ formatTime(task.runtime?.model_start_time) }}</dd></div>
+          <div><dt>垂直层</dt><dd>{{ verticalLevels??'未记录' }}</dd></div></dl>
+
+          <p v-if="gfsDemandHint" class="gfs-demand">{{ gfsDemandHint }}</p>
           <p v-if="task.error" class="error">{{ displayError }}</p>
           <div v-if="task.failure" class="failure-guide">
             <b>{{ failureLabel(task.failure.failure_class) }}</b>
             <span>{{ failureAdvice(task.failure) }}</span>
           </div>
-          <div class="actions">
+          <p v-if="failed && task.runtime?.remote_wrf_succeeded">计算已完成，结果处理失败。</p>
+          <div v-if="failed" class="actions">
+            <el-button type="danger" plain @click="emit('delete',task)">删除任务</el-button>
+            <el-button @click="emit('edit-restart')">返回修改参数</el-button>
+            <el-button v-if="task.runtime?.remote_wrf_succeeded && canRetryOutputs" type="primary" @click="emit('retry-outputs')">重新生成结果</el-button>
+          </div>
+          <div v-else class="actions"><el-button @click="emit('reuse')">复制并新建</el-button><el-button @click="emit('refresh')">刷新状态</el-button><el-button v-if="allowed('restart')" @click="emit('operation','restart')">原参数重跑</el-button><el-button v-if="allowed('publish')" @click="emit('operation','publish')">重试发布</el-button>
             <el-button @click="emit('back')">返回可视化</el-button>
             <el-button v-if="canCancel" type="danger" plain @click="emit('cancel')">{{ task.status === 'cancel_pending' ? '重试取消' : '取消任务' }}</el-button>
-            <el-button v-if="canRetryOutputs" type="primary" plain @click="emit('retry-outputs')">仅重试结果下载</el-button>
-            <el-button v-if="canRenderPartial" type="warning" plain @click="emit('render-partial')">忽略不可读帧并部分渲染</el-button>
-            <el-button v-if="canResume" type="primary" @click="emit('resume')">认证并继续任务</el-button>
-            <el-button v-if="canEditRestart" @click="emit('edit-restart')">{{ isDownscale ? "恢复高分任务" : "调整参数并重新运行" }}</el-button>
-            <el-button v-if="canRequestCertification" type="warning" plain @click="emit('certify')">提交配置认证审核</el-button>
+            <el-button v-if="canRetryOutputs" type="primary" plain @click="emit('retry-outputs')">重试结果处理</el-button>
+            <el-button v-if="canRenderPartial" type="warning" plain @click="emit('render-partial')">部分渲染</el-button>
+            <el-button v-if="canResume" type="primary" @click="emit('resume')">恢复连接并核验状态</el-button>
+            <el-button v-if="canEditRestart" @click="emit('edit-restart')">修改后重跑</el-button>
             <el-button v-if="['succeeded','partial_success'].includes(task.status)" type="primary" @click="emit('result')">查看结果</el-button>
           </div>
           <div v-if="attemptItems.length > 1" class="attempts">
-            <b>运行尝试</b>
+            <b>运行尝试</b><p v-if="historicalRequest" class="historical-parameters">历史参数：{{ historicalRequest.vertical_levels??'未记录' }} 层 · Spin-up {{ historicalRequest.spinup?.hours??'未记录' }} 小时</p>
             <button
               v-for="item in attemptItems"
               :key="item.attempt_no"
@@ -81,38 +74,21 @@
 </template>
 
 <script setup>
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from 'vue';
+import {safeError} from '../utils/wrfFailure.js';
+import {wrfTaskSummary} from '../utils/wrfTaskSummary.js';
 const props = defineProps({
   task: Object,
   logs: { type: String, default: "" },
   logAttemptNo: Number,
 });
-const emit = defineEmits(["cancel", "resume", "edit-restart", "retry-outputs", "render-partial", "attempt-change", "result", "back", "certify"]);
+const emit = defineEmits(["delete", "cancel", "resume", "edit-restart", "retry-outputs", "render-partial", "attempt-change", "result", "back", "operation", "reuse", "refresh"]);
 const logPanel = ref(null);
 const followingLatest = ref(true);
 const pendingLogUpdate = ref(false);
 const displayLogs = computed(() => String(props.logs || "").replaceAll("超算", "tx-lab"));
-const displayError = computed(() => String(props.task?.error || "").replaceAll("超算", "tx-lab"));
-const isDownscale = computed(() => props.task?.task_type === "high_resolution_downscale");
-const isForcingOnly = computed(() => isDownscale.value && props.task?.request?.execution_scope === "forcing_only");
-const isCfdHandoff = computed(() => isDownscale.value && props.task?.request?.upstream_mode === "reuse_10m");
-const isComposite = computed(() => isDownscale.value && props.task?.request?.execution_scope === "wrf_cfd" && props.task?.request?.upstream_mode === "full_chain");
-const highresSampling = computed(() => props.task?.runtime?.microscale_sampling || {});
-const forcingDurationHours = computed(() => {
-  const runtimeDuration = Number(props.task?.runtime?.mesoscale_window?.duration_hours);
-  if (Number.isInteger(runtimeDuration) && runtimeDuration > 0) return runtimeDuration;
-  const start = Date.parse(props.task?.request?.start_time || "");
-  const end = Date.parse(props.task?.request?.end_time || "");
-  const derived = (end - start) / 3600000;
-  return Number.isInteger(derived) && derived > 0 ? derived : 48;
-});
-const microscaleSummary = computed(() => isForcingOnly.value ? `约 10 m forcing · ${forcingDurationHours.value} h / ${forcingDurationHours.value + 1} 时次` : (highresSampling.value.solver_family === "les"
-  ? `${highresSampling.value.episodes?.length || 0} 个 LES 统计时段`
-  : `${highresSampling.value.selected_valid_times?.length || highresSampling.value.max_count || 0} 个 RANS 独立快照`));
-const productFootprint = computed(() => {
-  const aoi = props.task?.request?.aoi || {};
-  return aoi.width_m && aoi.height_m ? `${aoi.width_m} m × ${aoi.height_m} m` : "待预检";
-});
+const displayError=computed(()=>safeError(props.task?.error||''));
+const allowed=action=>props.task?.operations?.some(op=>op.action===action && op.enabled)===true;
 const sourceLabel = computed(() => ({ ecmwf: "ECMWF", ec: "ECMWF" })[props.task?.request?.data_source] || "GFS");
 const forcingCycle = computed(() => props.task?.runtime?.forcing_cycle || props.task?.runtime?.gfs_cycle || props.task?.runtime?.ecmwf_cycle);
 const forcingLabel = computed(() => `${sourceLabel.value} 周期`);
@@ -153,46 +129,23 @@ const wrfStages = [
   { key: "prepare", label: "准备 tx-lab", min: 40 }, { key: "wrf", label: "WPS / WRF", min: 68 },
   { key: "render", label: "结果渲染", min: 88 }, { key: "done", label: "完成", min: 100 },
 ];
-const downscaleStages = [
-  { key: "queue", label: "排队", min: 0 }, { key: "forcing", label: "约 10 m forcing", min: 15 },
-  { key: "coupling", label: "边界转换", min: 35 }, { key: "mesh", label: "分级网格", min: 52 },
-  { key: "solve", label: "CFD 快照", min: 72 }, { key: "publish", label: "质量发布", min: 100 },
-];
-const cfdStages = [
-  { key: "queue", label: "排队", min: 0 }, { key: "forcing", label: "10 m forcing", min: 60 },
-  { key: "coupling", label: "边界转换", min: 68 }, { key: "mesh", label: "分级网格", min: 75 },
-  { key: "solve", label: "CFD 求解", min: 84 }, { key: "publish", label: "质量发布", min: 100 },
-];
-const compositeStages = [
-  { key: "queue", label: "排队", min: 0 }, { key: "wrf", label: "d04→d08 WRF-LES", min: 15 }, { key: "forcing", label: "forcing 质量门", min: 60 }, { key: "mesh", label: "CFD 分级网格", min: 75 }, { key: "solve", label: "RANS / LES", min: 84 }, { key: "publish", label: "质量发布", min: 100 },
-];
-const forcingOnlyStages = [
-  { key: "queue", label: "排队", min: 0 }, { key: "forcing", label: "末级 NDOWN", min: 32 },
-  { key: "quality", label: "forcing 质量门", min: 72 }, { key: "publish", label: "归档", min: 100 },
-];
-const stages = computed(() => isDownscale.value ? (isForcingOnly.value ? forcingOnlyStages : (isComposite.value ? compositeStages : (isCfdHandoff.value ? cfdStages : downscaleStages))) : wrfStages);
-const canCancel = computed(() => props.task && !["succeeded", "partial_success", "failed", "cancelled"].includes(props.task.status));
-const canResume = computed(() => !isDownscale.value && (props.task?.status === "paused_external" || (
-  props.task?.status === "failed" && props.task?.failure?.failure_class === "external"
-)));
-const canEditRestart = computed(() => isDownscale.value
-  ? ["failed", "cancelled", "partial_success"].includes(props.task?.status)
-  : ["waiting_restart", "cancelled"].includes(props.task?.status) || (
-  props.task?.status === "failed" && !props.task?.runtime?.remote_wrf_succeeded && props.task?.failure?.failure_class !== "external"
-));
-const canRequestCertification = computed(() => isDownscale.value && props.task?.quality?.status === "complete" && props.task?.certification?.status !== "certified");
-const canRetryOutputs = computed(() => props.task?.status === "failed" && props.task?.runtime?.remote_wrf_succeeded && forcingCycle.value);
-const canRenderPartial = computed(() => props.task?.status === "failed" && props.task?.runtime?.remote_wrf_succeeded && (
-  Boolean(props.task?.runtime?.output_validation?.invalid?.length) || /netcdf|hdf|wrfout|unknown file format/i.test(props.task?.error || "")
-));
-const attemptItems = computed(() => [
+const stages=computed(()=>wrfStages);
+const failed=computed(()=>['failed','waiting_restart','cancelled'].includes(props.task?.status));
+const canCancel=computed(()=>allowed('cancel'));
+const canResume=computed(()=>allowed('resume'));
+const canEditRestart=computed(()=>allowed('restart'));
+const canRetryOutputs=computed(()=>allowed('retry_outputs'));
+const canRenderPartial=computed(()=>allowed('render_partial'));
+const attemptItems = computed(() => [...new Map([
   { attempt_no: Number(props.task?.attempt_no || 1), status: props.task?.status || "queued" },
   ...(props.task?.attempts || []),
-].sort((a, b) => Number(b.attempt_no) - Number(a.attempt_no)));
-function statusLabel(value) { return ({ pending_review: "等待审核", queued: "待调度", prefetching: "准备数据", uploading: "准备 tx-lab", running: "运行中", rendering: "渲染中", succeeded: "已完成", partial_success: "部分完成", failed: "失败", waiting_restart: "待调整", waiting_upstream: isForcingOnly.value ? "等待约 10 m forcing" : isCfdHandoff.value ? "等待已完成约 10 m forcing" : isComposite.value ? "等待普通 WRF d04" : "等待认证的 34 m forcing", source_forcing_handoff: "交接约 10 m forcing", preparing_forcing: "构建 CFD 强迫", waiting_ndown_wrf_les: "等待 ndown / WRF LES", source_handoff_running: "交接普通 WRF 输出", source_handoff_failed: "上游输出交接失败", meshing: "构建分级网格", solving: "CFD / LES 求解", generating_products: "生成微尺度产品", downloading_products: "校验产品包", publishing: "质量发布中", paused_external: "等待连接", cancelled: "已取消", cancel_pending: "取消中", reconciling: "对账中" })[value] || value; }
-function stageLabel(value) { return ({ upstream_failed: "上游 WRF 失败", resource_scientific_review: "等待资源与科学审核", queued: "等待执行名额", waiting_upstream: isForcingOnly.value ? "等待末级 NDOWN 与约 10 m WRF" : (props.task?.request?.upstream_mode === "reuse_34m" ? "等待认证的 34 m forcing" : props.task?.request?.upstream_mode === "reuse_10m" ? "等待已完成约 10 m forcing" : isComposite.value ? "等待普通 WRF d04 原生输出" : "等待认证的约 10 m forcing"), preparing_remote: "上传高分受管合同", checking_upstream_restart: "检查普通 WRF 原生重启场", source_handoff_running: "交接普通 WRF 原生输出", source_forcing_handoff: "交接并校验约 10 m forcing", surface_prepare: props.task?.request?.surface_mode === "auto_flat" ? "生成平坦地表并推导粗糙度" : "校验并准备真实地形", waiting_ndown_wrf_les: isForcingOnly.value || isComposite.value ? "执行 ndown / WRF LES" : "等待 ndown / WRF LES", source_handoff_failed: "普通 WRF 输出交接失败", remote_status_retrying: "连接暂时中断，自动对账远端任务", preparing_forcing: isForcingOnly.value || isComposite.value ? "执行 d04→d08 WRF-LES" : "构建 coupling manifest", meshing: "构建一次复用的分级网格", solving: highresSampling.value.solver_family === "les" ? "执行有限 LES 统计时段" : "执行独立 RANS 稳态快照", generating_products: "按 AGL 采样并准备三维浏览资产", downloading_products: "校验标准科学数据包", publishing: isForcingOnly.value ? "冻结 mesoscale forcing manifest" : "执行质量门与原子发布", retrying_outputs: "等待恢复结果下载", retrying_partial_render: "等待部分结果渲染", checking_remote_outputs: "确认远端 WRF 结果", selecting_cycle: `选择 ${sourceLabel.value} 00Z 周期`, waiting_for_gfs_cache: "等待 tx-lab 驱动数据", waiting_for_forcing_cache: "等待 tx-lab 驱动数据", checking_hpc_gfs: "校验 tx-lab 驱动数据池", checking_hpc_forcing: "校验 tx-lab 驱动数据池", waiting_for_hpc_gfs: "等待 tx-lab 驱动数据补齐", waiting_for_hpc_forcing: "等待 tx-lab 驱动数据补齐", remote_gfs_ready: "tx-lab 驱动数据已就绪", remote_forcing_ready: "tx-lab 驱动数据已就绪", preparing_hpc: "提交任务配置", running: "WPS / WRF 运行中", reconciling: "正在恢复 tx-lab 连接", paused_external: "等待 tx-lab 连接", cancel_pending: "正在取消远端进程", cancelled: "任务已取消", downloading_outputs: "拉取 wrfout 结果", rendering: "生成 WebP", done: "任务完成", failed: "本次尝试已停止" })[value] || value || "等待开始"; }
+].map(item=>[Number(item.attempt_no),item])).values()].sort((a,b)=>Number(b.attempt_no)-Number(a.attempt_no)));
+const verticalLevels=computed(()=>{const request=props.task?.request||{},levels=request.vertical_levels??request.namelist?.input?.domains?.e_vert??props.task?.runtime?.vertical_levels;const values=Array.isArray(levels)?levels:[levels];return values.length&&values.every(v=>Number.isInteger(v)&&v>0&&v===values[0])?values[0]:null;});
+const historicalRequest=computed(()=>props.task?.attempts?.find(item=>Number(item.attempt_no)===Number(props.logAttemptNo))?.request||null);
+function statusLabel(value) { return wrfTaskSummary({status:value}); }
+function stageLabel(value) { return ({queued:'等待执行名额',retrying_outputs:'恢复结果处理',retrying_partial_render:'部分结果渲染',checking_remote_outputs:'核验远端结果',selecting_cycle:'选择资料周期',waiting_for_gfs_cache:'等待驱动资料',waiting_for_forcing_cache:'等待驱动资料',checking_hpc_gfs:'核验驱动资料',checking_hpc_forcing:'核验驱动资料',waiting_for_hpc_gfs:'等待资料补齐',waiting_for_hpc_forcing:'等待资料补齐',preparing_hpc:'准备配置',running:'WPS / WRF 运行中',reconciling:'核验原计算会话',paused_external:'等待连接',cancel_pending:'核验进程退出',cancelled:'已取消',downloading_outputs:'下载计算结果',rendering:'生成展示产品',done:'已完成',failed:'本次尝试已停止'})[value]||value||'等待开始'; }
 function failureLabel(value) { return ({ external: "外部连接故障", configuration: "参数配置失败", model: "WPS / WRF 运行失败", data: "驱动数据异常", output: "结果恢复失败" })[value] || "任务异常"; }
-function failureAdvice(value) { return ({ resume: "不会清理远端计算；认证后从原阶段继续。", edit_and_restart: "返回配置页调整参数，确认任务专属路径后重新运行。", restart: "确认驱动数据和参数后，在原任务中重新运行。", retry_outputs: "远端计算结果将保留，只恢复下载与渲染。" })[value?.recommended_action] || "请根据日志确认后续操作。"; }
+function failureAdvice(value) { return ({ resume: "不会清理远端计算；认证后从原阶段继续。", edit_and_restart: "修改参数后重跑，旧尝试的参数和失败日志保留。", restart: "确认驱动数据和参数后，在原任务中重新运行。", retry_outputs: "远端计算结果将保留，只恢复下载与渲染。" })[value?.recommended_action] || "请根据日志确认后续操作。"; }
 function stageClass(min) { return { done: Number(props.task?.progress || 0) >= min, active: Number(props.task?.progress || 0) >= min && Number(props.task?.progress || 0) < (stages.value.find(item => item.min > min)?.min || 101) }; }
 function formatTime(value) { return String(value || "—").replace("T", " ").replace("Z", " UTC"); }
 function scrollToLatest(resume = false) {
@@ -226,4 +179,7 @@ watch(() => props.task?.id, () => scrollToLatest(true));
 .gfs-demand { margin: 9px 0 0; padding: 8px 9px; border: 1px solid #60a5fa55; border-radius: 8px; color: #93c5fd; background: #3b82f612; font-size: 11px; line-height: 1.45; }
 .terminal-card { min-height: 410px; overflow: hidden; background: #050914; }.terminal-head { display: flex; justify-content: space-between; padding: 9px 12px; border-bottom: 1px solid #1e293b; color: #94a3b8; font-size: 11px; }.terminal-head div { display: flex; align-items: center; gap: 7px; }.terminal-head i { width: 7px; height: 7px; border-radius: 50%; background: #22c55e; }.terminal-head button { padding: 0; border: 0; background: transparent; color: #94a3b8; font: inherit; cursor: pointer; }.terminal-head button:hover { color: var(--accent); }.terminal-head button.paused { color: #f59e0b; }.terminal-card pre { max-height: 470px; margin: 0; padding: 14px; overflow: auto; color: #cbd5e1; font: 11px/1.6 "SFMono-Regular", Consolas, monospace; white-space: pre-wrap; word-break: break-all; }
 @media (max-width: 980px) { .run-grid { grid-template-columns: 1fr; }.stage-flow { grid-template-columns: repeat(3, 1fr); } }
+</style>
+
+<style scoped>.task-run{box-sizing:border-box;min-height:0}.run-head h2{overflow-wrap:anywhere;font-size:15px}.run-grid{grid-template-columns:minmax(0,.8fr) minmax(0,1.2fr)}.terminal-card{min-height:0}.stage-flow{overflow:auto}.actions{justify-content:flex-start}.progress-card b{font-size:12px}@media(max-width:980px){.run-grid{grid-template-columns:minmax(0,1fr)}}@media(max-width:640px){.task-run{padding:10px}.stage-flow{grid-template-columns:repeat(3,minmax(0,1fr))!important}.run-head{flex-wrap:wrap}.progress-card>div:first-child{flex-wrap:wrap;gap:6px}}
 </style>

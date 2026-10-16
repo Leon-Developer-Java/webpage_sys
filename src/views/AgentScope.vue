@@ -27,7 +27,7 @@
 <script setup>
 import { inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
-import { getToken, getUser } from "../api.js";
+import { ensureFreshToken, getToken, getUser } from "../api.js";
 import {
   buildAgentScopeAuthContext,
   isTrustedAgentScopeMessage,
@@ -40,6 +40,7 @@ const agentFrame = ref(null);
 const frameReady = ref(false);
 const frameError = ref("");
 let handshakeTimer = null;
+let refreshTimer = null;
 const config = resolveAgentScopeEmbedConfig(import.meta.env, {
   origin: window.location.origin,
   dev: import.meta.env.DEV,
@@ -48,7 +49,11 @@ const config = resolveAgentScopeEmbedConfig(import.meta.env, {
 function sendAuthContext() {
   const frameWindow = agentFrame.value?.contentWindow;
   const token = getToken();
-  if (!frameWindow || !token || config.error) return;
+  if (!frameWindow || config.error) return;
+  if (!token) {
+    frameWindow.postMessage({ type: "weather-agent-auth-expired" }, config.webOrigin);
+    return;
+  }
   frameWindow.postMessage(
     buildAgentScopeAuthContext({
       token,
@@ -87,6 +92,10 @@ function openModelRun(runId) {
 function handleAgentScopeMessage(event) {
   if (!isTrustedAgentScopeMessage(event, agentFrame.value?.contentWindow, config.webOrigin)) return;
   const payload = event.data;
+  if (payload.type === "weather-agent-auth-refresh") {
+    void refreshAuth();
+    return;
+  }
   if (payload.type === "weather-agent-auth-ready") {
     clearHandshakeTimer();
     frameError.value = "";
@@ -110,10 +119,30 @@ function handleAgentScopeMessage(event) {
 }
 
 watch(dark, sendAuthContext);
-onMounted(() => window.addEventListener("message", handleAgentScopeMessage));
+async function refreshAuth() {
+  try {
+    await ensureFreshToken();
+    sendAuthContext();
+  } catch {
+    agentFrame.value?.contentWindow?.postMessage({ type: "weather-agent-auth-unavailable" }, config.webOrigin);
+  }
+}
+function onVisible() { if (!document.hidden) void refreshAuth(); }
+onMounted(() => {
+  window.addEventListener("message", handleAgentScopeMessage);
+  window.addEventListener("weather-auth-changed", sendAuthContext);
+  window.addEventListener("storage", sendAuthContext);
+  document.addEventListener("visibilitychange", onVisible);
+  refreshTimer = window.setInterval(onVisible, 60000);
+  void refreshAuth();
+});
 onBeforeUnmount(() => {
   clearHandshakeTimer();
   window.removeEventListener("message", handleAgentScopeMessage);
+  window.removeEventListener("weather-auth-changed", sendAuthContext);
+  window.removeEventListener("storage", sendAuthContext);
+  document.removeEventListener("visibilitychange", onVisible);
+  window.clearInterval(refreshTimer);
 });
 </script>
 

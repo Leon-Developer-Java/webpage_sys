@@ -1,0 +1,5 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {wrfTaskSummary} from '../src/utils/wrfTaskSummary.js';
+test('task drawer shows only valid observed WRF model progress',()=>{const task={status:'running',progress:68,runtime:{current_stage:'wrf',model_progress:20.44}};assert.equal(wrfTaskSummary(task),'运行中 · 模拟进度 20.4%');for(const progress of [undefined,null,'20',NaN,Infinity,-1,101])assert.equal(wrfTaskSummary({...task,runtime:{...task.runtime,model_progress:progress}}),'运行中');assert.equal(wrfTaskSummary({...task,runtime:{current_stage:'wps',model_progress:20}}),'运行中');assert.equal(task.progress,68);});
+test('task drawer uses shared Chinese terminal labels without displaying stale percentages',()=>{assert.equal(wrfTaskSummary({status:'waiting_restart',progress:68,runtime:{current_stage:'wrf',model_progress:20}}),'状态待核验');assert.equal(wrfTaskSummary({status:'failed',progress:4}),'已失败');assert.equal(wrfTaskSummary({status:'new_status',progress:68}),'未知状态（new_status）');});

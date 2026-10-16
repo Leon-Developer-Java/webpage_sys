@@ -1,12 +1,12 @@
 <template>
-  <WebglLayer v-if="precise && imageUrl" :key="layerKey" :src="imageUrl" :extent="extent" />
+  <WebglLayer v-if="precise && imageUrl" :key="layerKey" :src="imageUrl" :extent="extent" :crs="currentDomain.geolocation.target_crs" />
   <LayerCard
     badge="WRF"
-    :file="display?.task_id || '暂无成功任务'"
-    :legend-title="currentVariable?.units || ''"
+    :file="display?.task_id || taskId || '暂无成功任务'"
+    :legend-title="displayUnit.unit"
     :gradient="gradient"
     :ticks="legendTicks"
-    :show-legend="Boolean(currentVariable)"
+    :show-legend="Boolean(displayedFrame && currentVariable && gradient)"
     :initial-collapsed="false"
   >
     <label class="lc-row">
@@ -24,11 +24,11 @@
       </select>
     </label>
     <div class="lc-row"><span>时次</span><b>{{ displayedFrame?.time || (imageLoading ? '加载中' : '—') }}</b></div>
-    <div v-if="!precise && currentFrame" class="lc-warning">旧产品缺少受验证的投影定位信息，仅显示原始图片，不作为精确地图叠加。<img v-if="imageUrl" :src="imageUrl" alt="旧版 WRF 结果" class="lc-legacy-image" /></div>
+    <div v-if="!precise && currentFrame" class="lc-warning">{{ display?.geolocation_repair?.message || '该产品缺少可验证的投影定位信息，仅提供原始图预览。' }}<img v-if="imageUrl" :src="imageUrl" alt="WRF 原始结果预览" class="lc-legacy-image" @error="onImageError" /></div>
     <div v-if="meta?.quality?.status === 'partial'" class="lc-warning">
       部分结果：排除 {{ meta.quality.unreadable_frames?.length || meta.quality.excluded_frames?.length || 0 }} 个不可读帧，缺失时次已记录在元数据中。
     </div>
-    <div v-if="error" class="lc-error">{{ error }}</div>
+    <div v-if="error" class="lc-error" role="alert">{{ error }} <button :disabled="imageLoading" @click="retry">重试加载</button></div>
   </LayerCard>
 </template>
 
@@ -37,10 +37,13 @@ import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { fetchWrfAsset, getWrfDisplay } from "../api";
 import LayerCard from "./LayerCard.vue";
 import WebglLayer from "./WebglLayer.vue";
+import {unitPresentation,formatDisplayValue,paletteGradient} from "../../packages/wrf-ui/src/presentation.js";
 
 const props = defineProps({
   timeIndex: { type: Number, default: 0 },
   taskId: { type: String, default: "" },
+  initialDomain: { type: String, default: "" },
+  initialVariable: { type: String, default: "" },
   parsed: { type: Object, default: null },
   variantIndex: { type: Number, default: 0 },
 });
@@ -54,6 +57,7 @@ const error = ref("");
 const imageUrl = ref("");
 const displayedFrame = ref(null);
 const imageLoading = ref(false);
+const retryCount = ref(0);
 let loadGeneration = 0;
 let assetGeneration = 0;
 let activeAssetUrl = "";
@@ -66,26 +70,20 @@ const variables = computed(() => Array.isArray(currentDomain.value?.variables) ?
 const currentVariable = computed(() => variables.value.find(item => item.name === selectedVariable.value) || variables.value[0] || null);
 const frames = computed(() => Array.isArray(currentVariable.value?.frames) ? currentVariable.value.frames : []);
 const currentFrame = computed(() => frames.value[Math.max(0, Math.min(frames.value.length - 1, Number(props.timeIndex) || 0))] || null);
-const precise = computed(() => currentDomain.value?.geolocation?.status === "reprojected");
+const precise = computed(() => currentDomain.value?.geolocation?.status === "reprojected" && currentDomain.value?.geolocation?.target_crs === "EPSG:3857" && (currentDomain.value?.extent || []).length === 4 && currentDomain.value.extent.every(value => Number.isFinite(Number(value))) && Number(currentDomain.value.extent[0]) < Number(currentDomain.value.extent[2]) && Number(currentDomain.value.extent[1]) < Number(currentDomain.value.extent[3]));
 const extent = computed(() => {
   const values = (currentDomain.value?.extent || []).map(Number);
   return values.length === 4 && values.every(Number.isFinite) ? values : [73, 15, 135, 55];
 });
 const layerKey = computed(() => `${imageUrl.value}|${extent.value.join(",")}`);
 
-const paletteMap = {
-  T2: "linear-gradient(to right,#1e40af,#4794ff,#eee,#ffaa46,#b40426)",
-  U10: "linear-gradient(to right,#1e40af,#7db4ff,#f5f5f5,#ff9664,#b40426)",
-  V10: "linear-gradient(to right,#1e40af,#7db4ff,#f5f5f5,#ff9664,#b40426)",
-  RAINC: "linear-gradient(to right,#f8fafc,#bfdbfe,#38bdf8,#2563eb,#1e3a8a)",
-  RAINNC: "linear-gradient(to right,#f8fafc,#bfdbfe,#38bdf8,#2563eb,#1e3a8a)",
-};
-const gradient = computed(() => paletteMap[currentVariable.value?.name] || "linear-gradient(to right,#312e81,#2563eb,#22c55e,#facc15,#dc2626)");
+const displayUnit = computed(() => unitPresentation(currentVariable.value || {}));
+const gradient = computed(() => paletteGradient(currentVariable.value?.palette));
 const legendTicks = computed(() => {
   const low = Number(displayedFrame.value?.display_min);
   const high = Number(displayedFrame.value?.display_max);
   if (!Number.isFinite(low) || !Number.isFinite(high)) return [];
-  return [low, (low + high) / 2, high].map(value => Number(value.toPrecision(4)).toString());
+  return [low, (low + high) / 2, high].map(value => formatDisplayValue(value, displayUnit.value));
 });
 
 function formatResolution(value) {
@@ -93,6 +91,15 @@ function formatResolution(value) {
   if (!Number.isFinite(meters) || meters <= 0) return "原生";
   return meters >= 1000 ? `${Number((meters / 1000).toFixed(2))} km` : `${meters} m`;
 }
+
+function onImageError() {
+  imageUrl.value = "";
+  displayedFrame.value = null;
+  error.value = "WRF 图像解码失败，请重新加载结果或检查渲染产品。";
+  emit("variable-change", { file: props.taskId, failed: true });
+}
+
+function retry() { if (currentFrame.value?.url) retryCount.value++; else load(); }
 
 async function load() {
   const generation = ++loadGeneration;
@@ -106,16 +113,19 @@ async function load() {
   try {
     const value = await getWrfDisplay(props.taskId);
     if (generation !== loadGeneration) return;
+    if (value?.task_id && value.task_id !== props.taskId) throw new Error("结果任务与当前选择不一致，请重新加载。");
     display.value = value;
     if (!display.value?.meta_json) {
       error.value = "暂无成功的 WRF 任务";
       return;
     }
-    selectedDomain.value = display.value.meta_json.default_domain || domains.value.at(-1)?.id || "";
-    selectedVariable.value = display.value.meta_json.default_variable || variables.value[0]?.name || "";
+    selectedDomain.value = domains.value.some(d => d.id === props.initialDomain) ? props.initialDomain
+      : display.value.meta_json.default_domain || domains.value.at(-1)?.id || "";
+    selectedVariable.value = variables.value.some(v => v.name === props.initialVariable) ? props.initialVariable
+      : display.value.meta_json.default_variable || variables.value[0]?.name || "";
     emit("display-loaded", {
       ...display.value.meta_json,
-      file: display.value.task_id,
+      file: props.taskId,
       times: frames.value.map(frame => frame.time),
       extent: extent.value,
     });
@@ -123,28 +133,43 @@ async function load() {
   } catch (cause) {
     if (generation !== loadGeneration) return;
     error.value = cause.message || "WRF 结果读取失败";
+    emit("variable-change", { file: props.taskId, failed: true });
   }
 }
 
 watch(() => props.taskId, load);
-watch(() => currentFrame.value?.url, async (path) => {
+// URLs may be reused; a frame belongs to its task, domain and variable too.
+watch(() => JSON.stringify([props.taskId, selectedDomain.value, selectedVariable.value,
+  currentFrame.value, extent.value, retryCount.value]), async () => {
+  const frame = currentFrame.value ? { ...currentFrame.value } : null;
+  const path = frame?.url;
   const generation = ++assetGeneration;
   assetController?.abort();
   assetController = new AbortController();
   imageUrl.value = "";
   displayedFrame.value = null;
+  error.value = "";
+  imageLoading.value = Boolean(path);
+  emit("variable-change", { file: props.taskId, pending: true,
+    times: frames.value.map(item => item.time) });
   if (activeAssetUrl) { URL.revokeObjectURL(activeAssetUrl); activeAssetUrl = ""; }
   if (!path) return;
   imageLoading.value = true;
   try {
     const blob = await fetchWrfAsset(path, assetController.signal);
     if (generation !== assetGeneration) return;
+    const bitmap = await createImageBitmap(blob);
+    bitmap.close();
+    if (generation !== assetGeneration) return;
     activeAssetUrl = URL.createObjectURL(blob);
     imageUrl.value = activeAssetUrl;
-    displayedFrame.value = currentFrame.value;
+    displayedFrame.value = frame;
     error.value = "";
   } catch (cause) {
-    if (generation === assetGeneration && cause?.name !== "AbortError") error.value = cause.message || "WRF 图像读取失败";
+    if (generation === assetGeneration && cause?.name !== "AbortError") {
+      error.value = cause?.name === "InvalidStateError" ? "WRF 图像解码失败，请检查渲染产品或重新加载结果。" : cause.message || "WRF 图像读取失败";
+      emit("variable-change", { file: props.taskId, failed: true });
+    }
   } finally {
     if (generation === assetGeneration) imageLoading.value = false;
   }
@@ -158,9 +183,11 @@ watch(selectedDomain, () => {
 watch([selectedVariable, displayedFrame], () => {
   if (!currentVariable.value || !displayedFrame.value || displayedFrame.value.url !== currentFrame.value?.url) return;
   emit("variable-change", {
-    file: display.value?.task_id,
+    file: props.taskId,
+    domain: selectedDomain.value,
+    variable: selectedVariable.value,
     element: currentVariable.value.label || currentVariable.value.name,
-    unit: currentVariable.value.units,
+    unit: displayUnit.value.unit,
     time: displayedFrame.value.time,
     range: extent.value.join(", "),
     grid: currentDomain.value?.grid?.join(" × "),
@@ -170,7 +197,7 @@ watch([selectedVariable, displayedFrame], () => {
 });
 
 onMounted(load);
-onBeforeUnmount(() => { assetGeneration += 1; assetController?.abort(); if (activeAssetUrl) URL.revokeObjectURL(activeAssetUrl); });
+onBeforeUnmount(() => { loadGeneration += 1; assetGeneration += 1; assetController?.abort(); if (activeAssetUrl) URL.revokeObjectURL(activeAssetUrl); });
 </script>
 
 <style scoped>

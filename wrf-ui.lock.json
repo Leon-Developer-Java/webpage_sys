@@ -1,0 +1,11 @@
+{
+  "name": "@zhihuiqixiang/wrf-ui",
+  "version": "2.2.5",
+  "interface_version": "wrf-ui-2",
+  "source_sha256": "0cae226a9ea3b94c98a2cba7750f3804554d6885762a34a1129603c7c24fefc7",
+  "bundle_sha256": "62cff415e883e8ba544e135922a344c59adf3d63308896f114b9b402bdbaba4f",
+  "artifact": ".artifacts/wrf-ui/2.2.5/zhihuiqixiang-wrf-ui-2.2.5.tgz",
+  "integrity": "sha512-gqoLwzQUjruPNgcbXA4GbwSUdbwr4R0kVNhBnf2BbJAj/fQHm9I5m7M/poYKRCqzEIBCIZQhesBfausLJNDf7Q==",
+  "node": "v24.14.1",
+  "npm": "11.11.0"
+}

@@ -1,0 +1,10 @@
+import {registerWrfElements} from '@zhihuiqixiang/wrf-ui';
+registerWrfElements();
+const canvas=document.createElement('canvas');canvas.width=canvas.height=64;
+const context=canvas.getContext('2d');const gradient=context.createLinearGradient(0,0,0,64);gradient.addColorStop(0,'#ff0000');gradient.addColorStop(1,'#0000ff');context.fillStyle=gradient;context.fillRect(0,0,64,64);
+const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png')),url=URL.createObjectURL(blob);
+const viewer=document.createElement('wrf-result-viewer');
+viewer.addEventListener('asset-request',event=>{viewer.assetResponses={[event.detail.requestId]:{url}};});
+viewer.product={meta_json:{default_domain:'d01',domains:[{id:'d01',dx:27000,extent:[100,30,120,60],geolocation:{status:'reprojected',target_crs:'EPSG:3857'},variables:[{name:'T2',label:'2 米温度',units:'K',palette:[[255,0,0],[0,0,255]],frames:[{time:'2026-10-09T00:00:00Z',url:'/fixture/frame.png',display_min:291.7265692138672,display_max:300.6924938964844},{time:'2026-10-09T01:00:00Z',url:'/fixture/frame2.png',display_min:291.7265692138672,display_max:300.6924938964844}]}]}]}};
+document.querySelector('#fixture').append(viewer);
+window.addEventListener('pagehide',()=>URL.revokeObjectURL(url),{once:true});

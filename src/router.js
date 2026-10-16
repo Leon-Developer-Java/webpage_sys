@@ -17,9 +17,8 @@ const routes = [
   { path: "/era5-history", component: Era5History },
   { path: "/wrf", component: WrfStudio },
   { path: "/wrf/new", component: WrfStudio },
-  { path: "/wrf/high-resolution", component: WrfStudio },
-  // 保留旧链接兼容，直接进入独立的高分辨率任务页。
-  { path: "/downscale", redirect: "/wrf/high-resolution" },
+  { path: "/wrf/high-resolution", component: () => import('./views/WrfRetired.vue') },
+  { path: "/downscale", component: () => import('./views/WrfRetired.vue') },
 ];
 
 const router = createRouter({ history: createWebHistory(), routes });
@@ -28,7 +27,7 @@ router.beforeEach(to => {
   if (to.path === "/login" || to.path === "/era5-history") return true;
   if (!localStorage.getItem("token")) return "/login";
   const user = JSON.parse(localStorage.getItem("user") || "null");
-  if ((["/agent", "/agent/wrf-evidence", "/model", "/wrf"].includes(to.path) || to.path.startsWith("/wrf/")) && (user?.role ?? 0) < 2) return "/";
+  if ((["/agent", "/agent/wrf-evidence", "/model", "/wrf", "/downscale"].includes(to.path) || to.path.startsWith("/wrf/")) && (user?.role ?? 0) < 2) return "/";
   return true;
 });
 

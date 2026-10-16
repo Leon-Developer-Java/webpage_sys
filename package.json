@@ -6,21 +6,28 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "test": "node --test",
-    "build": "vite build"
+    "prebuild": "node scripts/verify-wrf-ui.mjs",
+    "build": "vite build",
+    "build:wrf-ui": "node scripts/build-wrf-ui.mjs",
+    "test:wrf-ui": "npm --prefix packages/wrf-ui test",
+    "test:wrf-browser": "playwright test --config playwright.wrf.config.js",
+    "predev": "node scripts/verify-wrf-ui.mjs"
   },
   "engines": {
     "node": ">=18.0.0"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",
+    "@zhihuiqixiang/wrf-ui": "file:.artifacts/wrf-ui/2.2.5/zhihuiqixiang-wrf-ui-2.2.5.tgz",
     "@zip.js/zip.js": "2.7.52",
     "echarts": "^5.6.0",
     "element-plus": "^2.9.1",
     "marked": "^14.1.4",
-    "vue": "^3.5.13",
+    "vue": "3.5.38",
     "vue-router": "^4.6.4"
   },
   "devDependencies": {
+    "@playwright/test": "1.63.0",
     "@vitejs/plugin-vue": "^5.2.1",
     "vite": "^6.0.7"
   }
