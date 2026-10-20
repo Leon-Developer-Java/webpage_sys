@@ -62,3 +62,17 @@ export function buildAgentScopeAuthContext({ token, apiUrl, user, dark }) {
     theme: dark ? "dark" : "light",
   };
 }
+
+export function buildIcingMapEmbedUrl(payload, origin) {
+  const runId = String(payload?.runId || "").trim();
+  if (!runId) return "";
+  const url = new URL("/agent/icing-map", origin);
+  url.searchParams.set("run_id", runId);
+  if (payload.archiveId) url.searchParams.set("archive_id", String(payload.archiveId));
+  const range = payload.selectedRange;
+  if (range?.start && range?.end) {
+    url.searchParams.set("start_date", String(range.start));
+    url.searchParams.set("end_date", String(range.end));
+  }
+  return url.href;
+}

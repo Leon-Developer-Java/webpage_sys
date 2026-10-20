@@ -30,6 +30,7 @@ import { useRouter } from "vue-router";
 import { ensureFreshToken, getToken, getUser } from "../api.js";
 import {
   buildAgentScopeAuthContext,
+  buildIcingMapEmbedUrl,
   isTrustedAgentScopeMessage,
   resolveAgentScopeEmbedConfig,
 } from "../utils/agentscopeEmbed.js";
@@ -103,7 +104,16 @@ function handleAgentScopeMessage(event) {
     sendAuthContext();
     return;
   }
-  if (payload.type === "weather-agent-open-nowcast-map" || payload.type === "weather-agent-open-icing-map") {
+  if (payload.type === "weather-agent-open-icing-map") {
+    const mapUrl = buildIcingMapEmbedUrl(payload, window.location.origin);
+    if (mapUrl) event.source.postMessage({
+      type: "weather-agent-icing-map-embed",
+      requestId: payload.requestId,
+      mapUrl,
+    }, config.webOrigin);
+    return;
+  }
+  if (payload.type === "weather-agent-open-nowcast-map") {
     openModelRun(payload.runId);
     return;
   }
