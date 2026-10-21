@@ -520,6 +520,16 @@ export async function getModelRun(runId) {
 
 export async function getModelRunResult(runId) {
   const result = await modelRequest(`/api/model-runs/${encodeURIComponent(runId)}/result`);
+  return normalizeModelResult(result);
+}
+
+export async function getWinterIcingView(runId, startDate, endDate) {
+  const query = new URLSearchParams({ start_date: startDate, end_date: endDate });
+  const result = await modelRequest(`/api/model-runs/${encodeURIComponent(runId)}/icing-winter-view?${query}`);
+  return normalizeModelResult(result);
+}
+
+function normalizeModelResult(result) {
   return {
     ...result,
     metrics_url: modelAssetUrl(result?.metrics_url),

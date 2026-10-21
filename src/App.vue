@@ -55,7 +55,7 @@ import { Bell, Cloudy, Moon, Sunny } from "@element-plus/icons-vue";
 import { changePassword, getUser, logout } from "./api";
 
 const route = useRoute();
-const standalonePage = computed(() => route.path === "/login");
+const standalonePage = computed(() => route.path === "/login" || route.meta.standalone);
 const user = computed(() => (route.path, getUser()));
 const pwdVisible = ref(false);
 const pwdBusy = ref(false);
