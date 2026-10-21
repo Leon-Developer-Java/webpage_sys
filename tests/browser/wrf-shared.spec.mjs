@@ -751,9 +751,19 @@ test('four-task capacity and resource queue reason reflect the backend policy',a
  await page.goto('/wrf');await page.getByRole('button',{name:/^任务与资料/}).click();await expect(page.locator('.running-card')).toContainText('4/4 个任务执行中');await expect(page.locator('.running-card article')).toHaveCount(5);await expect(page.locator('.running-card article[title="resource-4"]')).toContainText('可用内存不足，等待预留释放');
 });
 
-test('model retirement redirects old links to WRF without contacting 8006',async({page})=>{
- await page.addInitScript(()=>{localStorage.setItem('token','fixture-retirement');localStorage.setItem('user',JSON.stringify({uuid:'fixture',username:'fixture',role:2}));});
+test('restored model page and WRF navigation stay separate without starting a task', async ({page})=>{
+ await page.addInitScript(()=>{localStorage.setItem('token','fixture');localStorage.setItem('user',JSON.stringify({uuid:'fixture',username:'fixture',role:2}));});
  const modelRequests=[],writes=[],errors=[];page.on('pageerror',e=>errors.push(String(e)));
- await page.route('**/*',async route=>{const r=route.request(),u=new URL(r.url());if(u.port==='8006'){modelRequests.push(r.url());return route.abort();}if(await fixtureConfigurationPreview(route))return; if(u.pathname.startsWith('/api/')){if(r.method()!=='GET'){writes.push(u.pathname);return route.abort();}const data=u.pathname==='/api/wrf/options'?options:u.pathname==='/api/wrf/display'?{meta_json:{domains:[]}}:u.pathname==='/api/wrf/data-status'?{status:'ready',pool_items:[]}:u.pathname==='/api/health'?{status:'online',hpc:{status:'ready'}}:{items:[],status:'idle'};return route.fulfill({contentType:'application/json',body:JSON.stringify({code:0,data})});}if(!['127.0.0.1','localhost'].includes(u.hostname))return route.abort();return route.continue();});
- await page.goto('/model');await expect(page).toHaveURL(/\/wrf(?:\?|$)/);await expect(page.getByRole('heading',{name:'WRF 工作台',exact:true})).toBeVisible();await expect(page.getByRole('link',{name:'专用模型调用'})).toHaveCount(0);await page.reload();await expect(page.getByRole('heading',{name:'WRF 工作台',exact:true})).toBeVisible();expect(modelRequests).toEqual([]);expect(writes).toEqual([]);expect(errors).toEqual([]);
+ await page.route('**/*',async route=>{
+  const r=route.request(),u=new URL(r.url());
+  if(r.method()!=='GET'&&u.pathname.startsWith('/api/')){writes.push(u.pathname);return route.abort();}
+  if(u.port==='8006'){modelRequests.push(u.pathname);return route.fulfill({contentType:'application/json',body:JSON.stringify({code:0,data:u.pathname==='/api/models'?{items:[]}:{status:'online'}})});}
+  if(await fixtureConfigurationPreview(route))return;
+  if(u.pathname.startsWith('/api/')){const data=u.pathname==='/api/wrf/options'?options:u.pathname==='/api/wrf/display'?{meta_json:{domains:[]}}:u.pathname==='/api/wrf/data-status'?{status:'ready',pool_items:[]}:{items:[],status:'idle'};return route.fulfill({contentType:'application/json',body:JSON.stringify({code:0,data})});}
+  if(!['127.0.0.1','localhost'].includes(u.hostname))return route.abort();return route.continue();
+ });
+ await page.goto('/model');await expect(page).toHaveURL(/\/model(?:\?|$)/);await expect(page.getByRole('heading',{name:'模型选择',exact:true})).toBeVisible();await expect(page.getByText('模型服务在线',{exact:true})).toBeVisible();
+ await page.reload();await expect(page.getByRole('heading',{name:'模型选择',exact:true})).toBeVisible();
+ expect(modelRequests).toContain('/api/models');expect(modelRequests).toContain('/api/health');
+ await page.goto('/wrf');await expect(page.getByRole('heading',{name:'WRF 工作台',exact:true})).toBeVisible();expect(writes).toEqual([]);expect(errors).toEqual([]);
 });
