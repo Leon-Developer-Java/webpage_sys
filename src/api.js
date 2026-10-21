@@ -224,6 +224,12 @@ export function authenticateWrfHpc(password) {
   });
 }
 
+export function getWrfForcingAttempts(source, cycle, before = null, signal) {
+  const query = new URLSearchParams({limit: "20"});
+  if (before !== null) query.set("before", String(before));
+  return wrfRequest(`/api/wrf/forcing/${encodeURIComponent(source)}/cycles/${encodeURIComponent(cycle)}/attempts?${query}`, {signal});
+}
+
 export function getWrfDataStatus(dataSource = "gfs") {
   return wrfRequest(`/api/wrf/data-status?data_source=${encodeURIComponent(dataSource || "gfs")}`);
 }

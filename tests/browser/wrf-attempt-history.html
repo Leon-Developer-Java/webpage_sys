@@ -1,0 +1,5 @@
+<!doctype html><html lang="zh-CN"><meta charset="UTF-8"><title>Download attempt history fixture</title><body style="background:#0e1828;color:white"><div id="app"></div><script type="module">
+import {createApp,h,ref} from 'vue';
+import History from '../../src/components/wrf/ForcingAttemptHistory.vue';
+createApp({setup(){const source=ref('gfs');return ()=>h('main',[h('button',{onClick:()=>source.value='ecmwf'},'切换ECMWF'),h(History,{key:source.value,source:source.value,cycle:'2026102000'})]);}}).mount('#app');
+</script></body></html>

@@ -112,6 +112,7 @@
                     </div>
                     <el-progress :percentage="cyclePercent(cycle)" :stroke-width="4" :show-text="false" />
                     <div class="cycle-actions"><em>{{ cycleRetentionLabel(cycle) }}</em><button v-if="Number(getUser()?.role)>=3" class="cycle-delete" aria-label="删除资料周期" title="删除资料周期" :disabled="cycleDeleteBusy(item.provider,cycle.cycle)" @click="removeCycle(item.provider,cycle.cycle)">{{cycleDeleteBusy(item.provider,cycle.cycle)?'…':'×'}}</button></div>
+                    <ForcingAttemptHistory v-if="options?.workbench_management?.forcing_attempt_history" :key="cycleKey(item.provider,cycle.cycle)" :source="item.provider" :cycle="cycle.cycle" />
                     <p v-if="cycleDeletions[cycleKey(item.provider,cycle.cycle)]" class="cycle-delete-status" role="status">{{cycleDeletionLabel(cycleDeletions[cycleKey(item.provider,cycle.cycle)])}} · {{cycleDeletions[cycleKey(item.provider,cycle.cycle)].phase==='queued'?'等待':'执行'}} {{deletionSeconds(cycleDeletions[cycleKey(item.provider,cycle.cycle)])}} 秒</p>
                   </article>
                   <article v-if="!item.cycles?.length" class="pool-summary"><div class="cycle-head"><b>{{ poolWindow(item) }}</b><span :class="item.status">{{ poolStatus(item.status) }}</span></div><small>{{ poolCoverage(item) }}</small></article>
@@ -175,6 +176,7 @@ import {computed,nextTick,inject,onBeforeUnmount,onMounted,ref,shallowRef,toRaw,
 import {useRoute,useRouter} from 'vue-router';
 import {ElMessage,ElMessageBox} from 'element-plus';
 import {ArrowLeft,ArrowRight,Check,Close,DArrowLeft,DArrowRight,DataAnalysis,Grid,MapLocation,Moon,Picture,Position,Sunny,VideoPause,VideoPlay} from '@element-plus/icons-vue';
+import ForcingAttemptHistory from '../components/wrf/ForcingAttemptHistory.vue';
 import {cancelWrfTask,createWrfTask,getWrfDataStatus,getWrfSubmission,getUser,getWrfHealth,getWrfOptions,getWrfTask,getWrfTaskLogs,listWorkbenchTasks, pageWorkbenchTasks,prepareWrfForcing,syncLatestWrfForcing} from '../api.js';
 import {refreshWrfForcing,getWrfForcingRefresh,deleteWrfForcingCycle,getWrfForcingCleanupPlan,planWrfTaskRecovery,executeWrfTaskRecovery,getWrfTaskRecovery} from '../api.js';
 import WrfLegacyManagement from '../components/WrfLegacyManagement.vue';
