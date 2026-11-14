@@ -828,6 +828,11 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+.lc-row {
+  /* Reserve space for Resolution while keeping both selectors aligned. */
+  grid-template-columns: 6em minmax(0, 1fr);
+}
+
 .lc-note {
   margin: 0;
   padding: 0 9px 7px;

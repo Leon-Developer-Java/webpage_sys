@@ -1,0 +1,20 @@
+name: Workbench CI
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.14.1
+          cache: npm
+      - run: npm install --global npm@11.11.0
+      - run: npm ci --no-audit --no-fund
+      - run: npm ci --prefix packages/wrf-ui --no-audit --no-fund
+      - run: npm test
+      - run: npm run test:wrf-ui
+      - run: npm run build:wrf-ui
+      - run: npm run build

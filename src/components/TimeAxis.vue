@@ -1,9 +1,10 @@
 <template>
-  <div class="time-axis" :class="{ compact: compactLabels, disabled }">
-    <div class="track" ref="trackEl" @click="seek">
+  <div class="time-axis" :class="{ compact: compactLabels, disabled, adaptive }">
+    <div class="track" ref="trackEl" @click="seek" @pointermove="preview" @pointerleave="hoverIndex = null" @pointerdown="beginDrag" @pointerup="endDrag" @pointercancel="endDrag">
       <div v-if="!disabled" class="fill" :style="{ width: fillPct }"></div>
       <div v-if="!disabled" class="thumb" :style="{ left: fillPct }"></div>
     </div>
+    <div v-if="adaptive && !disabled && hoverIndex !== null" class="seek-hint" :style="{ left: trackWidth < 220 ? '50%' : `clamp(100px, ${tickPct(hoverIndex)}, calc(100% - 100px))` }">{{ times[hoverIndex] }} · {{ hoverIndex + 1 }}/{{ times.length }}</div>
     <div v-if="disabled" class="disabled-label">{{ disabledLabel }}</div>
     <div v-else class="labels">
       <span
@@ -13,13 +14,13 @@
         :style="{ left: tickPct(tick.index) }"
         :title="tick.label"
         @click.stop="emit('update:active', tick.index)"
-      >{{ compactLabels ? compactTickLabel(tick.label) : tick.label }}</span>
+      >{{ tick.text || (compactLabels ? compactTickLabel(tick.label) : tick.label) }}</span>
     </div>
   </div>
 </template>
 
 <script setup>
-import { computed, ref } from "vue";
+import { computed, ref, onMounted, onBeforeUnmount } from "vue";
 import { buildVisibleTicks } from "../utils/timeAxisTicks";
 
 const props = defineProps({
@@ -33,10 +34,47 @@ const props = defineProps({
 });
 const emit = defineEmits(["update:active"]);
 const trackEl = ref(null);
+const adaptive = computed(() => props.tickMode === "adaptive");
+const trackWidth = ref(0);
+const hoverIndex = ref(null);
+let dragging = false;
+let observer;
+let measureLabel = text => text.length * 7;
+onMounted(() => {
+  if (!adaptive.value) return;
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d");
+  const updateSize = () => {
+    if (context) {
+      const style = getComputedStyle(trackEl.value);
+      context.font = `11px ${style.fontFamily}`;
+      measureLabel = text => context.measureText(text).width;
+    }
+    trackWidth.value = trackEl.value?.getBoundingClientRect().width || 0;
+  };
+  observer = new ResizeObserver(updateSize);
+  observer.observe(trackEl.value);
+  updateSize();
+});
+onBeforeUnmount(() => observer?.disconnect());
+
+function preview(event) {
+  if (!adaptive.value || props.disabled || !props.times.length) return;
+  const rect = trackEl.value.getBoundingClientRect();
+  hoverIndex.value = Math.round(Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(1, rect.width))) * (props.times.length - 1));
+  if (dragging) seek(event);
+}
+function beginDrag(event) {
+  if (!adaptive.value || props.disabled || props.times.length < 2 || event.button !== 0) return;
+  dragging = true;
+  trackEl.value.setPointerCapture(event.pointerId);
+  preview(event);
+}
+function endDrag() { dragging = false; hoverIndex.value = null; }
 
 const pct = computed(() => Math.min(props.active / Math.max(props.times.length - 1, 1), 1));
 const fillPct = computed(() => `${pct.value * 100}%`);
-const visibleTicks = computed(() => buildVisibleTicks(props.times, { mode: props.tickMode, maxTicks: 12 }));
+const visibleTicks = computed(() => buildVisibleTicks(props.times, { mode: props.tickMode, maxTicks: 12, width: trackWidth.value, measureText: text => measureLabel(text) }));
 
 function seek(e) {
   if (props.disabled || props.times.length < 2) return;
@@ -57,7 +95,8 @@ function compactTickLabel(label) {
 </script>
 
 <style scoped>
-.time-axis { display: flex; flex-direction: column; gap: 3px; margin: 0 10px; user-select: none; }
+.time-axis { position: relative; display: flex; flex-direction: column; gap: 3px; margin: 0 10px; user-select: none; }
+.seek-hint { position: absolute; bottom: 100%; z-index: 10; transform: translateX(-50%); max-width: calc(100% - 16px); overflow: hidden; text-overflow: ellipsis; padding: 4px 8px; border-radius: 6px; background: var(--text, #172033); color: var(--bg, #fff); font-size: 11px; white-space: nowrap; pointer-events: none; }
 
 .track {
   position: relative;
@@ -77,6 +116,7 @@ function compactTickLabel(label) {
   pointer-events: none;
 }
 .track:hover::before { background: color-mix(in srgb, var(--muted) 48%, transparent); }
+.adaptive .track { touch-action: pan-y; }
 
 .fill {
   position: absolute;

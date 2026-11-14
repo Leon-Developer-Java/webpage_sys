@@ -160,7 +160,7 @@
       </div>
 
       <div class="timebar glass">
-        <div class="tb-head">
+        <div class="tb-head" :class="{ 'radar-head': active === 'radar' }">
           <button class="tc-btn" :disabled="!timelineInteractive" @click="setTimeIndex(0)"><el-icon><DArrowLeft /></el-icon></button>
           <button class="tc-btn" :disabled="!timelineInteractive" @click="setTimeIndex(Math.max(0, tIndex - 1))"><el-icon><ArrowLeft /></el-icon></button>
           <button class="tc-play" :disabled="!timelineInteractive || playingPreparing" @click="togglePlaying"><el-icon><Loading v-if="playingPreparing" class="is-loading" /><VideoPause v-else-if="playing" /><VideoPlay v-else /></el-icon></button>
@@ -169,13 +169,14 @@
           <div class="tc-speed">
             <button v-for="s in [0.5, 1, 2, 4]" :key="s" :class="{ on: speed === s }" :disabled="!timelineInteractive" @click="speed = s">{{ s }}x</button>
           </div>
+          <span v-if="active === 'radar' && axisTimes.length" class="radar-axis-range">{{ radarAxisRange }}</span>
           <span class="tc-time">{{ timelineStatusText }}</span>
         </div>
         <TimeAxis
           :key="timeAxisKey"
           :times="axisTimes"
           :active="animPos"
-          :tick-mode="usesCompactTimeAxis ? 'all' : 'sampled'"
+          :tick-mode="active === 'radar' ? 'adaptive' : usesCompactTimeAxis ? 'all' : 'sampled'"
           :compact-labels="usesCompactTimeAxis"
           :disabled="!timelineInteractive"
           :disabled-label="timelineDisabledLabel"
@@ -1084,9 +1085,17 @@ const timelineDisabledLabel = computed(() => {
 });
 
 const timelineStatusText = computed(() => {
-  if (timelineInteractive.value) return activeTimeLabel.value;
+  if (timelineInteractive.value) return active.value === "radar"
+    ? `${activeTimeLabel.value} · ${Math.min(axisTimes.value.length, Math.max(1, Math.round(animPos.value) + 1))}/${axisTimes.value.length}`
+    : activeTimeLabel.value;
   if (axisTimes.value.length === 1) return axisTimes.value[0];
   return "无数据";
+});
+
+const radarAxisRange = computed(() => {
+  const first = String(axisTimes.value[0] || "").split(" ")[0];
+  const last = String(axisTimes.value.at(-1) || "").split(" ")[0];
+  return `${first === last ? first : `${first} — ${last}`} · 北京时间 UTC+8`;
 });
 
 const layerTimeIndex = computed(() => {
@@ -2511,6 +2520,8 @@ watch(active, () => {
   background: var(--accent-soft);
 }
 
+.radar-head { flex-wrap: wrap; }
+.radar-axis-range { font-size: 11px; color: var(--muted); white-space: nowrap; }
 .tc-time {
   margin-left: auto;
   min-width: 92px;
