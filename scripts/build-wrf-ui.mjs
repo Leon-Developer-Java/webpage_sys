@@ -18,12 +18,12 @@ const sourceSha=hash.digest('hex');
 execFileSync('npm',['run','build'],{cwd:pkg,stdio:'inherit',env:{...process.env,WRF_UI_SOURCE_SHA:sourceSha,WRF_UI_BUILD_OUT:resolve(staging,'dist')}});
 for(const name of ['package.json','README.md'])copyFileSync(resolve(pkg,name),resolve(staging,name));
 const packed=JSON.parse(execFileSync('npm',['pack','--json','--ignore-scripts','--cache',process.env.WRF_UI_NPM_CACHE||resolve(output,'npm-cache'),'--pack-destination',output],{cwd:staging,encoding:'utf8'}))[0];
-const artifact=resolve(root,'vendor/wrf-ui',packed.filename);
+const artifact=stageOnly?resolve(output,packed.filename):resolve(root,'vendor/wrf-ui',packed.filename);
 const release={name:manifest.name,version:manifest.version,interface_version:'wrf-ui-2',source_sha256:sourceSha,bundle_sha256:createHash('sha256').update(readFileSync(resolve(staging,'dist/wrf-ui.js'))).digest('hex'),artifact:relative(root,artifact),integrity:packed.integrity,node:process.version,npm:npmVersion};
 if(stageOnly)release.stage_only=true;
 const lockPath=resolve(root,'wrf-ui.lock.json');
 if(stageOnly)console.log('Staged artifact only; installed release lock remains unchanged');
 else if(process.argv.includes('--update-lock'))writeFileSync(lockPath,JSON.stringify(release,null,2)+'\n');
 else if(!existsSync(lockPath)||JSON.parse(readFileSync(lockPath,'utf8')).source_sha256!==release.source_sha256||JSON.parse(readFileSync(lockPath,'utf8')).integrity!==release.integrity)throw new Error('WRF UI source or tarball differs from wrf-ui.lock.json; release explicitly with --update-lock');
-mkdirSync(dirname(artifact),{recursive:true});copyFileSync(resolve(output,packed.filename),artifact);
+if(!stageOnly){mkdirSync(dirname(artifact),{recursive:true});copyFileSync(resolve(output,packed.filename),artifact);}
 writeFileSync(resolve(output,'manifest.json'),JSON.stringify(release,null,2)+'\n');console.log(JSON.stringify(release));

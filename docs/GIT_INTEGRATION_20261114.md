@@ -7,3 +7,5 @@
 验证命令：`npm ci`、`npm test`、`npm ci --prefix packages/wrf-ui`、`npm run test:wrf-ui`、`npm run build:wrf-ui`、`npm run build`。109 项主站单元、29 项共享组件及 56 项隔离浏览器回归通过，2.2.9 重建完整性吻合。新增 Workbench CI 执行单元、共享组件、可重复构建和主站构建。浏览器测试使用相邻隔离后端解释器及 5198 测试端口，不访问运行任务。
 
 完整本轮命令输出、干净克隆及远端 CI 结果保存在工作区 `.run/git-integration-20261114/evidence/`。真实模型、HPC 数值计算及运行服务切换不属于本次隔离验证范围。验收后清点临时克隆/依赖，经用户确认再清理；配置、维护备份与必要验收证据保留。
+
+暂存边界复核：使用不同源码指纹的候选执行 `--stage-only`，候选只写入 .artifacts，正式 vendor 归档和安装锁的内容及 mtime 保持；普通重建仍拒绝未发布源码，恢复原源码后完整性重建通过。

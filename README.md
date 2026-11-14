@@ -301,7 +301,7 @@ npm run build
 
 ## WRF 共用组件发布与验证
 
-`wrf-ui.lock.json` 绑定版本、源码 SHA-256、JS bundle SHA-256、npm tarball integrity 和构建工具版本。`node scripts/build-wrf-ui.mjs` 重建并校验锁；只有维护发布时才使用 `--update-lock`。主站和 AgentScope 前端通过各自锁文件安装同一个 `.artifacts/wrf-ui/<version>/*.tgz`，无需私有 registry。部署版本不可覆盖成不同内容；源代码或打包内容变化时更新包版本并同时更新两端锁。构建前的 `verify-wrf-ui.mjs` 核对主站实际安装 bundle 和锁，防止 file 依赖旧缓存冒充新包。React 宿主对该已编译包关闭 Vite 再优化。
+`wrf-ui.lock.json` 绑定版本、源码 SHA-256、JS bundle SHA-256、npm tarball integrity 和构建工具版本。`node scripts/build-wrf-ui.mjs` 重建并校验锁；只有维护发布时才使用 `--update-lock`。主站通过 `vendor/wrf-ui/`、AgentScope 前端通过自己的 `frontend/vendor/wrf-ui/` 和各自锁文件安装同一归档，无需私有 registry。`.artifacts/wrf-ui/<version>/` 只保存重建暂存；`--stage-only` 不写入正式 vendor 归档或安装锁。部署版本不可覆盖成不同内容；源代码或打包内容变化时更新包版本并同时更新两端锁。构建前的 `verify-wrf-ui.mjs` 核对主站实际安装 bundle 和锁，防止 file 依赖旧缓存冒充新包。React 宿主对该已编译包关闭 Vite 再优化。
 
 更新包后，长期运行的 Vite 开发服务可能保留 node_modules 的旧模块转换及 immutable URL。应核对实际服务脚本的版本，按进程身份仅温和刷新对应前端，再完整刷新浏览器使 Custom Elements 重新注册；安装目录版本正确不能代替实际加载核验。几何数值在 input 时保存，预览响应必须同时匹配请求序列及当前几何签名，防止旧响应覆盖连续编辑或未失焦输入。
 

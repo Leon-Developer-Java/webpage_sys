@@ -17,4 +17,8 @@ jobs:
       - run: npm test
       - run: npm run test:wrf-ui
       - run: npm run build:wrf-ui
+      - name: Check staging preserves released files
+        run: |
+          node scripts/build-wrf-ui.mjs --stage-only
+          git diff --exit-code -- wrf-ui.lock.json vendor/wrf-ui
       - run: npm run build
