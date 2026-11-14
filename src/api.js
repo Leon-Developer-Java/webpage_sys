@@ -82,6 +82,7 @@ function tokenPayload(token) {
 }
 
 let refreshPromise = null;
+let refreshToken = "";
 
 export async function ensureFreshToken() {
   const token = getToken();
@@ -89,12 +90,23 @@ export async function ensureFreshToken() {
   if (!payload?.iat || !payload?.exp) return;
   const now = Date.now() / 1000;
   if (now - payload.iat < (payload.exp - payload.iat) / 2) return;
-  refreshPromise ??= fetch(`${AUTH_BASE}/api/auth/refresh`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
-  })
-    .then(async res => {
-      const data = await res.json();
+  if (!refreshPromise || refreshToken !== token) {
+    const pending = (async () => {
+      let res, data;
+      try {
+        res = await fetch(`${AUTH_BASE}/api/auth/refresh`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (getToken() !== token) return;
+        data = await res.json();
+      } catch (error) {
+        if (getToken() !== token) return;
+        throw error;
+      }
+      // A refresh belongs to the credential that started it. Logout, a new
+      // login or another refresh must not be undone by this late response.
+      if (getToken() !== token) return;
       if (res.status === 401 || res.status === 403) {
         localStorage.removeItem("token");
         localStorage.removeItem("user");
@@ -103,21 +115,45 @@ export async function ensureFreshToken() {
       }
       if (!res.ok || data.code !== 0) throw new Error("认证服务暂时不可用");
       saveSession(data.data);
-    })
-    .finally(() => { refreshPromise = null; });
+    })().finally(() => {
+      if (refreshPromise === pending) {
+        refreshPromise = null;
+        refreshToken = "";
+      }
+    });
+    refreshPromise = pending;
+    refreshToken = token;
+  }
   await refreshPromise;
 }
 
+function sessionPrincipal(token = getToken()) {
+  const user = getUser();
+  return tokenPayload(token)?.sub || user?.uuid || user?.id || user?.username || "";
+}
+
 export async function authedFetch(url, options = {}) {
+  const originalToken = getToken();
+  const originalPrincipal = sessionPrincipal(originalToken);
   await ensureFreshToken();
+  const token = getToken();
+  const principal = sessionPrincipal(token);
+  if ((originalToken && !token) || originalPrincipal !== principal || (!principal && token !== originalToken)) {
+    throw new Error("登录身份已变化，操作未发送；请核对当前账户后重新操作。");
+  }
   const cache = requestCacheMode(url, options);
   const res = await fetch(url, {
     ...options,
     ...(cache ? { cache } : {}),
-    headers: { ...(options.headers || {}), Authorization: `Bearer ${getToken()}` },
+    headers: { ...(options.headers || {}), Authorization: `Bearer ${token}` },
   });
-  if (res.status === 401) logout();
-  if (res.status === 403) ElMessage.warning("权限不足，请联系管理员开通");
+  if ((token && !getToken()) || principal !== sessionPrincipal() || (!principal && token !== getToken())) {
+    throw new Error("登录身份已变化，旧响应未应用；请回原账户核验请求结果，未重复发送。");
+  }
+  if (token === getToken()) {
+    if (res.status === 401) logout();
+    if (res.status === 403) ElMessage.warning("权限不足，请联系管理员开通");
+  }
   return res;
 }
 

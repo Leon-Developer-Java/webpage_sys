@@ -5,7 +5,7 @@
   <div :class="['wrf-editor-layout', 'wrf-panel-'+mobilePanel]">
    <aside v-show="presentation!=='guided'" class="wrf-settings">
     <section><h3>资料与时间</h3><div class="wrf-fields">
-     <label>驱动资料<select :value="value.data_source" :disabled="locked" @change="setSource($event.target.value)"><option value="gfs">GFS 全球预报</option><option value="ecmwf">ECMWF IFS</option></select></label>
+     <label>驱动资料<select :value="value.data_source" :disabled="locked" @change="setSource($event.target.value)"><option v-for="source in sources" :key="source" :value="source">{{sourceLabels[source]||source}}</option></select></label>
      <label>驱动资料间隔<select :value="value.forecast_interval_hours" :disabled="locked" @change="field('forecast_interval_hours',+$event.target.value)"><option v-for="n in intervals" :key="n" :value="n">{{n}} 小时</option></select></label>
      <label>开始时间（UTC）<input type="datetime-local" :value="time(value.start_time)" :disabled="locked" @change="field('start_time',$event.target.value+':00Z')"><small>{{local(value.start_time)}}</small></label>
      <label>结束时间（UTC）<input type="datetime-local" :value="time(value.end_time)" :disabled="locked" @change="field('end_time',$event.target.value+':00Z')"><small>{{local(value.end_time)}}</small></label>
@@ -60,7 +60,9 @@ const validation=computed(()=>numericValidation(value.value,props.options,invali
 watch(validation,state=>emit('validation-change',state),{deep:true,immediate:true,flush:'sync'});
 watch(()=>props.editorKey,(key,previous)=>{if(previous!==undefined&&key!==previous){invalidInputs.value={};history.value=[];error.value='';changeNotice.value='';}});
 const profile=computed(()=>props.options?.configuration_profile||{}),locked=computed(()=>props.disabled||props.readOnly),selected=computed(()=>value.value.domains.find(d=>d.node_key===active.value)||value.value.domains[0]);
-const intervals=computed(()=>profile.value.forecast_intervals?.[value.value.data_source]||(value.value.data_source==='ecmwf'?[3]:[1,3,6]));
+const sourceLabels={gfs:'GFS 全球预报 0.25°',ecmwf:'ECMWF IFS 0.25°',ecmwf_0p1:'ECMWF IFS 0.1°'};
+const sources=computed(()=>profile.value.data_sources||['gfs','ecmwf']);
+const intervals=computed(()=>profile.value.forecast_intervals?.[value.value.data_source]||(value.value.data_source!=='gfs'?[3]:[1,3,6]));
 const spinupLimits=computed(()=>[profile.value.runtime_parameters?.spinup_hours?.min??0,profile.value.runtime_parameters?.spinup_hours?.max]),verticalLimits=computed(()=>[profile.value.runtime_parameters?.vertical_levels?.min??10,profile.value.runtime_parameters?.vertical_levels?.max??500]);
 const otherPhysicsFields=computed(()=>(profile.value.physics_fields||[]).filter(f=>f.id!=='cu_physics'));
 const cumulusChoices=computed(()=>profile.value.physics_fields?.find(f=>f.id==='cu_physics')?.choices||[{value:0,label:'关闭'},{value:3,label:'Grell–Freitas'}]);

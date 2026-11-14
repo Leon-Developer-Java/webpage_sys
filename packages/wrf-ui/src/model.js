@@ -4,7 +4,7 @@ export const clone = value => JSON.parse(JSON.stringify(value));
 export function defaultConfig(options = {}, source = 'gfs') {
   options ||= {};
   const profile = options.configuration_profile || {};
-  const interval = source === 'ecmwf' ? 3 : 1;
+  const interval = source === 'gfs' ? 1 : 3;
   const start = new Date(); start.setUTCMinutes(0,0,0); start.setUTCHours(Math.floor(start.getUTCHours()/interval)*interval);
   const physics=clone(profile.physics_defaults || options.physics_presets?.['默认通用'] || {});delete physics.cu_physics;delete physics.cu_physics_by_domain;
   return {configuration_profile:PROFILE,data_source:source,start_time:start.toISOString().replace('.000Z','Z'),end_time:new Date(+start+24*3600000).toISOString().replace('.000Z','Z'),forecast_interval_hours:interval,history_interval_minutes:60,spinup:clone(profile.defaults?.spinup||{mode:'custom',hours:6}),vertical_levels:profile.defaults?.vertical_levels??88,assimilation_scheme:'off',physics,center:null,domains:[],projection:{map_proj:'lambert',truelat1:35,truelat2:35,stand_lon:104},aoi:null};

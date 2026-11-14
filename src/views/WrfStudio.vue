@@ -204,10 +204,11 @@ function authChanged(){const owner=currentOwner();if(owner===knownOwner)return;k
 watch(sidebarOpen,(value,previous)=>{if(value)nextTick(()=>sidebarPanel.value?.focus());else if(previous)sidebarTrigger.value?.focus();});
 function trapSidebarFocus(event){const panel=sidebarPanel.value;if(!panel||panel.closest('.wrf-studio').clientWidth>=1440)return;const items=[...panel.querySelectorAll('button,input,select,summary,a[href],[tabindex]')].filter(item=>!item.disabled&&item.tabIndex>=0&&item.getClientRects().length);if(!items.length){event.preventDefault();return;}const first=items[0],last=items.at(-1);if(event.target===panel||(!event.shiftKey&&event.target===last)||(event.shiftKey&&event.target===first)){event.preventDefault();(event.shiftKey?last:first).focus();}}
 const FINAL = new Set(["succeeded", "partial_success", "failed", "waiting_restart", "cancelled"]);
-const sources = [
+const sources = computed(() => [
   { id: "gfs", name: "GFS 全球预报", description: "0.25° 全球边界场", provider: "NOAA NOMADS", status: "available" },
-  { id: "ecmwf", name: "ECMWF IFS", description: "0.25° 全球边界场", provider: "ECMWF Open Data", status: "available" },
-];
+  { id: "ecmwf", name: "ECMWF IFS 0.25°", description: "0.25° 全球边界场", provider: "ECMWF Open Data", status: "available" },
+  ...(options.value?.configuration_profile?.data_sources?.includes("ecmwf_0p1") ? [{ id: "ecmwf_0p1", name: "ECMWF IFS 0.1°", description: "0.1° 全球边界场，SFC + PL", provider: "ECMWF Open Data", status: "available" }] : []),
+]);
 const projections = ["等经纬", "墨卡托", "正弦", "罗宾逊", "兰博托", "卫星正视", "北极", "南极"];
 const basemaps = ["矢量底图", "影像底图", "地形晕渲", "全球境界"];
 function taskCreationTypeForPath(path) { return path === '/wrf/new' ? 'wrf' : ''; }
@@ -273,7 +274,7 @@ const hpcStorageLow = computed(() => health.value?.hpc?.status === "storage_low"
 const hpcAuthenticated = computed(() => ["ready", "storage_low"].includes(health.value?.hpc?.status));
 const activeTaskCount = computed(() => Number(health.value?.active_task_count) || 0);
 const maxConcurrentTasks = computed(() => Number(health.value?.max_concurrent_tasks || options.value?.capabilities?.max_concurrent_tasks) || 1);
-const selectedSourceLabel = computed(() => ({ ecmwf: "ECMWF", gfs: "GFS" })[selectedSource.value] || "GFS");
+const selectedSourceLabel = computed(() => ({ ecmwf: "ECMWF IFS 0.25°", ecmwf_0p1: "ECMWF IFS 0.1°", gfs: "GFS" })[selectedSource.value] || "GFS");
 const footerTaskSummary = computed(() => {
   if (selectedTaskId.value || resultTaskId.value) return workspaceView.value==='result'?resultTaskId.value:selectedTaskId.value;
   if (activeTaskCount.value) return `${activeTaskCount.value}/${maxConcurrentTasks.value} 个任务执行中`;
@@ -286,7 +287,7 @@ const resultSourceLabel = computed(() => {
 });
 const poolItems = computed(() => {
   if (Array.isArray(dataStatus.value?.pool_items)) return dataStatus.value.pool_items;
-  return [{ provider: selectedSource.value, label: selectedSourceLabel.value, source: selectedSource.value === "ecmwf" ? "ECMWF Open Data" : "NOAA NOMADS", status: dataStatus.value?.status || "idle", cycles: [] }];
+  return [{ provider: selectedSource.value, label: selectedSourceLabel.value, source: selectedSource.value !== "gfs" ? "ECMWF Open Data" : "NOAA NOMADS", status: dataStatus.value?.status || "idle", cycles: [] }];
 });
 const autoCleanupPending = computed(() => poolItems.value.some(item =>
   (item.cycles || []).some(cycle => cycle.auto_cleanup_allowed),
@@ -316,7 +317,7 @@ function txLabText(value) { return String(value || "").replaceAll("超算", "tx-
 function poolStatus(value) {
   return ({ ready: "已就绪", queued: "排队", downloading: "下载中", rate_limited: "限流等待", waiting_publish: "等待发布", failed: "下载失败", error: "下载失败", partial: "待补齐", storage_low: "空间不足", blocked_storage: "空间不足", idle: "待检查" })[value] || "待检查";
 }
-function poolDetail() { return "0.25° · 全球 · 00Z · 保留 2 周期"; }
+function poolDetail(item) { return `${item?.provider === "ecmwf_0p1" ? "0.1°" : "0.25°"} · 全球 · 00Z · 保留 2 周期`; }
 function poolCoverage() { return "空间：全球 · 时效：f000–f072"; }
 function poolWindow() { return "时间：最近两个 00Z 周期"; }
 function visiblePoolCycles(item) {
