@@ -1,3 +1,31 @@
+<!-- scene3d-current-start -->
+## 三维场景页面接入更新
+
+2026-11-20：已合并上游 `master` 并接入独立三维场景页面，保留上游 WRF UI 2.2.9、覆冰地图、认证和时间轴功能。
+
+### 页面功能
+
+- 路由为 `/scene3d`，导航对角色不低于 2 的业务用户开放，接口由后端再次校验身份与权限。
+- 保留原地形、杆塔、导线、WebGPU 风场粒子、配色、高度分层、时间播放和线路动态响应；底图与平台统一配置。
+- 左键平移，右键或中键旋转，滚轮缩放；增加 GPU 初始化重试、设备丢失恢复及错误提示，不采用替代风场渲染。
+- 主 Agent 的三维结果卡可以打开 `/scene3d?run_id=s3d_...`，展示同一个服务器任务。页面验证跨窗口消息来源和任务标识。
+
+### 配置和启动
+
+```bash
+npm ci --no-audit --no-fund
+npm run dev -- --port 5177 --strictPort
+```
+
+在 `.env.local` 中按需配置 `VITE_SCENE3D_BASE=http://127.0.0.1:8013`，示例见 [.env.example](.env.example)。页面使用现有 `authedFetch` 获取业务数据，Cesium 运行资源由三维服务提供。修改 Vite 环境变量后需重启开发服务或重新构建。
+
+三维页面需要登录服务、[backend_scene3d](https://github.com/xiaohu12138/backend_scene3d) 网关和服务器数据就绪；聊天调用还需要 [weather_agentscope](https://github.com/dying311/weather_agentscope)。这些服务不由 `npm run dev` 单独启动。开发页面地址为 `http://127.0.0.1:5177/scene3d`，未登录时进入登录页。
+
+Windows 一键启动与停止脚本保存在 `backend_scene3d/deployment/windows/`，使用前复制到各业务仓库共同父目录。数据、实际 `.env`、凭据和构建产物不上传 GitHub。三维计算服务仓库为私有，需授权访问。
+
+本次验证：主站 113 项单元测试及生产构建通过，原风场显示保持。完整说明见 [Scene3D 页面接入](docs/SCENE3D_INTEGRATION.md)。以下为其他业务已有的阶段记录，原内容保留。
+<!-- scene3d-current-end -->
+
 ## 2026-11-18 资料池真实暂停状态与最新周期恢复
 
 确认暂停显示已暂停，未知身份继续保护；最新两预取周期置顶。核验身份和无引用后结束10日 GFS/ECMWF 0.25°旧暂停下载，全部文件、分片和历史保留，两个周期设为显式保留。仅通过原门禁重载 WRF API，其他服务身份保持；18日三源独立下载均有真实字节推进，0.1°原工作器不变。118项后端、10项维护、4项实际数据盘测试、3项浏览器及前端构建通过，真实页面刷新排序验收。未新增计算、自动检查或 Git 提交。[页面验收](docs/POOL_PAUSE_LATEST_ACCEPTANCE_20261118.md)。
