@@ -833,3 +833,34 @@ test('IFS 0.1 product stays explicit in the form and final submission',async({pa
  await source.selectOption('ecmwf');
  await expect(page.getByRole('combobox',{name:'驱动资料间隔',exact:true})).toHaveValue('3');
 });
+
+test('pool prioritizes latest two cycles and distinguishes paused protected old downloads',async({page})=>{
+ await page.addInitScript(()=>{localStorage.setItem('token','fixture');localStorage.setItem('user',JSON.stringify({uuid:'pool-owner',username:'fixture',role:2}));});
+ const cycles=[
+ {cycle:'2026111000',status:'paused',completed_files:51,partial_size_bytes:53000000,current_file:'gfs.f051',download_rate_bps:999999,explicitly_held:true,wait_reason:'本源下载进程已暂停，文件和分片保留；等待安全恢复或交接'},
+ {cycle:'2026111800',status:'queued',completed_files:0,prefetch_target:true,wait_reason:'本源工作器已暂停，旧文件和分片保留；等待安全恢复或交接'},
+ {cycle:'2026102700',status:'ready',completed_files:73,task_required:true,complete:true},
+ {cycle:'2026111700',status:'queued',completed_files:0,prefetch_target:true,wait_reason:'本源工作器已暂停'},
+ {cycle:'2026110900',status:'status_unknown',completed_files:4,wait_reason:'当前传输身份或状态尚未确认'}
+ ].map(v=>({total_files:73,size_bytes:1000000000,...v}));
+ await page.route('**/*',async route=>{if(await fixtureConfigurationPreview(route))return;const req=route.request(),u=new URL(req.url()),p=u.pathname;if(!['localhost','127.0.0.1'].includes(u.hostname))return route.abort();const reply=data=>route.fulfill({contentType:'application/json',body:JSON.stringify({code:0,data})});
+ if(req.method()!=='GET')throw new Error('Unexpected mutation '+p);
+ if(p==='/api/wrf/options')return reply(options);
+ if(p==='/api/health')return reply({status:'online',hpc:{status:'ready'}});
+ if(p==='/api/wrf/workbench/tasks')return reply({items:[]});
+ if(p==='/api/wrf/forcing/refresh')return reply({status:'idle'});
+ if(p==='/api/wrf/data-status')return reply({pool_items:[{provider:'gfs',label:'GFS',status:'downloading',cycles}]});
+ if(p.startsWith('/api/'))throw new Error('Unexpected API '+p);return route.continue();});
+ await page.goto('/wrf');await page.getByRole('button',{name:/^任务与资料/}).click();
+ const cards=page.locator('.pool-provider article');await expect(cards).toHaveCount(5);
+ await expect(cards.nth(0).locator('.cycle-head b')).toHaveText('2026-11-18 00Z');
+ await expect(cards.nth(1).locator('.cycle-head b')).toHaveText('2026-11-17 00Z');
+ await expect(cards.nth(2)).toContainText('任务使用中');
+ const paused=cards.filter({has:page.locator('.cycle-head .paused')});
+ await expect(paused).toContainText('已暂停');await expect(paused).toContainText('手动保留');await expect(paused).toContainText('当前分片');
+ await expect(paused).not.toContainText('下载中');await expect(paused).not.toContainText('/s');
+ await expect(cards.nth(0)).toContainText('工作器已暂停');
+ await expect(cards.filter({has:page.locator('.cycle-head .status_unknown')})).toContainText('状态待核验');
+ await page.reload();await page.getByRole('button',{name:/^任务与资料/}).click();
+ await expect(cards.nth(0)).toContainText('2026-11-18 00Z');await expect(paused).toContainText('已暂停');
+});

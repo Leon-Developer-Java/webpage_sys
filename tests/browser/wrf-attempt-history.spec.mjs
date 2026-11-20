@@ -23,6 +23,18 @@ test('legacy and interrupted attempts are explicit rather than invented failure 
  await page.getByText('下载记录',{exact:true}).click();await expect(page.getByText('仅显示启用记录后的尝试；此前失败原因无法还原。')).toBeVisible();await expect(page.getByLabel('下载尝试记录')).toContainText('尚未记录结束');
  await page.reload();await page.getByText('下载记录',{exact:true}).click();await expect(page.getByLabel('下载尝试记录')).toContainText('尚未记录结束');
 });
+
+test('shows the failed CloudFront request and successful fallback by node',async({page})=>{
+ await setup(page,route=>route.fulfill({json:{code:0,data:{items:[
+  record('fallback','succeeded','',[
+    {request:1,transfer_node:'ecmwf_cloudfront',cause:'upstream_temporary',status:'failed'},
+    {request:2,transfer_node:'ecmwf_portal',status:'succeeded'}
+  ])
+ ],next_cursor:null}}}));
+ await page.getByText('下载记录',{exact:true}).click();
+ await expect(page.getByLabel('下载尝试记录')).toContainText('ECMWF CloudFront · 上游临时故障');
+ await expect(page.getByLabel('下载尝试记录')).toContainText('ECMWF 官网 · 成功');
+});
 test('operator pause is labelled as an observation and retains the continuation record',async({page})=>{
  await setup(page,route=>route.fulfill({json:{code:0,data:{items:[record('resumed','unfinished'),{...record('paused','interrupted','operator_pause'),origin:'operator_pause_observation',execution_seconds:null}],next_cursor:null}}}));
  await page.getByText('下载记录',{exact:true}).click();await expect(page.getByLabel('下载尝试记录')).toContainText('主动暂停交接（分片已保留）');await expect(page.getByLabel('下载尝试记录')).toContainText('旧版在途请求的暂停观测；此前连接过程未记录。');await expect(page.getByLabel('下载尝试记录')).toContainText('尚未记录结束');

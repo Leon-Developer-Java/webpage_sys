@@ -8,14 +8,14 @@
     <div class="attempt-rows" aria-label="下载尝试记录">
       <article v-for="row in items" :key="row.id">
         <b>{{ row.file }} · 第 {{ row.attempt }} 次</b>
-        <div>{{ statusLabel(row.status) }}<template v-if="row.cause"> · {{ causeLabel(row.cause) }}</template></div>
+        <div>{{ statusLabel(row.status,row.cause) }}<template v-if="row.cause"> · {{ causeLabel(row.cause) }}</template></div>
         <small v-if="row.origin === 'operator_pause_observation'">旧版在途请求的暂停观测；此前连接过程未记录。</small>
         <small>{{ row.started_at }}<template v-if="row.execution_seconds != null"> · 执行 {{ Number(row.execution_seconds).toFixed(1) }} 秒</template></small>
         <small v-if="row.bytes_after != null">续传：{{ row.bytes_before || 0 }} → {{ row.bytes_after }} 字节</small>
         <small v-if="row.http_status || row.curl_code">HTTP {{ row.http_status || '未收到响应' }} · curl {{ row.curl_code ?? '未执行' }}</small>
         <small v-if="row.next_retry_at">安排重试：{{ new Date(row.next_retry_at * 1000).toISOString() }}</small>
-        <div v-for="request in row.requests.filter(r => r.cause || row.requests.length > 1)" :key="request.request" class="connection-attempt">
-          连接 {{ request.request }}：{{ request.cause ? causeLabel(request.cause) : statusLabel(request.status) }}
+        <div v-for="request in row.requests.filter(r => r.transfer_node || r.cause || row.requests.length > 1)" :key="request.request" class="connection-attempt">
+          {{ request.transfer_node ? nodeLabel(request.transfer_node) : '连接 ' + request.request }} · {{ request.cause ? causeLabel(request.cause) : statusLabel(request.status) }}
           <small v-if="request.execution_seconds != null">{{ Number(request.execution_seconds).toFixed(1) }} 秒 · curl {{ request.curl_code ?? '未执行' }}</small>
         </div>
       </article>
@@ -30,9 +30,10 @@ import {getWrfForcingAttempts} from '../../api.js';
 const props = defineProps({source: {type: String, required: true}, cycle: {type: String, required: true}});
 const items=ref([]), nextCursor=ref(null), loading=ref(false), error=ref(''), supported=ref(true), damaged=ref(0);
 let generation=0, controller=null, loaded=false;
-const causes={low_speed_timeout:'低速超时',total_timeout:'达到单次总时限',connection_failure:'连接失败',rate_limited:'上游限流（HTTP 429）',timeout_unknown:'超时原因待确认',upstream_temporary:'上游临时故障',upstream_http_error:'上游 HTTP 错误',transfer_failure:'传输失败',command_failure:'下载命令未能执行',data_integrity:'资料完整性校验失败',operator_pause:'主动暂停交接（分片已保留）'};
+const causes={low_speed_timeout:'低速超时',total_timeout:'达到单次总时限',connection_failure:'连接失败',rate_limited:'上游限流（HTTP 429）',timeout_unknown:'超时原因待确认',upstream_temporary:'上游临时故障',upstream_http_error:'上游 HTTP 错误',transfer_failure:'传输失败',command_failure:'下载命令未能执行',data_integrity:'资料完整性校验失败',obsolete_prefetch_stopped:'旧周期预取已安全结束（文件和分片保留）',operator_pause:'主动暂停交接（分片已保留）'};
 function causeLabel(value){return causes[value] || '原因待核验';}
-function statusLabel(value){return ({succeeded:'成功',failed:'失败',unfinished:'尚未记录结束',running:'下载中',interrupted:'中断或结果待确认'})[value] || '尚未记录结束';}
+function nodeLabel(value){return ({nomads:'NOAA NOMADS',noaa_aws:'NOAA AWS',ecmwf_portal:'ECMWF 官网',ecmwf_cloudfront:'ECMWF CloudFront',custom:'自定义节点'})[value] || '下载节点';}
+function statusLabel(value,cause){if(value==='interrupted'&&cause==='obsolete_prefetch_stopped')return '已安全结束';return ({succeeded:'成功',failed:'失败',unfinished:'尚未记录结束',running:'下载中',interrupted:'中断或结果待确认'})[value] || '尚未记录结束';}
 function onToggle(event){if(event.target.open && !loaded)load(false);}
 async function load(older){
   const version=++generation;controller?.abort();controller=new AbortController();loading.value=true;error.value='';
