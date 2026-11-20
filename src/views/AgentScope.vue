@@ -117,6 +117,11 @@ function handleAgentScopeMessage(event) {
     openModelRun(payload.runId);
     return;
   }
+  if (payload.type === "weather-agent-open-scene3d") {
+    const runId = String(payload.runId || "");
+    if (/^s3d_[0-9a-f]{32}$/.test(runId)) router.push({ path: "/scene3d", query: { run_id: runId } });
+    return;
+  }
   if (payload.type === "weather-agent-open-data-visualization") {
     router.push({
       path: "/",

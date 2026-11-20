@@ -17,6 +17,7 @@ const routes = [
   { path: "/login", component: Login },
   { path: "/era5-history", component: Era5History },
   { path: "/wrf", component: WrfStudio },
+  { path: "/scene3d", component: () => import('./views/Scene3D.vue') },
   { path: "/wrf/new", component: WrfStudio },
   { path: "/wrf/high-resolution", component: () => import('./views/WrfRetired.vue') },
   { path: "/downscale", component: () => import('./views/WrfRetired.vue') },
@@ -28,7 +29,7 @@ router.beforeEach(to => {
   if (to.path === "/login" || to.path === "/era5-history") return true;
   if (!localStorage.getItem("token")) return "/login";
   const user = JSON.parse(localStorage.getItem("user") || "null");
-  if ((["/agent", "/model", "/wrf", "/downscale"].includes(to.path) || to.path.startsWith("/agent/") || to.path.startsWith("/wrf/")) && (user?.role ?? 0) < 2) return "/";
+  if ((["/agent", "/model", "/wrf", "/downscale", "/scene3d"].includes(to.path) || to.path.startsWith("/agent/") || to.path.startsWith("/wrf/")) && (user?.role ?? 0) < 2) return "/";
   return true;
 });
 
