@@ -1,5 +1,5 @@
 // Original Nanjing WebGPU display kernels; field preparation and business calculations run on the server.
-import {requestWindDevice} from './windDevice';
+import {requestWindDevice} from './windDevice.js';
   const MAX_PARTICLE_COUNT = 24000;
   const ACTIVE_LEVELS = 32;
   const WIND_MAX = 12;
@@ -40,6 +40,7 @@ import {requestWindDevice} from './windDevice';
       this.deviceGeneration = 0;
       this.recoveryAttempts = 0;
       this.requestedFrame = 0;
+      this.frameRequestGeneration = 0;
     }
 
     async initialise() {
@@ -237,13 +238,16 @@ import {requestWindDevice} from './windDevice';
 
     async setFrame(index) {
       this.requestedFrame=index;
-      if (!this.manifest.frames[index] || index === this.frameIndex) return;
+      // Every selection invalidates pending writes, including returning to
+      // the frame already displayed while a different frame is loading.
+      const requestGeneration=++this.frameRequestGeneration;
+      if (this.disposed || !this.manifest.frames[index] || index === this.frameIndex) return;
       const device=this.device;
       this.loadingFrame = index;
       const response = await this.fetch(`/api/scene3d/datasets/nanjing/render/${index}`);
       if (!response.ok) throw new Error('服务器风场纹理读取失败');
       const packed = new Float32Array(await response.arrayBuffer());
-      if (this.loadingFrame !== index || this.disposed || this.device!==device) return;
+      if (requestGeneration !== this.frameRequestGeneration || this.disposed || this.device!==device) return;
       const {x,y} = this.manifest.dimensions;
       this.device.queue.writeTexture({texture:this.windTexture}, packed,
         {bytesPerRow:x*16,rowsPerImage:y}, [x,y,ACTIVE_LEVELS]);
