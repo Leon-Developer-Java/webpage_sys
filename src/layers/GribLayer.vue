@@ -46,6 +46,7 @@
 import { computed, inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import LayerCard from "../components/LayerCard.vue";
 import { authedFetch, resolveServiceUrl, withToken } from "../api";
+import { formatForecastTime } from "../utils/seasonalSelection";
 
 const props = defineProps({
   src: String,
@@ -65,6 +66,7 @@ const props = defineProps({
     type: Number,
     default: 1,
   },
+  autoZoom: { type:Boolean, default:true },
   variantIndex: {
     type: Number,
     default: 0,
@@ -103,6 +105,7 @@ const sourceName = computed(() => {
     props.parsed?.weather_info?.source,
   ];
   const text = candidates.map(value => String(value || "").toUpperCase()).join(" ");
+  if (text.includes("SEASONAL") || text.includes("SEAS5") || text.includes("季节")) return "SEASONAL_PRECIP";
   return text.includes("ECMWF") || text.includes("IFS") ? "ECMWF" : "GFS";
 });
 
@@ -348,10 +351,10 @@ function extractGribFileName(value) {
   name = name.replace(/\.meta\.json$/i, "");
 
   // xxx.grib2_t2m_step000.webp -> xxx.grib2
-  const match = name.match(/^(.+\.(?:grib2|grib|grb2|grb))/i);
+  const match = name.match(/^(.+\.(?:grib2|grib|grb2|grb|netcdf|nc4|nc))/i);
   if (match) return match[1];
 
-  if (/\.(?:grib2|grib|grb2|grb)$/i.test(name)) {
+  if (/\.(?:grib2|grib|grb2|grb|netcdf|nc4|nc)$/i.test(name)) {
     return name;
   }
 
@@ -486,6 +489,8 @@ const ticks = computed(() => {
 function categoryByVarType(type) {
   if (type === "temperature") return "温度产品";
   if (type === "precipitation") return "降水产品";
+  if (type === "anomaly") return "降水距平";
+  if (type === "probability") return "降水概率";
   if (type === "pressure") return "气压产品";
   if (type === "wind") return "风场产品";
   return "数值预报产品";
@@ -494,6 +499,12 @@ function categoryByVarType(type) {
 function gradientByVarType(type) {
   if (type === "precipitation") {
     return "linear-gradient(to right, #f8fafc, #93c5fd, #22c55e, #facc15, #ef4444)";
+  }
+  if (type === "anomaly") {
+    return "linear-gradient(to right, #2563eb, #93c5fd, #f8fafc, #facc15, #dc2626)";
+  }
+  if (type === "probability") {
+    return "linear-gradient(to right, #eff6ff, #93c5fd, #2563eb, #7c3aed, #be123c)";
   }
   if (type === "pressure") {
     return "linear-gradient(to right, #7c3aed, #2563eb, #22c55e, #facc15, #ef4444)";
@@ -572,6 +583,7 @@ function syncSelection() {
       variantApplied = true;
     } else {
       selectedVariableKey.value =
+        filteredVariableOptions.value.find(item => item.key === display.value?.default_variable)?.key ||
         filteredVariableOptions.value[0]?.key ||
         variableOptions.value[0]?.key ||
         "";
@@ -733,6 +745,7 @@ function normalizeExtentForFly(extent) {
 }
 
 function zoomToData() {
+  if (!props.autoZoom) return;
   if (!currentImageUrl.value) {
     window.clearTimeout(zoomTimer);
     zoomedKey = "";
@@ -766,7 +779,9 @@ function emitCurrentVariable() {
       currentLayer.value.element ||
       currentLayer.value.label ||
       legendTitle.value,
-    time: currentTimeLabel.value,
+    time: sourceName.value === 'SEASONAL_PRECIP'
+      ? `${formatForecastTime(currentFrame.value?.valid_time, 'Asia/Shanghai')}（北京时间）`
+      : currentTimeLabel.value,
     level: currentLayer.value.level || "",
     range: currentLayer.value.range || "",
     grid:

@@ -26,6 +26,7 @@ const props = defineProps({
   times: { type: Array, default: () => [] },
   active: { type: Number, default: 0 },
   tickMode: { type: String, default: "sampled" },
+  maxTicks: { type: Number, default: 12 },
   compactLabels: Boolean,
   disabled: Boolean,
   disabledLabel: { type: String, default: "暂无可播放时间序列" },
@@ -36,7 +37,7 @@ const trackEl = ref(null);
 
 const pct = computed(() => Math.min(props.active / Math.max(props.times.length - 1, 1), 1));
 const fillPct = computed(() => `${pct.value * 100}%`);
-const visibleTicks = computed(() => buildVisibleTicks(props.times, { mode: props.tickMode, maxTicks: 12 }));
+const visibleTicks = computed(() => buildVisibleTicks(props.times, { mode: props.tickMode, maxTicks: props.maxTicks }));
 
 function seek(e) {
   if (props.disabled || props.times.length < 2) return;

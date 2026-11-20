@@ -276,7 +276,7 @@ webpage_sys/
 └─ vite.config.js
 ```
 
-图层资源必须提供与图像一致的 `extent=[west,south,east,north]`。时间、要素、分辨率和 WebP URL 应来自后端 meta/目录响应，不要在组件中写演示数据作为真实回退。
+图层资源必须提供与图像一致的 `extent=[west,south,east,north]`。时间、要素、分辨率和 WebP URL 应来自后端 meta/目录响应，不要在组件中写演示数据作为真实回退。季节性降水产品使用 `SEASONAL_PRECIP` 数据类型，复用 GRIB 图层并支持累计降水、距平和概率变量。
 
 ## 测试与构建
 

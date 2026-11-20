@@ -20,7 +20,7 @@
       </button>
     </aside>
 
-    <section v-if="dockOpen" class="dock glass">
+    <section v-if="dockOpen" class="dock glass" :class="{'seasonal-dock': tool === 'select' && catalogSourceKey === 'seasonal'}">
       <div class="dock-head"><h3>{{ dockTitle }}</h3><el-icon @click="dockOpen = false"><Close /></el-icon></div>
 
       <template v-if="tool === 'select'">
@@ -36,6 +36,8 @@
             >{{ source.btn }}</button>
           </div>
 
+          <span v-if="catalogSourceKey === 'seasonal'" class="filter-label">预报有效时间筛选（北京时间）</span>
+          <p v-if="catalogSourceKey === 'seasonal'" class="seasonal-catalog-hint">先选择产品、起报批次和有效时次，点击“确认展示”后加载地图。月度产品通常每月 1 日一个时次。</p>
           <div class="time-filter-row">
             <label class="filter-field">
               <span class="filter-label">开始时间</span>
@@ -69,6 +71,117 @@
             </label>
           </div>
 
+          <div v-if="catalogSourceKey === 'seasonal'" class="filter-field">
+            <span class="filter-label">已下载产品</span>
+            <el-select
+              v-model="selectedSeasonalProduct"
+              aria-label="已下载产品"
+              class="resource-time"
+              size="small"
+              clearable
+              :disabled="!seasonalProductOptions.length"
+              :placeholder="seasonalProductOptions.length ? '全部已下载产品' : '暂无已下载产品'"
+              @change="onDownloadedSeasonalProductChange"
+            >
+              <el-option
+                v-for="item in seasonalProductOptions"
+                :key="item.value"
+                :label="item.label"
+                :value="item.value"
+              />
+            </el-select>
+          </div>
+
+          <template v-if="catalogSourceKey === 'seasonal'">
+            <el-button v-if="canUseAgents" size="small" @click="openSeasonalAgent()">了解产品区别</el-button>
+            <label class="filter-field seasonal-downloaded-issue">
+              <span class="filter-label">起报批次（UTC）</span>
+              <el-select v-model="selectedDownloadedSeasonalIssue" aria-label="已下载起报批次" class="resource-time" size="small" clearable filterable
+                placeholder="全部起报批次" :disabled="!downloadedSeasonalIssueOptions.length" @change="onSeasonalProductChange">
+                <el-option v-for="item in downloadedSeasonalIssueOptions" :key="item.value" :value="item.value" :label="item.label" />
+              </el-select>
+            </label>
+            <label class="filter-field seasonal-downloaded-valid-time">
+              <span class="filter-label">预报有效时次（北京时间）</span>
+              <el-select :model-value="selectedDownloadedSeasonalValidTime" aria-label="已下载预报有效时次" class="resource-time" size="small" filterable
+                placeholder="暂无可选时次" :disabled="resourcesLoading || !downloadedSeasonalTimeOptions.length" @change="onDownloadedSeasonalTimeChange">
+                <el-option v-for="item in downloadedSeasonalTimeOptions" :key="item.value" :value="item.value" :label="item.label" />
+              </el-select>
+            </label>
+            <p class="seasonal-catalog-hint">起报批次是预报发布的时间；有效时次是地图所展示的预报时间。这里只列出已下载、符合时间筛选的数据。</p>
+            <div class="seasonal-confirmation" aria-label="季节降水展示确认">
+              <span v-if="seasonalDraftResource">{{ seasonalSelectionApplied ? '当前展示' : '待展示' }}：{{ resourceProductLabel(seasonalDraftResource) || seasonalDraftResource.file_name }}</span>
+              <span v-if="seasonalDraftResource">起报（UTC）：{{ seasonalIssueLabel(seasonalDraftResource) }}</span>
+              <span v-if="selectedDownloadedSeasonalValidTime">有效时次（北京时间）：{{ formatForecastTime(new Date(Number(selectedDownloadedSeasonalValidTime)).toISOString(), 'Asia/Shanghai') }}</span>
+              <el-button type="primary" size="small" :loading="resourcesLoading" :disabled="!canConfirmSeasonal || seasonalSelectionApplied" @click="confirmSeasonalSelection">{{ seasonalSelectionApplied ? '已确认展示' : '确认展示' }}</el-button>
+              <small>{{ seasonalSelectionApplied ? '可使用地图下方时间轴切换或播放；修改左侧条件后需再次确认。' : '确认后才会加载降水图片。' }}</small>
+            </div>
+          </template>
+
+          <p v-if="catalogSourceKey === 'seasonal' && !seasonalProductOptions.length" class="seasonal-catalog-hint">
+            先下载在线产品，解析完成后可在此筛选并查看地图。
+          </p>
+          <div v-if="catalogSourceKey === 'seasonal'" class="seasonal-download-row">
+            <div class="filter-field seasonal-online-product">
+              <span class="filter-label">在线预报产品</span>
+              <select
+                v-model="selectedSeasonalDownloadProduct"
+                aria-label="在线预报产品"
+                class="resource-time"
+                :disabled="seasonalDownloadLoading || !seasonalProductTypes.length"
+                @change="onSeasonalDownloadProductChange"
+              >
+                <option value="" disabled>选择预报产品</option>
+                <optgroup v-for="group in seasonalProductGroups" :key="group.label" :label="group.label">
+                  <option v-for="item in group.items" :key="item.product_key" :value="item.product_key" :disabled="item.available === false">{{ item.product_name + (item.message ? `（${item.message}）` : '') }}</option>
+                </optgroup>
+              </select>
+            </div>
+            <div v-if="seasonalResultTypeOptions.length" class="filter-field seasonal-online-result">
+              <span class="filter-label">结果类型</span>
+              <select v-model="selectedSeasonalResultType" aria-label="结果类型" class="resource-time" :disabled="seasonalDownloadLoading || seasonalCatalogLoading" @change="onSeasonalResultTypeChange">
+                <option v-for="item in seasonalResultTypeOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
+              </select>
+            </div>
+            <div class="filter-field seasonal-online-time">
+              <span class="filter-label">起报时间（UTC）</span>
+              <select
+                v-model="selectedSeasonalIssueTime"
+                aria-label="起报时间"
+                class="resource-time"
+                :disabled="seasonalDownloadLoading || seasonalCatalogLoading || !seasonalIssueTimeOptions.length"
+                @change="onSeasonalIssueTimeChange"
+              >
+                <option value="" disabled>{{ seasonalCatalogLoading ? '正在读取可用时间…' : '选择起报时间' }}</option>
+                <option v-for="item in seasonalIssueTimeOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
+              </select>
+            </div>
+            <div v-if="seasonalRunFiles.length > 1" class="filter-field seasonal-online-member">
+              <span class="filter-label">{{ seasonalRunFiles.every(item => item.member) ? '集合成员' : '产品版本' }}</span>
+              <select v-model="selectedSeasonalDownloadFile" aria-label="产品版本或集合成员" class="resource-time" :disabled="seasonalDownloadLoading || seasonalCatalogLoading">
+                <option v-for="item in seasonalRunFiles" :key="item.file_name" :value="item.file_name">{{ item.member ? `成员 ${item.member}` : item.variant_label || item.file_name }}</option>
+              </select>
+            </div>
+            <p v-if="selectedSeasonalOnlineFile" class="seasonal-catalog-hint seasonal-online-summary">
+              预报覆盖：{{ formatSeasonalUtc(selectedSeasonalOnlineFile.valid_start) }} 至 {{ formatSeasonalUtc(selectedSeasonalOnlineFile.valid_end) }}（UTC）<br>
+              文件大小：{{ selectedSeasonalOnlineFile.size ? formatFileSize(selectedSeasonalOnlineFile.size) : '下载时确定' }}
+            </p>
+            <el-button
+              size="small"
+              type="primary"
+              :loading="seasonalDownloadLoading"
+              :disabled="seasonalCatalogLoading || !selectedSeasonalOnlineFile"
+              @click="downloadSelectedSeasonalProduct"
+            >下载所选</el-button>
+            <el-button size="small" :loading="seasonalCatalogLoading" :disabled="seasonalDownloadLoading" @click="loadSeasonalProducts({refresh: true})">重试目录</el-button>
+          </div>
+          <p v-if="catalogSourceKey === 'seasonal' && seasonalDownloadMessage" class="resource-state seasonal-download-message">
+            {{ seasonalDownloadMessage }}
+          </p>
+          <p v-if="catalogSourceKey === 'seasonal' && seasonalProductTypes.some(item => item.configuration_required)" class="seasonal-catalog-hint">
+            ECMWF、英国和法国预报待管理员配置服务器 CDS 接口，用户无需填写账号或密钥。配置完成后点击“重试目录”。
+          </p>
+
         </div>
 
         <div class="resource-head">
@@ -76,6 +189,14 @@
           <button type="button" title="刷新数据" :disabled="resourcesLoading" @click="refreshDataResources">
             <el-icon :class="{ rotating: resourcesLoading }"><RefreshRight /></el-icon>
           </button>
+        </div>
+        <div v-if="catalogSourceKey === 'seasonal'" class="seasonal-filter-summary" role="status" aria-live="polite">
+          <b>{{ resourcesLoading ? '正在加载筛选结果…' : `筛选结果：${filteredDataResources.length} 份数据` }}</b>
+          <span>产品：{{ selectedSeasonalProduct || '全部已下载产品' }}</span>
+          <span>起报批次（UTC）：{{ selectedDownloadedSeasonalIssue ? (downloadedSeasonalIssueOptions.find(item => item.value === selectedDownloadedSeasonalIssue)?.label || '未提供') : '全部批次' }}</span>
+          <span v-if="resourceStartTime && resourceEndTime">有效时间：{{ resourceStartTime }} 至 {{ resourceEndTime }}（北京时间）</span>
+          <span v-else>{{ resourceStartTime ? '请选择结束时间后应用时间筛选' : '有效时间：全部时次' }}</span>
+          <small v-if="!resourcesLoading && filteredDataResources.length">{{ seasonalSelectionApplied ? '蓝框文件已确认展示。' : '蓝框文件为待展示选择；点击其他文件可重新选择，再点击“确认展示”。' }}</small>
         </div>
         <div class="resource-results">
           <p v-if="resourcesError" class="resource-state error">{{ resourcesError }}</p>
@@ -87,13 +208,19 @@
               v-for="item in filteredDataResources"
               :key="item.file_uuid"
               :class="{ sel: catalogSelectedResourceUuid === item.file_uuid }"
-              @click="selectDataResource(item)"
+              @click="catalogSourceKey === 'seasonal' ? stageSeasonalResource(item) : selectDataResource(item)"
             >
               <div class="resource-title">
                 <b :title="item.file_name">{{ item.file_name }}</b>
                 <span class="continuity">{{ resourceStatus(item) }}</span>
               </div>
-              <span>{{ resourceTimeRange(item) }}</span>
+              <span v-if="catalogSourceKey === 'seasonal' && resourceProductLabel(item)">{{ resourceProductLabel(item) }}</span>
+              <template v-if="catalogSourceKey === 'seasonal'">
+                <span>起报批次（UTC）：{{ seasonalIssueLabel(item) }}</span>
+                <span>匹配有效时次（北京时间）：{{ seasonalMatchedRange(item) }}</span>
+                <span>{{ seasonalResultLabel(item) }} · {{ seasonalMatches(item).length }} 个匹配时次 / 共 {{ seasonalResourceTimes(item).length }} 个</span>
+              </template>
+              <span v-else>{{ resourceTimeRange(item) }}</span>
               <span>{{ formatFileSize(item.file_size) }} · {{ item.elements.length }} 个要素</span>
             </li>
           </ul>
@@ -133,6 +260,17 @@
           @click="onPaneClick(i, $event)"
         >
           <span class="cell-tag">{{ paneLabels[i] || p.btn }}</span>
+          <div v-if="p.key === 'seasonal' && !seasonalPaneReady(i)" class="seasonal-display-pending" role="status">
+            <b>{{ resourcesLoading ? '正在准备可选数据…' : '请先选择季节降水产品和时间' }}</b>
+            <span>在左侧选择完成后，点击“确认展示”加载降水图。</span>
+          </div>
+          <div v-if="p.key === 'seasonal' && seasonalPaneSummary(i)" class="seasonal-view-summary">
+            <b>{{ seasonalPaneSummary(i).product }}</b>
+            <span>起报批次（UTC）：{{ seasonalPaneSummary(i).issue }}</span>
+            <span>当前有效时间（北京时间）：{{ seasonalPaneSummary(i).current }}</span>
+            <span>可播放：{{ seasonalPaneSummary(i).range }}（北京时间） · {{ seasonalPaneSummary(i).count }} 个时次</span>
+            <button v-if="canUseAgents" type="button" class="seasonal-agent-button" :disabled="resourcesLoading" @click.stop="openSeasonalAgent(i)">让季节降水助手解读当前图</button>
+          </div>
           <span v-if="layout !== '1' && selectedPane === i" class="cell-sel-tag"><i></i>SELECTED</span>
           <ProjMap
             :grid="showGrid"
@@ -145,6 +283,7 @@
             @view-change="v => onViewChange(i, v)"
           >
             <component
+              v-if="p.key !== 'seasonal' || seasonalPaneReady(i)"
               :key="`${layout}-${i}-${p.key}-${p.variantIndex}-${resourceRenderKey(p.key, i)}`"
               :is="p.comp"
               :parsed="layerParsed(p.key, i)"
@@ -155,12 +294,16 @@
               @display-error="message => onLayerDisplayError(i, p.key, message)"
               @variable-change="payload => onLayerVariableChange(i, p.key, payload)"
             />
+            <div v-if="p.key === 'seasonal' && seasonalPaneReady(i)" class="seasonal-opacity-panel">
+              <SeasonalOpacityControl v-model="seasonalOpacity"/>
+            </div>
           </ProjMap>
         </div>
       </div>
 
       <div class="timebar glass">
         <div class="tb-head">
+          <span v-if="active === 'seasonal'" class="seasonal-axis-label">有效时间 · 北京时间</span>
           <button class="tc-btn" :disabled="!timelineInteractive" @click="setTimeIndex(0)"><el-icon><DArrowLeft /></el-icon></button>
           <button class="tc-btn" :disabled="!timelineInteractive" @click="setTimeIndex(Math.max(0, tIndex - 1))"><el-icon><ArrowLeft /></el-icon></button>
           <button class="tc-play" :disabled="!timelineInteractive || playingPreparing" @click="togglePlaying"><el-icon><Loading v-if="playingPreparing" class="is-loading" /><VideoPause v-else-if="playing" /><VideoPlay v-else /></el-icon></button>
@@ -176,6 +319,7 @@
           :times="axisTimes"
           :active="animPos"
           :tick-mode="usesCompactTimeAxis ? 'all' : 'sampled'"
+          :max-ticks="active === 'seasonal' ? 5 : 12"
           :compact-labels="usesCompactTimeAxis"
           :disabled="!timelineInteractive"
           :disabled-label="timelineDisabledLabel"
@@ -196,12 +340,18 @@
 </template>
 
 <script setup>
-import { computed, inject, onBeforeUnmount, onMounted, provide, ref, watch } from "vue";
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, provide, ref, watch } from "vue";
+import {useRoute, useRouter} from 'vue-router';
+import {seasonalAgentContext, seasonalAgentQuery} from '../utils/seasonalAgentContext';
 import { ElNotification } from "element-plus";
 import { ArrowLeft, ArrowRight, Check, Close, Collection, Connection, DArrowLeft, DArrowRight, DataAnalysis, Document, FolderOpened, Grid, Loading, MapLocation, Monitor, Moon, Operation, Position, RefreshRight, Sunny, VideoPlay, VideoPause } from "@element-plus/icons-vue";
 import {
+  downloadSeasonalProduct,
   getDisplayResource,
   getDisplayResources,
+  getUser,
+  getSeasonalProducts,
+  getSeasonalProductTypes,
   getHimawariAutoStatus,
   parseFile,
   startSatelliteParseTask,
@@ -209,9 +359,12 @@ import {
   waitForSatelliteParseTask,
 } from "../api";
 import { preloadFrames } from "../utils/frameImageCache";
+import { filterSeasonalResource, forecastTimestamp, formatForecastTime, matchingSeasonalTimes, seasonalIssueTime, seasonalResourceTimes } from "../utils/seasonalSelection";
 import ProjMap from "../components/ProjMap.vue";
 import MetaPanel from "../components/MetaPanel.vue";
 import TimeAxis from "../components/TimeAxis.vue";
+import SeasonalOpacityControl from '../components/SeasonalOpacityControl.vue';
+import {useSeasonalOpacity} from '../utils/seasonalOpacity';
 import Era5Layer from "../layers/Era5Layer.vue";
 import GribLayer from "../layers/GribLayer.vue";
 import CmaLayer from "../layers/CmaLayer.vue";
@@ -221,10 +374,31 @@ import FY3Layer from "../layers/FY3Layer.vue";
 import WrfLayer from "../layers/WrfLayer.vue";
 
 const dark = inject("theme");
+const router = useRouter();
+const route = useRoute();
+const canUseAgents = computed(() => (getUser()?.role || 0) >= 2);
+
+function openSeasonalAgent(pane) {
+  if (typeof pane !== 'number') {
+    router.push({path:'/agent', query:seasonalAgentQuery({topic:'products'})});
+    return;
+  }
+  const resource = layout.value !== '1' && paneParsed.value[pane]?.key === 'seasonal' ? paneParsed.value[pane].resource : selectedResource.value;
+  const layer = preferredVariableLayer(paneDisplays.value[pane]) || preferredVariableLayer(resource?.meta);
+  const frames = layer?.frames || [];
+  const frame = frames[Math.min(Math.max(0,Math.floor(layerTimeIndex.value)),frames.length-1)];
+  const context = seasonalAgentContext({fileUuid:resource?.file_uuid, variableKey:layer?.key, validTime:frame?.valid_time});
+  if (!context) {
+    ElNotification({title:'季节降水助手', message:'请先选择已下载的文件、变量和有效时次。', type:'warning'});
+    return;
+  }
+  router.push({path:'/agent', query:seasonalAgentQuery(context)});
+}
 
 const sources = [
   {key: "gfs", btn: "GFS", comp: GribLayer, dataType: "GFS"},
   {key: "ecmwf", btn: "ECMWF", comp: GribLayer, dataType: "ECMWF"},
+  {key: "seasonal", btn: "季节降水", comp: GribLayer, dataType: "SEASONAL_PRECIP"},
   {key: "cma", btn: "CMA", comp: CmaLayer},
   {key: "radar", btn: "雷达", comp: RadarLayer},
   {key: "himawari", btn: "Himawari", comp: HimawariLayer},
@@ -236,7 +410,7 @@ const sources = [
 const projections = ["等经纬", "墨卡托", "正弦", "罗宾逊", "兰博托", "卫星正视", "北极", "南极"];
 const basemaps = ["矢量底图", "影像底图", "地形晕渲", "全球境界"];
 function isGribLayerKey(key) {
-  return key === "gfs" || key === "ecmwf";
+  return key === "gfs" || key === "ecmwf" || key === "seasonal";
 }
 
 const tool = ref("select");
@@ -247,6 +421,7 @@ const propsOpen = ref(true);
 const active = ref("radar");
 const projection = ref("等经纬");
 const basemap = ref("矢量底图");
+const seasonalOpacity = useSeasonalOpacity();
 const tIndex = ref(0);
 const parsed = ref(null);
 const parsedLayerKey = ref(null);
@@ -258,6 +433,20 @@ const resourcesLoading = ref(false);
 const resourcesError = ref("");
 const resourceStartTime = ref("");
 const resourceEndTime = ref("");
+const selectedSeasonalProduct = ref("");
+const selectedDownloadedSeasonalIssue = ref("");
+const seasonalDraftResource = ref(null);
+const seasonalDraftTime = ref('');
+const seasonalProducts = ref([]);
+const seasonalProductTypes = ref([]);
+const seasonalCatalogLoading = ref(false);
+const selectedSeasonalDownloadProduct = ref("");
+const selectedSeasonalIssueTime = ref("");
+const selectedSeasonalResultType = ref("");
+const selectedSeasonalDownloadFile = ref("");
+const seasonalDownloadLoading = ref(false);
+const seasonalDownloadMessage = ref("");
+let seasonalCatalogRequestId = 0;
 const layerDisplays = ref({});
 const layerRefreshKeys = ref({himawari: 0, fy3: 0});
 const himawariStatus = ref(null);
@@ -311,6 +500,7 @@ const resourceListLabel = computed(() =>
     : `${activeSourceLabel.value} 最近数据`,
 );
 const catalogSelectedResourceUuid = computed(() => {
+  if (catalogSourceKey.value === 'seasonal') return seasonalDraftResource.value?.file_uuid || '';
   if (layout.value !== "1" && selectedPane.value >= 0) {
     return paneParsed.value[selectedPane.value]?.fileUuid || "";
   }
@@ -338,32 +528,307 @@ function overlapsSelectedTime(item) {
   return itemStart <= selectedEnd && itemEnd >= selectedStart;
 }
 
-const filteredDataResources = computed(() => {
-  const matches = dataResources.value.filter(overlapsSelectedTime);
+const resourcesMatchingProductAndTime = computed(() => {
+  const matches = dataResources.value.filter(item => {
+    if (catalogSourceKey.value === "seasonal" && resourceStartTime.value && resourceEndTime.value && !seasonalMatches(item).length) return false;
+    if (catalogSourceKey.value !== "seasonal" && !overlapsSelectedTime(item)) return false;
+    if (catalogSourceKey.value !== "seasonal" || !selectedSeasonalProduct.value) return true;
+    const attributes = item?.attributes || {};
+    const values = [
+      ...(attributes.product_names || []),
+      ...(attributes.product_name || []),
+    ].map(value => String(value));
+    return values.includes(selectedSeasonalProduct.value);
+  });
   matches.sort((left, right) => timestamp(right.time_end || right.time_start) - timestamp(left.time_end || left.time_start));
   return matches;
 });
 
+const filteredDataResources = computed(() => resourcesMatchingProductAndTime.value.filter(item =>
+  catalogSourceKey.value !== 'seasonal' || !selectedDownloadedSeasonalIssue.value ||
+  (seasonalIssueTime(item) || 'unknown') === selectedDownloadedSeasonalIssue.value,
+));
+
+const downloadedSeasonalIssueOptions = computed(() => {
+  const counts = new Map();
+  for (const item of resourcesMatchingProductAndTime.value) {
+    const issue = seasonalIssueTime(item) || 'unknown';
+    counts.set(issue, (counts.get(issue) || 0) + 1);
+  }
+  return [...counts].sort(([left], [right]) => {
+    if (left === 'unknown') return 1;
+    if (right === 'unknown') return -1;
+    return forecastTimestamp(right) - forecastTimestamp(left);
+  }).map(([value, count]) => ({value, label: `${value === 'unknown' ? '起报时间未提供' : formatForecastTime(value)} · ${count} 份数据`}));
+});
+
+const downloadedSeasonalTimeOptions = computed(() => {
+  if (catalogSourceKey.value !== 'seasonal') return [];
+  const pane = layout.value !== '1' && selectedPane.value >= 0 ? selectedPane.value : 0;
+  const resource = seasonalDraftResource.value;
+  if (!resource) return [];
+  const layer = (seasonalPaneReady(pane) ? preferredVariableLayer(paneDisplays.value[pane]) : null) || preferredVariableLayer(resource.meta);
+  const times = layer?.frames?.map(frame => frame.valid_time) || layer?.times || resource.times || [];
+  return times.map((time, index) => ({value: String(forecastTimestamp(time)), label: formatForecastTime(time, 'Asia/Shanghai'), index}));
+});
+
+const selectedDownloadedSeasonalValidTime = computed(() =>
+  seasonalSelectionApplied.value ? downloadedSeasonalTimeOptions.value[Math.floor(layerTimeIndex.value)]?.value || '' : seasonalDraftTime.value,
+);
+
+const seasonalSelectionApplied = computed(() => {
+  const pane = layout.value !== '1' && selectedPane.value >= 0 ? selectedPane.value : 0;
+  const resource = seasonalPaneResource(pane);
+  return Boolean(resource && resource.file_uuid === seasonalDraftResource.value?.file_uuid);
+});
+const canConfirmSeasonal = computed(() => Boolean(!resourcesLoading.value && seasonalDraftResource.value && seasonalDraftTime.value &&
+  Number.isFinite(Number(seasonalDraftTime.value)) && (!resourceStartTime.value || resourceEndTime.value) && downloadedSeasonalTimeOptions.value.some(item => item.value === seasonalDraftTime.value)));
+
+function onDownloadedSeasonalTimeChange(value) {
+  const item = downloadedSeasonalTimeOptions.value.find(option => option.value === value);
+  if (!item || !Number.isFinite(Number(value)) || resourcesLoading.value) return;
+  if (value === selectedDownloadedSeasonalValidTime.value) return;
+  const pane = layout.value !== '1' && selectedPane.value >= 0 ? selectedPane.value : 0;
+  const layer = preferredVariableLayer(paneDisplays.value[pane]);
+  if(layer?.key && seasonalDraftResource.value?.meta?.variable_layers?.[layer.key]) {
+    seasonalDraftResource.value = {...seasonalDraftResource.value,meta:{...seasonalDraftResource.value.meta,default_variable:layer.key}};
+  }
+  clearSeasonalPresentation();
+  seasonalDraftTime.value = value;
+}
+
+function seasonalPaneResource(index) {
+  if (layout.value !== '1' && paneParsed.value[index]?.key === 'seasonal') return paneParsed.value[index].resource || null;
+  return parsedLayerKey.value === 'seasonal' ? selectedResource.value : null;
+}
+function seasonalPaneReady(index) {return Boolean(seasonalPaneResource(index));}
+
+function clearSeasonalPresentation() {
+  resetTimebar();
+  const pane=layout.value !== '1' && selectedPane.value>=0 ? selectedPane.value : -1;
+  if(pane>=0) {
+    paneParsed.value={...paneParsed.value,[pane]:{key:'seasonal',parsed:{variable_layers:{},frames:[]},fileUuid:'pending-seasonal-selection'}};
+    paneDisplays.value={...paneDisplays.value,[pane]:null};
+  } else {
+    clearSelectedResource();
+    layerDisplays.value={...layerDisplays.value,seasonal:null};
+    paneDisplays.value={};
+  }
+  paneLabels.value={...paneLabels.value,[pane>=0?pane:0]:''};
+}
+
+async function stageSeasonalResource(item,{variableKey=null,validTime=null}={}) {
+  if(catalogSourceKey.value!=='seasonal')return;
+  clearSeasonalPresentation();
+  seasonalDraftResource.value=null;seasonalDraftTime.value='';
+  const requestId=++resourceRequestId;
+  resourcesError.value='';
+  if(!item?.file_uuid){resourcesLoading.value=false;return;}
+  resourcesLoading.value=true;
+  const start=resourceStartTime.value && resourceEndTime.value ? timestamp(resourceStartTime.value) : NaN;
+  const end=resourceStartTime.value && resourceEndTime.value ? timestamp(resourceEndTime.value) : NaN;
+  try {
+    const original=await getDisplayResource(resourceRequest(item));
+    if(requestId!==resourceRequestId)return;
+    const resource=filterSeasonalResource(original,start,end);
+    if(variableKey) {
+      if(!resource.meta?.variable_layers?.[variableKey])throw new Error('指定变量不存在，请重新选择。');
+      resource.meta={...resource.meta,default_variable:variableKey};
+    }
+    const layer=preferredVariableLayer(resource.meta);
+    const times=layer?.frames?.map(frame=>frame.valid_time) || layer?.times || resource.times || [];
+    if(!times.length)throw new Error('所选条件下没有可展示的有效时次。');
+    if(times.some(time=>!Number.isFinite(forecastTimestamp(time))))throw new Error('文件包含无效的预报时次，请重新解析后选择。');
+    const chosen=validTime ? times.find(time=>forecastTimestamp(time)===forecastTimestamp(validTime)) : times[0];
+    if(!chosen)throw new Error('指定有效时次不存在，未替换为其他时次。');
+    seasonalDraftResource.value=resource;
+    seasonalDraftTime.value=String(forecastTimestamp(chosen));
+  } catch(error) {
+    if(requestId===resourceRequestId)resourcesError.value=error?.message || '准备可选数据失败。';
+  } finally {if(requestId===resourceRequestId)resourcesLoading.value=false;}
+}
+
+async function confirmSeasonalSelection() {
+  if(!canConfirmSeasonal.value || seasonalSelectionApplied.value)return;
+  const resource=seasonalDraftResource.value;
+  const layer=preferredVariableLayer(resource.meta);
+  const variableKey=layer?.key || Object.entries(resource.meta?.variable_layers || {}).find(([,value])=>value===layer)?.[0];
+  if(!variableKey){resourcesError.value='请选择可展示的变量。';return;}
+  await selectDataResource(resource,{variableKey,validTime:new Date(Number(seasonalDraftTime.value)).toISOString()});
+}
+
+async function onDownloadedSeasonalProductChange() {
+  selectedDownloadedSeasonalIssue.value = '';
+  await onSeasonalProductChange();
+}
+
+const seasonalProductOptions = computed(() => {
+  const values = new Set();
+  for (const item of dataResources.value) {
+    const attributes = item?.attributes || {};
+    for (const value of [
+      ...(attributes.product_names || []),
+      ...(attributes.product_name || []),
+    ]) {
+      if (String(value).trim()) values.add(String(value));
+    }
+  }
+  return [...values].sort((left, right) => left.localeCompare(right, "zh-CN")).map(value => ({ value, label: value }));
+});
+
+function formatSeasonalUtc(value) {
+  return value ? String(value).replace("T", " ").slice(0, 16) : "未知";
+}
+
+function seasonalMatches(item) {
+  return matchingSeasonalTimes(item,
+    resourceStartTime.value && resourceEndTime.value ? timestamp(resourceStartTime.value) : NaN,
+    resourceStartTime.value && resourceEndTime.value ? timestamp(resourceEndTime.value) : NaN);
+}
+
+function seasonalMatchedRange(item) {
+  const times = seasonalMatches(item);
+  if (!times.length) return '无匹配时次';
+  return `${formatForecastTime(times[0], 'Asia/Shanghai')} 至 ${formatForecastTime(times.at(-1), 'Asia/Shanghai')}`;
+}
+
+function seasonalIssueLabel(item) {
+  return formatForecastTime(seasonalIssueTime(item));
+}
+
+function seasonalResultLabel(item) {
+  const values = item?.attributes?.forecast_types || Object.values(item?.meta?.variable_layers || {}).map(layer => layer.varType);
+  return [...new Set(values)].map(value => ({precipitation:'降水', anomaly:'降水距平', probability:'降水概率'}[value] || value)).join('、') || (item?.elements || []).join('、');
+}
+
+function seasonalPaneSummary(index) {
+  const resource = layout.value !== '1' && paneParsed.value[index]?.key === 'seasonal'
+    ? paneParsed.value[index].resource : selectedResource.value;
+  if (!resource) return null;
+  const display = paneDisplays.value[index];
+  const layer = preferredVariableLayer(display) || preferredVariableLayer(resource.meta);
+  const times = layer?.frames?.map(frame => frame.valid_time) || resource.times || [];
+  if (!times.length) return null;
+  const current = times[Math.min(Math.max(0, Math.floor(layerTimeIndex.value)), times.length - 1)];
+  return { product: resourceProductLabel(resource) || resource.meta?.product || '季节降水',
+    issue: seasonalIssueLabel(resource), current: formatForecastTime(current, 'Asia/Shanghai'), count: times.length,
+    range: `${formatForecastTime(times[0], 'Asia/Shanghai')} 至 ${formatForecastTime(times.at(-1), 'Asia/Shanghai')}` };
+}
+
+const seasonalProductFiles = computed(() => seasonalProducts.value.filter(item => item.product_key === selectedSeasonalDownloadProduct.value));
+const seasonalProductGroups = computed(() => {
+  const groups = new Map();
+  for (const item of seasonalProductTypes.value) {
+    const label = item.group || item.provider || '在线预报';
+    if (!groups.has(label)) groups.set(label, []);
+    groups.get(label).push(item);
+  }
+  return [...groups].map(([label, items]) => ({label, items}));
+});
+const seasonalResultTypeOptions = computed(() => [...new Set(seasonalProductFiles.value.map(item => item.result_type || 'precipitation'))]
+  .map(value => ({value, label: {precipitation: '降水', anomaly: '降水距平', probability: '降水概率'}[value] || value})));
+const seasonalResultFiles = computed(() => seasonalProductFiles.value.filter(item => (item.result_type || 'precipitation') === selectedSeasonalResultType.value));
+const seasonalIssueTimeOptions = computed(() => [...new Set(seasonalResultFiles.value.map(item => item.issue_time).filter(Boolean))]
+  .sort().reverse().map(value => ({ value, label: formatSeasonalUtc(value) })));
+const seasonalRunFiles = computed(() => seasonalResultFiles.value
+  .filter(item => item.issue_time === selectedSeasonalIssueTime.value)
+  .sort((left, right) => String(left.member || left.file_name).localeCompare(String(right.member || right.file_name), "en", {numeric: true})));
+const selectedSeasonalOnlineFile = computed(() => seasonalRunFiles.value.find(item => item.file_name === selectedSeasonalDownloadFile.value) || null);
+
+function onSeasonalIssueTimeChange() {
+  if (!seasonalRunFiles.value.some(item => item.file_name === selectedSeasonalDownloadFile.value)) {
+    const preferred = seasonalRunFiles.value.find(item => item.period === 'seasonal' && item.variant_label === '三个月季节概率');
+    selectedSeasonalDownloadFile.value = preferred?.file_name || seasonalRunFiles.value[0]?.file_name || "";
+  }
+}
+
+function onSeasonalDownloadProductChange() {
+  seasonalProducts.value = [];
+  selectedSeasonalIssueTime.value = "";
+  selectedSeasonalDownloadFile.value = "";
+  selectedSeasonalResultType.value = "";
+  loadSeasonalProducts();
+}
+
+function onSeasonalResultTypeChange() {
+  if (!seasonalIssueTimeOptions.value.some(item => item.value === selectedSeasonalIssueTime.value)) {
+    selectedSeasonalIssueTime.value = seasonalIssueTimeOptions.value[0]?.value || "";
+  }
+  onSeasonalIssueTimeChange();
+}
+
+async function loadSeasonalProducts(options = {}) {
+  const requestId = ++seasonalCatalogRequestId;
+  seasonalCatalogLoading.value = true;
+  try {
+    const types = await getSeasonalProductTypes();
+    if (requestId !== seasonalCatalogRequestId) return;
+    seasonalProductTypes.value = types?.items || [];
+    if (!seasonalProductTypes.value.some(item => item.product_key === selectedSeasonalDownloadProduct.value && item.available !== false)) {
+      selectedSeasonalDownloadProduct.value = seasonalProductTypes.value.find(item => item.available !== false)?.product_key || "";
+    }
+    if (!selectedSeasonalDownloadProduct.value) {
+      seasonalDownloadMessage.value = "暂无已接入的在线预报产品";
+      return;
+    }
+    const result = await getSeasonalProducts(1000, selectedSeasonalDownloadProduct.value, options.refresh === true);
+    if (requestId !== seasonalCatalogRequestId) return;
+    seasonalProducts.value = result?.items || [];
+    if (!seasonalResultTypeOptions.value.some(item => item.value === selectedSeasonalResultType.value)) {
+      selectedSeasonalResultType.value = seasonalResultTypeOptions.value.find(item => item.value === 'precipitation')?.value || seasonalResultTypeOptions.value[0]?.value || "";
+    }
+    onSeasonalResultTypeChange();
+    const group = seasonalProductTypes.value.find(item => item.product_key === selectedSeasonalDownloadProduct.value)?.group;
+    seasonalDownloadMessage.value = result?.warning || (seasonalProducts.value.length
+      ? group === '历史归档' ? 'NOAA/NCEI 历史归档；请核对起报时间。' : group === 'Copernicus 季节预报' ? 'CDS 目录已就绪。下载可能需要排队，请保持页面打开。' : 'NOAA 在线目录已就绪；起报时间按月份列出，文件包含完整预报时段。'
+      : "该产品暂时没有可用的起报批次");
+  } catch (err) {
+    if (requestId !== seasonalCatalogRequestId) return;
+    seasonalDownloadMessage.value = "在线目录连接失败，请检查网络或代理后点击“重试目录”。";
+  } finally {
+    if (requestId === seasonalCatalogRequestId) seasonalCatalogLoading.value = false;
+  }
+}
+
+async function downloadSelectedSeasonalProduct() {
+  const selected = selectedSeasonalOnlineFile.value;
+  if (!selected || seasonalCatalogLoading.value || seasonalDownloadLoading.value) return;
+  seasonalDownloadLoading.value = true;
+  try {
+    const result = await downloadSeasonalProduct(selected.product_key, selected.file_name);
+    seasonalDownloadMessage.value = result?.reused
+      ? "该产品已在解析队列或目录中，已复用原任务"
+      : "下载完成，已进入后台解析队列；解析成功后刷新列表即可查看";
+    ElNotification({ title: "季节降水", message: seasonalDownloadMessage.value, type: "success" });
+    await refreshDataResources();
+  } catch (err) {
+    seasonalDownloadMessage.value = err?.message || "季节降水下载失败";
+    ElNotification({ title: "季节降水", message: seasonalDownloadMessage.value, type: "error" });
+  } finally {
+    seasonalDownloadLoading.value = false;
+  }
+}
+
 function onResourceStartChange(value) {
   if (!value) {
     resourceEndTime.value = "";
-    refreshDataResources();
+    refreshDataResources({autoSelect: catalogSourceKey.value === 'seasonal'});
     return;
   }
   if (resourceEndTime.value && timestamp(resourceEndTime.value) < timestamp(value)) {
     resourceEndTime.value = "";
   }
-  refreshDataResources();
+  refreshDataResources({autoSelect: catalogSourceKey.value === 'seasonal'});
 }
 
 function onResourceEndChange(value) {
   if (value && resourceStartTime.value && timestamp(value) < timestamp(resourceStartTime.value)) {
     resourceEndTime.value = "";
     ElNotification({ title: "时间范围无效", message: "结束时间不能早于开始时间。", type: "warning", duration: 2500, position: "top-right" });
-    refreshDataResources();
+    refreshDataResources({autoSelect: catalogSourceKey.value === 'seasonal'});
     return;
   }
-  refreshDataResources();
+  refreshDataResources({autoSelect: catalogSourceKey.value === 'seasonal'});
 }
 
 function disableResourceEndDate(date) {
@@ -725,6 +1190,9 @@ const activeLayerTimes = computed(() => {
 });
 
 const axisTimes = computed(() => {
+  if (active.value === 'seasonal' && activeLayerTimes.value.length) {
+    return activeLayerTimes.value.map(value => formatForecastTime(value, 'Asia/Shanghai'));
+  }
   if (selectedResource.value && parsedLayerKey.value === active.value) {
     const times = selectedResourceTimes.value;
     return times.map(formatAxisTime);
@@ -1245,10 +1713,18 @@ async function refreshHimawariStatus() {
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
   refreshHimawariStatus();
   himawariStatusTimer = window.setInterval(refreshHimawariStatus, 5000);
-  refreshDataResources({ autoSelect: true });
+  const context = seasonalAgentContext({fileUuid:route.query.file_uuid, variableKey:route.query.variable_key, validTime:route.query.valid_time});
+  if (route.query.data_type === 'SEASONAL_PRECIP' && context) {
+    active.value = 'seasonal';
+    void loadSeasonalProducts();
+    await refreshDataResources();
+    await stageSeasonalResource({file_uuid:context.fileUuid}, {variableKey:context.variableKey, validTime:context.validTime});
+  } else {
+    refreshDataResources({ autoSelect: true });
+  }
 });
 
 function businessTypeToLayerKey(type) {
@@ -1285,10 +1761,10 @@ function extractOverviewGribFileName(value) {
   let name = text.split("/").pop() || "";
   name = name.replace(/\.meta\.json$/i, "");
 
-  const match = name.match(/^(.+\.(?:grib2|grib|grb2|grb))/i);
+  const match = name.match(/^(.+\.(?:grib2|grib|grb2|grb|netcdf|nc4|nc))/i);
   if (match) return match[1];
 
-  if (/\.(?:grib2|grib|grb2|grb)$/i.test(name)) {
+  if (/\.(?:grib2|grib|grb2|grb|netcdf|nc4|nc)$/i.test(name)) {
     return name;
   }
 
@@ -1505,6 +1981,8 @@ const meta = computed(() => {
   return null;
 });
 
+const normalizedParsedPayloads = new WeakMap();
+
 function layerParsed(key, paneIndex = 0) {
   const paneResource = layout.value !== "1" ? paneParsed.value[paneIndex] : null;
   const source = paneResource?.key === key ? paneResource.parsed : parsed.value;
@@ -1516,7 +1994,12 @@ function layerParsed(key, paneIndex = 0) {
   // GFS / ECMWF 上传接口外层是 { file_name, business_type, meta, weather_info }。
   // GribLayer 需要直接读取 compact meta v2，因此只对这两个数据源解包。
   if (isGribLayerKey(key) && source?.meta?.variable_layers) {
-    return {
+    // Keep the input stable across parent renders. A new object here causes
+    // GribLayer to reload and emit display-loaded, which renders this parent
+    // again and otherwise creates an endless reactive update cycle.
+    const cached = normalizedParsedPayloads.get(source);
+    if (cached?.meta === source.meta) return cached.payload;
+    const payload = {
       ...source.meta,
       file_name:
         resolveOverviewFileName(source) ||
@@ -1545,6 +2028,8 @@ function layerParsed(key, paneIndex = 0) {
         source.weather_info ||
         source.meta.weather_info,
     };
+    normalizedParsedPayloads.set(source, {meta: source.meta, payload});
+    return payload;
   }
 
   return source;
@@ -1578,6 +2063,7 @@ function resourceSceneId(key, paneIndex = 0) {
 function layerProps(key, paneIndex = 0) {
   if (key === "gfs") return {dataType: "GFS"};
   if (key === "ecmwf") return {dataType: "ECMWF"};
+  if (key === "seasonal") return {dataType: "SEASONAL_PRECIP", label: "季节降水", alpha:seasonalOpacity.value/100};
   if (key === "himawari") return {
     sceneId: resourceSceneId(key, paneIndex) || selectedHimawariSceneId.value,
     resolution: layerResolutions.value.himawari || "original",
@@ -1811,7 +2297,16 @@ function resourceTimeRange(item) {
 }
 
 function resourceStatus(item) {
+  if (catalogSourceKey.value === 'seasonal') return `匹配 ${seasonalMatches(item).length} 时次`;
   return `${item.frame_count || 0} 帧`;
+}
+
+function resourceProductLabel(item) {
+  const attributes = item?.attributes || {};
+  const product = attributes.product_names?.[0] || attributes.product_name?.[0] || "";
+  const provider = attributes.providers?.[0] || attributes.provider?.[0] || "";
+  if (!product && !provider) return "";
+  return [product, provider].filter(Boolean).join(" · ");
 }
 
 function resourceRenderKey(key, paneIndex = 0) {
@@ -1831,6 +2326,10 @@ function clearSelectedResource() {
 function resetCatalogFilters() {
   resourceStartTime.value = "";
   resourceEndTime.value = "";
+  selectedSeasonalProduct.value = "";
+  selectedDownloadedSeasonalIssue.value = "";
+  seasonalDraftResource.value=null;
+  seasonalDraftTime.value='';
 }
 
 function selectCatalogSource(key) {
@@ -1868,20 +2367,41 @@ function resourceRequest(item) {
   return { ...item, file_uuids: fileUuids };
 }
 
+async function onSeasonalProductChange() {
+  if (catalogSourceKey.value !== "seasonal") return;
+  if (selectedDownloadedSeasonalIssue.value && !downloadedSeasonalIssueOptions.value.some(item => item.value === selectedDownloadedSeasonalIssue.value)) {
+    selectedDownloadedSeasonalIssue.value = '';
+  }
+  await stageSeasonalResource(filteredDataResources.value[0]);
+}
+
 async function refreshDataResources(options = {}) {
+  if(catalogSourceKey.value==='seasonal') {
+    clearSeasonalPresentation();
+    seasonalDraftResource.value=null;seasonalDraftTime.value='';
+  }
   const requestId = ++resourceRequestId;
   resourcesLoading.value = true;
   resourcesError.value = "";
   try {
     const hasTimeRange = resourceStartTime.value && resourceEndTime.value;
+    const isSeasonal = catalogSourceKey.value === 'seasonal';
     const result = await getDisplayResources(sourceDataType(catalogSourceKey.value), {
-      timeStart: hasTimeRange ? new Date(timestamp(resourceStartTime.value)).toISOString().slice(0, 19) : "",
-      timeEnd: hasTimeRange ? new Date(timestamp(resourceEndTime.value)).toISOString().slice(0, 19) : "",
+      timeStart: hasTimeRange && !isSeasonal ? new Date(timestamp(resourceStartTime.value)).toISOString().slice(0, 19) : "",
+      timeEnd: hasTimeRange && !isSeasonal ? new Date(timestamp(resourceEndTime.value)).toISOString().slice(0, 19) : "",
     });
     if (requestId !== resourceRequestId) return;
     dataResources.value = result.items || [];
+    if (selectedSeasonalProduct.value && !seasonalProductOptions.value.some(item => item.value === selectedSeasonalProduct.value)) {
+      selectedSeasonalProduct.value = "";
+    }
     if (layout.value === "1" && selectedResourceUuid.value && !dataResources.value.some(item => item.file_uuid === selectedResourceUuid.value)) {
       clearSelectedResource();
+    }
+    if (isSeasonal) {
+      resourcesLoading.value = false;
+      await onSeasonalProductChange();
+      return;
     }
     const defaultResource = options.autoSelect && !hasTimeRange && !catalogSelectedResourceUuid.value
       ? filteredDataResources.value[0]
@@ -1915,17 +2435,26 @@ function parsedResourcePayload(resource, sourceKey = catalogSourceKey.value) {
   return isGribLayerKey(sourceKey) ? { ...common, meta } : { ...meta, ...common };
 }
 
-async function selectDataResource(item) {
-  if (!item?.file_uuid || resourcesLoading.value) return;
+async function selectDataResource(item, { replacePending = false, variableKey = null, validTime = null } = {}) {
+  if (!item?.file_uuid || (resourcesLoading.value && !replacePending)) return;
   const targetPane = layout.value !== "1" && selectedPane.value >= 0 ? selectedPane.value : -1;
   const targetSource = catalogSourceKey.value;
-  if (targetPane < 0) selectedResourceUuid.value = item.file_uuid;
+  const timeStart = timestamp(resourceStartTime.value);
+  const timeEnd = timestamp(resourceEndTime.value);
   resourcesLoading.value = true;
   resourcesError.value = "";
   const requestId = ++resourceRequestId;
   try {
-    const resource = await getDisplayResource(resourceRequest(item));
+    const original = await getDisplayResource(resourceRequest(item));
     if (requestId !== resourceRequestId) return;
+    const resource = targetSource === 'seasonal' ? filterSeasonalResource(original, timeStart, timeEnd) : original;
+    let requestedFrameIndex = 0;
+    if (targetSource === 'seasonal' && variableKey && validTime) {
+      const layer = resource.meta?.variable_layers?.[variableKey];
+      requestedFrameIndex = layer?.frames?.findIndex(frame => forecastTimestamp(frame.valid_time) === forecastTimestamp(validTime)) ?? -1;
+      if (requestedFrameIndex < 0) throw new Error('解读结果对应的变量或有效时次不存在，未自动替换为其他图像。');
+      resource.meta = {...resource.meta, default_variable:variableKey};
+    }
     resetTimebar();
     const nextProcessing = [
       {step: "上传/下载", state: "已入库", t: resource.create_time || "", ok: true},
@@ -1948,12 +2477,17 @@ async function selectDataResource(item) {
       paneDisplays.value = { ...paneDisplays.value, [targetPane]: null };
     } else {
       selectedResource.value = resource;
+      selectedResourceUuid.value = item.file_uuid;
       parsed.value = nextParsed;
       parsedLayerKey.value = targetSource;
       layerDisplays.value = { ...layerDisplays.value, [targetSource]: null };
       parseProcessing.value = nextProcessing;
     }
     setTimeIndex(0);
+    if (variableKey && validTime) {
+      await nextTick();
+      if (requestId === resourceRequestId) setTimeIndex(requestedFrameIndex);
+    }
   } catch (err) {
     if (requestId !== resourceRequestId) return;
     if (targetPane < 0) clearSelectedResource();
@@ -1975,6 +2509,7 @@ function selectSource(key) {
     delete nextPaneParsed[pane];
     paneParsed.value = nextPaneParsed;
     dataResources.value = [];
+    if (key === "seasonal") loadSeasonalProducts();
     if (dockOpen.value && tool.value === "select") refreshDataResources({ autoSelect: true });
     return;
   }
@@ -1988,6 +2523,7 @@ function selectSource(key) {
   active.value = key;
   clearSelectedResource();
   dataResources.value = [];
+  if (key === "seasonal") loadSeasonalProducts();
   paneLabels.value = {};
   paneSources.value = {};
   paneDisplays.value = {};
@@ -2234,9 +2770,39 @@ watch(active, () => {
 .dock-head { display: flex; align-items: center; justify-content: space-between; }
 .dock-head h3 { margin: 0; font-size: 15px; }
 .dock-head .el-icon { cursor: pointer; color: var(--muted); }
+.dock.seasonal-dock { overflow-y: auto; }
+.seasonal-dock .resource-filter, .seasonal-dock .resource-head, .seasonal-dock .seasonal-filter-summary { flex-shrink: 0; }
+.seasonal-dock .resource-results { flex: 0 0 auto; overflow: visible; }
 .resource-filter { display: grid; gap: 9px; padding-bottom: 11px; border-bottom: 1px solid var(--border); }
 .filter-label { color: var(--muted); font-size: 11px; }
 .filter-field { display: grid; gap: 5px; min-width: 0; }
+.seasonal-catalog-hint { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.seasonal-filter-summary { display: grid; gap: 5px; padding: 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--accent-soft); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.seasonal-filter-summary span, .seasonal-filter-summary small { color: var(--text); }
+.seasonal-view-summary { position: absolute; z-index: 3; top: 40px; left: 12px; max-width: calc(100% - 24px); display: grid; gap: 5px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); font-size: 11px; line-height: 1.45; pointer-events: none; }
+.seasonal-axis-label { color: var(--muted); font-size: 11px; }
+.seasonal-agent-button { justify-self: start; pointer-events: auto; border: 1px solid var(--accent); border-radius: 6px; padding: 5px 8px; color: var(--accent); background: var(--accent-soft); font: inherit; cursor: pointer; }
+.seasonal-agent-button:disabled { opacity: .5; cursor: wait; }
+.seasonal-opacity-panel {position:absolute;right:12px;bottom:12px;z-index:4;max-width:calc(100% - 24px);padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);}
+.seasonal-confirmation {display:grid;gap:6px;padding:10px;border:1px solid var(--accent);border-radius:8px;background:var(--accent-soft);font-size:11px;line-height:1.5;}
+.seasonal-confirmation small {color:var(--muted);}
+.seasonal-display-pending {position:absolute;inset:0;z-index:2;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:24px;box-sizing:border-box;color:var(--text);text-align:center;pointer-events:none;}
+.seasonal-display-pending span {font-size:13px;color:var(--muted);}
+.seasonal-download-row { display: flex; flex-wrap: wrap; gap: 7px; min-width: 0; }
+.seasonal-download-row .el-select { flex: 0 0 100%; min-width: 0; }
+.seasonal-download-row > .filter-field, .seasonal-online-summary { width: 100%; }
+.seasonal-download-row select { width: 100%; min-width: 0; height: 30px; padding: 0 8px; border: 1px solid var(--border); border-radius: 7px; color: var(--text); background: var(--field); font: inherit; font-size: 11px; color-scheme: dark; }
+.seasonal-download-row select:disabled { color: var(--muted); cursor: not-allowed; opacity: .65; }
+.seasonal-download-row select:focus { outline: 1px solid var(--accent); }
+/* Windows native popups need opaque colours; translucent fields blend into white. */
+.seasonal-download-row option, .seasonal-download-row optgroup { background: #1e293b; color: #eaf1fb; }
+.seasonal-download-row option:disabled { color: #9aaac0; }
+:global(:root.light) .seasonal-download-row select { color-scheme: light; }
+:global(:root.light) .seasonal-download-row option,
+:global(:root.light) .seasonal-download-row optgroup { background: #f5f9ff; color: #14233a; }
+:global(:root.light) .seasonal-download-row option:disabled { color: #596b83; }
+.seasonal-download-row .el-button + .el-button { margin-left: 0; }
+.seasonal-download-message { padding: 4px 0; text-align: left; line-height: 1.6; overflow-wrap: anywhere; }
 .time-filter-row { display: grid; gap: 7px; }
 .data-type-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; }
 .data-type-grid button { min-width: 0; height: 30px; overflow: hidden; border: 1px solid var(--border); border-radius: 6px; background: var(--field); color: var(--text); font: inherit; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
