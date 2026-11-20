@@ -58,7 +58,7 @@ export function buildAgentScopeAuthContext({ token, apiUrl, user, dark }) {
     type: "weather-agent-auth-context",
     token: String(token || ""),
     serverUrl: apiUrl,
-    userId: String(user?.id ?? user?.username ?? ""),
+    userId: String(user?.uuid || (user?.id ?? user?.username ?? "")),
     theme: dark ? "dark" : "light",
   };
 }
