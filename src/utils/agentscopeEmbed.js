@@ -53,13 +53,21 @@ export function isTrustedAgentScopeMessage(event, frameWindow, webOrigin) {
   );
 }
 
-export function buildAgentScopeAuthContext({ token, apiUrl, user, dark }) {
+// One id per entry from the host. Repeated handshakes and iframe reloads reuse it.
+export function createAgentScopeConversationId() {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return `host_${Array.from(bytes, value => value.toString(16).padStart(2, '0')).join('')}`;
+}
+
+export function buildAgentScopeAuthContext({ token, apiUrl, user, dark, seasonalContext, conversationId }) {
   return {
     type: "weather-agent-auth-context",
     token: String(token || ""),
     serverUrl: apiUrl,
     userId: String(user?.uuid || (user?.id ?? user?.username ?? "")),
     theme: dark ? "dark" : "light",
+    ...(conversationId ? {conversationId} : {}),
+    ...(seasonalContext ? {seasonalContext} : {}),
   };
 }
 

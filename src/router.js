@@ -11,6 +11,7 @@ const routes = [
   { path: "/", component: Overview },
   { path: "/upload", component: Upload },
   { path: "/agent", component: AgentScope },
+  { path: "/agent/seasonal-map", component: () => import('./views/SeasonalMapEmbed.vue'), meta: { standalone: true } },
   { path: "/agent/icing-map", component: () => import('./views/AgentIcingMap.vue'), meta: { standalone: true } },
   { path: "/agent/wrf-evidence", component: () => import('./views/WrfEvidence.vue') },
   { path: "/model", component: Model },

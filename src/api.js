@@ -953,6 +953,41 @@ async function catalogRequest(path, options = {}) {
   return payload.data;
 }
 
+async function seasonalRequest(path, options = {}) {
+  let response;
+  try {
+    response = await authedFetch(`${UPLOAD_BASE}/api/seasonal${path}`, options);
+  } catch (cause) {
+    throw new Error(`季节降水下载服务无法连接（${UPLOAD_BASE}），请检查上传服务是否启动。`, { cause });
+  }
+  let payload;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new Error(`季节降水服务返回格式错误（HTTP ${response.status}）`);
+  }
+  if (!response.ok || payload.code !== 0) {
+    throw new Error(apiError(payload, `季节降水请求失败（HTTP ${response.status}）`));
+  }
+  return payload.data;
+}
+
+export function getSeasonalProductTypes() {
+  return seasonalRequest('/product-types');
+}
+
+export function getSeasonalProducts(limit = 1000, productKey = "CPC_CFSV2", refresh = false) {
+  return seasonalRequest(`/products?limit=${encodeURIComponent(limit)}&product_key=${encodeURIComponent(productKey)}${refresh ? '&refresh=true' : ''}`);
+}
+
+export function downloadSeasonalProduct(productKey = "CPC_CFSV2", fileName = "") {
+  return seasonalRequest("/download", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ product_key: productKey, ...(fileName ? { file_name: fileName } : {}) }),
+  });
+}
+
 export async function getDisplayResources(dataType, { limit = 100, offset = 0, timeStart = "", timeEnd = "" } = {}) {
   const params = new URLSearchParams({
     data_type: dataType,
@@ -975,6 +1010,24 @@ export async function getDisplayResource(resource) {
   }
   const fileUuid = typeof resource === "string" ? resource : resource?.file_uuid;
   return catalogRequest(`/resources/${encodeURIComponent(fileUuid)}`);
+}
+
+export async function getSeasonalRegionGrid({fileUuid,variableKey,validTimes,bbox,signal}) {
+  const params=new URLSearchParams({file_uuid:fileUuid,variable_key:variableKey});
+  validTimes.forEach(time=>params.append('valid_time',time));bbox.forEach(value=>params.append('bbox',value));
+  const response=await authedFetch(`${API_BASE}/api/seasonal/region-grid?${params}`,{signal});
+  const payload=await response.json();
+  if(!response.ok || payload.code!==0)throw new Error(apiError(payload,'区域原始格点读取失败。'));
+  return payload.data;
+}
+
+export async function getSeasonalPointSeries({fileUuid, variableKey, validTimes, longitude, latitude, signal}) {
+  const params = new URLSearchParams({file_uuid:fileUuid, variable_key:variableKey, longitude:String(longitude), latitude:String(latitude)});
+  validTimes.forEach(time => params.append('valid_time',time));
+  const response = await authedFetch(`${API_BASE}/api/seasonal/point-series?${params}`,{signal});
+  const payload = await response.json();
+  if (!response.ok || payload.code !== 0) throw new Error(apiError(payload,'原始格点读取失败，未从图片估算。'));
+  return payload.data;
 }
 
 export async function ingestUploadedFiles(receipts, dataType, { action = "parse", overwrite = false } = {}) {
@@ -1170,6 +1223,7 @@ export async function getHimawariAutoStatus() {
 
 export function displayKeyFromBusinessType(value) {
   const text = String(value || "").toLowerCase();
+  if (text.includes("seasonal") || text.includes("seas5") || text.includes("季节") || text.includes("season_precip")) return "seasonal";
   if (text.includes("cma")) return "cma";
   if (text.includes("radar") || text.includes("雷达")) return "radar";
   if (text.includes("era5")) return "era5";
@@ -1183,6 +1237,8 @@ export function displayKeyFromBusinessType(value) {
 export function displayKeyFromFileName(filename) {
   const name = String(filename || "").toLowerCase();
   const suffix = name.includes(".") ? name.slice(name.lastIndexOf(".")) : "";
+
+  if (name.includes("seasonal") || name.includes("seas5") || name.includes("season_precip") || name.includes("rainfall_forecast")) return "seasonal";
 
   if (name.startsWith("z_radr") || name.includes("z_radr")) return "radar";
   if (name.includes("cma")) return "cma";

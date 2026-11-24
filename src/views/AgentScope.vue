@@ -8,11 +8,13 @@
     </div>
     <div v-else class="frame-shell">
       <iframe
+        :key="conversationId"
         ref="agentFrame"
         :class="['agentscope-frame', { ready: frameReady }]"
         :src="config.webUrl"
         title="智慧气象 AgentScope"
-        allow="clipboard-read; clipboard-write"
+        allow="clipboard-read; clipboard-write; fullscreen"
+        allowfullscreen
         @load="handleFrameLoad"
       />
       <div v-if="!frameReady" class="frame-status glass" role="status">
@@ -26,20 +28,24 @@
 
 <script setup>
 import { inject, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
+import {seasonalContextFromQuery} from '../utils/seasonalAgentContext';
 import { ensureFreshToken, getToken, getUser } from "../api.js";
 import {
   buildAgentScopeAuthContext,
   buildIcingMapEmbedUrl,
+  createAgentScopeConversationId,
   isTrustedAgentScopeMessage,
   resolveAgentScopeEmbedConfig,
 } from "../utils/agentscopeEmbed.js";
 
 const router = useRouter();
+const route = useRoute();
 const dark = inject("theme", ref(true));
 const agentFrame = ref(null);
 const frameReady = ref(false);
 const frameError = ref("");
+const conversationId = ref(createAgentScopeConversationId());
 let handshakeTimer = null;
 let refreshTimer = null;
 const config = resolveAgentScopeEmbedConfig(import.meta.env, {
@@ -61,6 +67,8 @@ function sendAuthContext() {
       apiUrl: config.apiUrl,
       user: getUser(),
       dark: Boolean(dark.value),
+      seasonalContext: seasonalContextFromQuery(route.query),
+      conversationId: conversationId.value,
     }),
     config.webOrigin,
   );
@@ -128,12 +136,21 @@ function handleAgentScopeMessage(event) {
       query: {
         data_type: String(payload.dataType || ""),
         file_uuid: String(payload.fileUuid || ""),
+        variable_key: String(payload.variableKey || ""),
+        valid_time: String(payload.validTime || ""),
       },
     });
   }
 }
 
 watch(dark, sendAuthContext);
+// Query-only navigation reuses this Vue component, but represents a new task.
+watch(() => route.fullPath, () => {
+  clearHandshakeTimer();
+  frameReady.value = false;
+  frameError.value = "";
+  conversationId.value = createAgentScopeConversationId();
+});
 async function refreshAuth() {
   try {
     await ensureFreshToken();

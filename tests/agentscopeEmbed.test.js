@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   buildAgentScopeAuthContext,
   buildIcingMapEmbedUrl,
+  createAgentScopeConversationId,
   isTrustedAgentScopeMessage,
   resolveAgentScopeEmbedConfig,
 } from "../src/utils/agentscopeEmbed.js";
@@ -13,6 +14,18 @@ test("development defaults target the AgentScope UI and API", () => {
   assert.equal(config.webUrl, "http://127.0.0.1:5173/chat");
   assert.equal(config.webOrigin, "http://127.0.0.1:5173");
   assert.equal(config.apiUrl, "http://127.0.0.1:8012");
+});
+
+test('separate host entries get distinct ids while refreshes retain the same entry and selection', () => {
+  const conversationId = createAgentScopeConversationId();
+  assert.match(conversationId, /^host_[A-Za-z0-9_-]{1,59}$/);
+  assert.notEqual(createAgentScopeConversationId(), conversationId);
+  const seasonalContext = {topic:'map', fileUuid:'12345678-1234-1234-1234-123456789012', variableKey:'prate', validTime:'2026-12-01T00:00:00.000Z'};
+  for (const token of ['before-refresh', 'after-refresh']) {
+    const payload = buildAgentScopeAuthContext({token, conversationId, seasonalContext});
+    assert.equal(payload.conversationId, conversationId);
+    assert.deepEqual(payload.seasonalContext, seasonalContext);
+  }
 });
 
 test("icing map embeds preserve archive and selected dates without routing the conversation", () => {

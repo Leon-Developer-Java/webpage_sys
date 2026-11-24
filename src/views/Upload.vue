@@ -18,7 +18,7 @@
       >
         <el-icon class="dz-icon"><Upload /></el-icon>
         <p class="dz-title">拖拽文件到此处，或<em>点击选择</em></p>
-        <small class="dz-hint">支持雷达 CINRAD/NetCDF、GRIB2、FY-3 HDF、Himawari DAT(.bz2) 与 WRF NetCDF；单次最多并行上传 2 个文件</small>
+        <small class="dz-hint">支持季节降水 NetCDF/GRIB2、雷达 CINRAD/NetCDF、FY-3 HDF、Himawari DAT(.bz2) 与 WRF NetCDF；单次最多并行上传 2 个文件</small>
         <input ref="input" type="file" multiple hidden accept=".cinrad,.nc,.grib,.grib2,.grb,.grb2,.hdf,.hdf5,.dat,.bz2" @change="onPick" />
       </div>
 
@@ -252,7 +252,7 @@ let uploadBatchSequence = 0;
 let queueTimer = null;
 
 // GFS 与 ECMWF 必须分开。不能再使用合并入口，否则 ECMWF 可能会被落入 GFS 目录。
-const TYPES = ["ERA5", "GFS", "ECMWF", "CMA", "雷达", "葵花", "FY-3", "WRF"];
+const TYPES = ["ERA5", "GFS", "ECMWF", "季节降水", "CMA", "雷达", "葵花", "FY-3", "WRF"];
 const RADAR_INTERVALS = [
   { label: "3 分钟", value: 3 },
   { label: "6 分钟", value: 6 },
@@ -577,6 +577,9 @@ function inferDataType(file) {
   if (/^FY3[A-Z]?[_-]/i.test(name) || lower.includes("fy-3") || lower.includes("fy3")) {
     return result("FY-3", "文件名包含 FY-3/FY3 卫星标识");
   }
+  if (/(seasonal|seas5|season[_-]?precip|rainfall[_-]?forecast)/i.test(name)) {
+    return result("季节降水", "文件名包含季节性降水产品标识");
+  }
   if (/^HS_H\d{2}_/i.test(name) || lower.includes("himawari") || lower.includes("ahi")) {
     return result("葵花", "文件名包含 Himawari/AHI 场景标识");
   }
@@ -658,6 +661,7 @@ function normalizeDataTypeForBackend(dataType, fileName = "") {
   const name = String(fileName || "").toLowerCase();
 
   if (raw === "葵花" || upper === "HIMAWARI") return "Himawari";
+  if (["SEASONAL_PRECIP", "SEASONALPRECIP", "SEASONAL_PRECIPITATION", "SEASONAL_RAINFALL", "季节降水"].includes(raw) || upper.includes("SEASONAL")) return "SEASONAL_PRECIP";
   if (upper === "FY-3" || upper === "FY3" || name.includes("fy3") || name.includes("fy-3")) return "FY3";
   if (upper === "ECMWF" || upper === "EC" || upper === "IFS") return "ECMWF";
   if (upper === "GFS") return "GFS";
