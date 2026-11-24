@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildAgentScopeAuthContext,
+  buildIcingMapEmbedUrl,
   createAgentScopeConversationId,
   isTrustedAgentScopeMessage,
   resolveAgentScopeEmbedConfig,
@@ -25,6 +26,21 @@ test('separate host entries get distinct ids while refreshes retain the same ent
     assert.equal(payload.conversationId, conversationId);
     assert.deepEqual(payload.seasonalContext, seasonalContext);
   }
+});
+
+test("icing map embeds preserve archive and selected dates without routing the conversation", () => {
+  const url = new URL(buildIcingMapEmbedUrl({
+    runId: "run/a", archiveId: "jilin_2025_winter",
+    selectedRange: { start: "2026-01-16", end: "2026-01-16" },
+  }, "https://weather.example"));
+  assert.equal(url.origin, "https://weather.example");
+  assert.equal(url.pathname, "/agent/icing-map");
+  assert.equal(url.searchParams.get("run_id"), "run/a");
+  assert.equal(url.searchParams.get("archive_id"), "jilin_2025_winter");
+  assert.equal(url.searchParams.get("start_date"), "2026-01-16");
+  assert.equal(url.searchParams.get("end_date"), "2026-01-16");
+  assert.equal(url.searchParams.has("token"), false);
+  assert.equal(buildIcingMapEmbedUrl({}, "https://weather.example"), "");
 });
 
 test("production requires explicit AgentScope addresses", () => {

@@ -7,7 +7,7 @@ import RunViewer from './RunViewer.vue';
 import ResultViewer from './ResultViewer.vue';
 export * from './model.js';
 export {runStatusLabel,runStageLabel,runProgress} from './runLabels.js';
-export const version='2.2.5';
+export const version='2.2.9';
 export const sourceFingerprint=typeof __WRF_UI_SOURCE_SHA__==='string'?__WRF_UI_SOURCE_SHA__:'source-development';
 export const interfaceVersion='wrf-ui-2';
 const props=['presentation','submitLabel','logAttemptNo','error','config','options','preview','previewPending','previewError','disabled','submitDisabled','submitReason','readOnly','hideSubmit','hostMode','showHeader','editorKey','theme','task','logs','product','assetResponses','allowedActions'];

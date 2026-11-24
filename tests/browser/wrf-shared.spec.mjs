@@ -2,6 +2,7 @@ import {test,expect} from '@playwright/test';
 import {execFileSync} from 'node:child_process';
 import {resolve} from 'node:path';
 import {readFileSync} from 'node:fs';
+import {createHash} from 'node:crypto';
 
 // Geometry/result fixtures keep their existing mocked server contract. The
 // dedicated configuration-validation suite exercises real combination rules.
@@ -9,21 +10,50 @@ async function fixtureConfigurationPreview(route){
  if(new URL(route.request().url()).pathname!=='/api/wrf/namelist/resolve')return false;
  await route.fulfill({json:{code:0,data:{errors:[],rules:[]}}});return true;
 }
-test('pool has one refresh action for both sources without cleanup dialogs',async({page})=>{
+test('pool has one refresh action for all products without cleanup dialogs',async({page})=>{
  await page.addInitScript(()=>{localStorage.setItem('token','fixture-not-a-real-token');localStorage.setItem('user',JSON.stringify({uuid:'pool-owner',username:'fixture',role:2}));});
  const writes=[];
  await page.route('**/*',async route=>{if(await fixtureConfigurationPreview(route))return;const r=route.request(),u=new URL(r.url()),p=u.pathname;if(!['localhost','127.0.0.1'].includes(u.hostname))return route.abort();const reply=data=>route.fulfill({contentType:'application/json',body:JSON.stringify({code:0,data})});
  if(p==='/api/wrf/forcing/refresh'&&r.method()==='GET')return reply({status:'idle'});if(p==='/api/wrf/options')return reply(options);if(p==='/api/health')return reply({status:'online',hpc:{status:'ready'}});if(p==='/api/wrf/workbench/tasks')return reply({items:[]});
- if(p==='/api/wrf/data-status')return reply({status:'partial',pool_items:['gfs','ecmwf'].map(provider=>({provider,label:provider.toUpperCase(),status:'partial',cycles:[{cycle:'2026100900',completed_files:2,total_files:provider==='gfs'?73:25,size_bytes:1e9,status:'partial'}]}))});
+ if(p==='/api/wrf/data-status')return reply({status:'partial',pool_items:['gfs','ecmwf','ecmwf_0p1'].map(provider=>({provider,label:provider.toUpperCase(),status:'partial',cycles:[{cycle:'2026100900',completed_files:2,total_files:provider==='gfs'?73:25,size_bytes:1e9,status:'partial'}]}))});
  if(p==='/api/wrf/forcing/refresh'&&r.method()==='POST'){writes.push(p);return reply({id:'refresh-fixture',status:'accepted'});}
  if(p.startsWith('/api/'))throw new Error('Unexpected API '+p);return route.continue();});
  await page.goto('/wrf');await page.getByRole('button',{name:/^任务与资料/}).click();await expect(page.getByRole('heading',{name:'预报数据池',exact:true})).toBeVisible();
- await expect(page.locator('.pool-provider')).toHaveCount(2);await expect(page.locator('.pool-provider').first()).toContainText('2/73');await expect(page.locator('.pool-provider').last()).toContainText('2/25');
+ await expect(page.locator('.pool-provider')).toHaveCount(3);await expect(page.locator('.pool-provider').last().locator('.pool-scope')).toHaveText('0.1° · 全球 · 00Z · 保留 2 周期');await expect(page.locator('.pool-provider').first().locator('.pool-scope')).toHaveText('0.25° · 全球 · 00Z · 保留 2 周期');await expect(page.locator('.pool-provider').first()).toContainText('2/73');await expect(page.locator('.pool-provider').last()).toContainText('2/25');
  await expect(page.locator('.data-pool .side-action')).toHaveCount(1);await expect(page.getByRole('button',{name:'下载与补缺',exact:true})).toHaveCount(0);await page.locator('.data-pool').getByRole('button',{name:'刷新',exact:true}).click();await expect.poll(()=>writes.length).toBe(1);expect(writes).toEqual(['/api/wrf/forcing/refresh']);await expect(page.getByRole('dialog')).toHaveCount(0);
 });
 const python=process.env.WRF_TEST_PYTHON||'python3',backend=resolve(process.env.WRF_BACKEND_DIR||'../backend_wrf');
 function backendCall(code,value={}){return JSON.parse(execFileSync(python,['-B','-c',code],{cwd:backend,input:JSON.stringify(value),encoding:'utf8',env:{...process.env,PYTHONDONTWRITEBYTECODE:'1'}}));}
 const options={configuration_profile:backendCall('import json; from configuration_profile import definition; print(json.dumps(definition()))'),workbench_management:{id:'wrf-workbench-management-1',direct_deletion:true,forcing_refresh:true,forcing_cycle_deletion:true},namelist_capability:{schema_version:'fixture',source_hash:'fixture'}};
+for(const [source,label] of [['gfs','GFS'],['ecmwf','ECMWF'],['ec','ECMWF'],['ecmwf_0p1','ECMWF IFS 0.1°'],[undefined,'未记录资料源'],['unknown-provider','未知资料源']]){
+ test(`run source label uses ${source||'missing'} without assuming GFS`,async({page})=>{
+  await page.addInitScript(()=>{localStorage.setItem('token','source-fixture');localStorage.setItem('user',JSON.stringify({uuid:'source-owner',username:'fixture',role:2}));});
+  const task={id:'source-label-fixture',status:'running',stage:'running',attempt_no:1,
+   request:{data_source:source,center:{lat:25,lon:102},domains:[],start_time:'2026-10-21T08:00:00Z',end_time:'2026-10-21T11:00:00Z'},
+   runtime:{forcing_cycle:'2026102100',forcing_remote_reused:4,forcing_total:4}};
+  const writes=[];
+  await page.route('**/*',async route=>{
+   if(await fixtureConfigurationPreview(route))return;
+   const request=route.request(),url=new URL(request.url()),path=url.pathname;
+   if(!['127.0.0.1','localhost'].includes(url.hostname))return route.abort();
+   const reply=data=>route.fulfill({json:{code:0,data}});
+   if(request.method()!=='GET'&&path.startsWith('/api/')){writes.push(path);return route.abort();}
+   if(path==='/api/wrf/options')return reply(options);
+   if(path==='/api/health')return reply({status:'online',hpc:{status:'ready'}});
+   if(path==='/api/wrf/forcing/refresh')return reply({status:'idle'});
+   if(path==='/api/wrf/data-status')return reply({pool_items:[]});
+   if(path==='/api/wrf/workbench/tasks'||path==='/api/wrf/tasks')return reply({items:[task]});
+   if(path==='/api/wrf/tasks/'+task.id)return reply(task);
+   if(path.endsWith('/logs'))return reply({text:'',offset:0});
+   if(path.startsWith('/api/'))throw new Error('Unexpected source read '+path);
+   return route.continue();
+  });
+  await page.goto('/wrf?view=run&task_id='+task.id);
+  await expect(page.locator('.summary-card dt').filter({hasText:'周期'})).toHaveText(label+' 周期');
+  await expect(page.locator('.summary-card')).toContainText('4/4 个 '+label+' 时次已就绪');
+  expect(writes).toEqual([]);
+ });
+}
 const browserErrors=new WeakMap();
 test.beforeEach(({page})=>{const errors=[];browserErrors.set(page,errors);page.on('pageerror',error=>errors.push(error.message));});
 test.afterEach(async({page},info)=>{if(info.status!==info.expectedStatus){await page.screenshot({path:info.outputPath('failure.png'),fullPage:true});console.log('WRF UI alerts:',await page.getByRole('alert').allTextContents(),'submit:',await page.locator('.wrf-submit-status').allTextContents());}expect(browserErrors.get(page)).toEqual([]);});
@@ -193,7 +223,11 @@ test('workbench keeps the submit control reachable across required container and
 
 test('loaded artifact, long task/resource panels and refresh preserve the real workbench controls',async({page})=>{
  test.setTimeout(120000);
- const release=JSON.parse(readFileSync(resolve('wrf-ui.lock.json'),'utf8'));
+ const release=JSON.parse(readFileSync(resolve(process.env.WRF_UI_TEST_MANIFEST||'wrf-ui.lock.json'),'utf8'));
+ if(process.env.WRF_UI_TEST_BUNDLE){
+  if(!process.env.WRF_UI_TEST_MANIFEST)throw new Error('A staged bundle requires its exact test manifest');
+  if(createHash('sha256').update(readFileSync(process.env.WRF_UI_TEST_BUNDLE)).digest('hex')!==release.bundle_sha256)throw new Error('Staged bundle fingerprint differs from its manifest');
+ }
  await page.addInitScript(()=>{localStorage.setItem('token','fixture-not-a-real-token');localStorage.setItem('user',JSON.stringify({uuid:'management-viewport',username:'fixture',role:3}));});
  const tasks=Array.from({length:15},(_,i)=>({id:'fixture-history-'+i,status:'waiting_restart',stage:'failed',attempt_no:1,request:{data_source:'gfs',start_time:'2026-10-07T03:00:00Z',domains:[]}}));
  const unexpected=[];
@@ -751,9 +785,82 @@ test('four-task capacity and resource queue reason reflect the backend policy',a
  await page.goto('/wrf');await page.getByRole('button',{name:/^任务与资料/}).click();await expect(page.locator('.running-card')).toContainText('4/4 个任务执行中');await expect(page.locator('.running-card article')).toHaveCount(5);await expect(page.locator('.running-card article[title="resource-4"]')).toContainText('可用内存不足，等待预留释放');
 });
 
-test('model retirement redirects old links to WRF without contacting 8006',async({page})=>{
- await page.addInitScript(()=>{localStorage.setItem('token','fixture-retirement');localStorage.setItem('user',JSON.stringify({uuid:'fixture',username:'fixture',role:2}));});
+test('restored model page and WRF navigation stay separate without starting a task', async ({page})=>{
+ await page.addInitScript(()=>{localStorage.setItem('token','fixture');localStorage.setItem('user',JSON.stringify({uuid:'fixture',username:'fixture',role:2}));});
  const modelRequests=[],writes=[],errors=[];page.on('pageerror',e=>errors.push(String(e)));
- await page.route('**/*',async route=>{const r=route.request(),u=new URL(r.url());if(u.port==='8006'){modelRequests.push(r.url());return route.abort();}if(await fixtureConfigurationPreview(route))return; if(u.pathname.startsWith('/api/')){if(r.method()!=='GET'){writes.push(u.pathname);return route.abort();}const data=u.pathname==='/api/wrf/options'?options:u.pathname==='/api/wrf/display'?{meta_json:{domains:[]}}:u.pathname==='/api/wrf/data-status'?{status:'ready',pool_items:[]}:u.pathname==='/api/health'?{status:'online',hpc:{status:'ready'}}:{items:[],status:'idle'};return route.fulfill({contentType:'application/json',body:JSON.stringify({code:0,data})});}if(!['127.0.0.1','localhost'].includes(u.hostname))return route.abort();return route.continue();});
- await page.goto('/model');await expect(page).toHaveURL(/\/wrf(?:\?|$)/);await expect(page.getByRole('heading',{name:'WRF 工作台',exact:true})).toBeVisible();await expect(page.getByRole('link',{name:'专用模型调用'})).toHaveCount(0);await page.reload();await expect(page.getByRole('heading',{name:'WRF 工作台',exact:true})).toBeVisible();expect(modelRequests).toEqual([]);expect(writes).toEqual([]);expect(errors).toEqual([]);
+ await page.route('**/*',async route=>{
+  const r=route.request(),u=new URL(r.url());
+  if(r.method()!=='GET'&&u.pathname.startsWith('/api/')){writes.push(u.pathname);return route.abort();}
+  if(u.port==='8006'){modelRequests.push(u.pathname);return route.fulfill({contentType:'application/json',body:JSON.stringify({code:0,data:u.pathname==='/api/models'?{items:[]}:{status:'online'}})});}
+  if(await fixtureConfigurationPreview(route))return;
+  if(u.pathname.startsWith('/api/')){const data=u.pathname==='/api/wrf/options'?options:u.pathname==='/api/wrf/display'?{meta_json:{domains:[]}}:u.pathname==='/api/wrf/data-status'?{status:'ready',pool_items:[]}:{items:[],status:'idle'};return route.fulfill({contentType:'application/json',body:JSON.stringify({code:0,data})});}
+  if(!['127.0.0.1','localhost'].includes(u.hostname))return route.abort();return route.continue();
+ });
+ await page.goto('/model');await expect(page).toHaveURL(/\/model(?:\?|$)/);await expect(page.getByRole('heading',{name:'模型选择',exact:true})).toBeVisible();await expect(page.getByText('模型服务在线',{exact:true})).toBeVisible();
+ await page.reload();await expect(page.getByRole('heading',{name:'模型选择',exact:true})).toBeVisible();
+ expect(modelRequests).toContain('/api/models');expect(modelRequests).toContain('/api/health');
+ await page.goto('/wrf');await expect(page.getByRole('heading',{name:'WRF 工作台',exact:true})).toBeVisible();expect(writes).toEqual([]);expect(errors).toEqual([]);
+});
+
+test('IFS 0.1 product stays explicit in the form and final submission',async({page})=>{
+ const validations=[];
+ await page.route('**/*',async route=>{
+  if(await fixtureConfigurationPreview(route))return;
+  const r=route.request(),u=new URL(r.url());
+  if(!['127.0.0.1','localhost'].includes(u.hostname))return route.abort();
+  const reply=data=>route.fulfill({json:{code:0,data}});
+  if(u.pathname==='/__fixture__/options')return route.fulfill({json:options});
+  if(u.pathname.endsWith('/domains/preview'))return reply(backendCall('import json,sys; from domain_preview import DomainPreviewRequest,preview_domains; print(json.dumps(preview_domains(DomainPreviewRequest.model_validate(json.load(sys.stdin)))))',r.postDataJSON()));
+  if(u.pathname.endsWith('/tasks/validate')){validations.push(r.postDataJSON());return reply({request:r.postDataJSON(),warnings:[]});}
+  if(u.pathname.startsWith('/api/'))throw new Error('Unexpected execution API '+u.pathname);
+  return route.continue();
+ });
+ await page.goto('/tests/browser/wrf-shared.html');
+ const source=page.getByRole('combobox',{name:'驱动资料',exact:true});
+ await expect(source).toHaveCount(1);
+ const choices=await source.evaluate(el=>[...el.options].map(option=>[option.value,option.textContent]));
+ expect(choices).toContainEqual(['ecmwf','ECMWF IFS 0.25°']);
+ expect(choices).toContainEqual(['ecmwf_0p1','ECMWF IFS 0.1°']);
+ await page.getByRole('button',{name:'按坐标创建 D01',exact:true}).click();
+ const before=await page.evaluate(()=>JSON.stringify(document.querySelector('wrf-config-editor').config.domains));
+ await source.selectOption('ecmwf_0p1');
+ await expect(page.getByRole('combobox',{name:'驱动资料间隔',exact:true})).toHaveValue('3');
+ expect(await page.evaluate(()=>JSON.stringify(document.querySelector('wrf-config-editor').config.domains))).toBe(before);
+ await page.getByRole('button',{name:'开始模拟',exact:true}).click();
+ await expect.poll(()=>validations.length).toBe(1);
+ expect(validations[0].data_source).toBe('ecmwf_0p1');
+ await expect.poll(()=>page.evaluate(()=>window.__wrfSubmission?.data_source)).toBe('ecmwf_0p1');
+ await source.selectOption('ecmwf');
+ await expect(page.getByRole('combobox',{name:'驱动资料间隔',exact:true})).toHaveValue('3');
+});
+
+test('pool prioritizes latest two cycles and distinguishes paused protected old downloads',async({page})=>{
+ await page.addInitScript(()=>{localStorage.setItem('token','fixture');localStorage.setItem('user',JSON.stringify({uuid:'pool-owner',username:'fixture',role:2}));});
+ const cycles=[
+ {cycle:'2026111000',status:'paused',completed_files:51,partial_size_bytes:53000000,current_file:'gfs.f051',download_rate_bps:999999,explicitly_held:true,wait_reason:'本源下载进程已暂停，文件和分片保留；等待安全恢复或交接'},
+ {cycle:'2026111800',status:'queued',completed_files:0,prefetch_target:true,wait_reason:'本源工作器已暂停，旧文件和分片保留；等待安全恢复或交接'},
+ {cycle:'2026102700',status:'ready',completed_files:73,task_required:true,complete:true},
+ {cycle:'2026111700',status:'queued',completed_files:0,prefetch_target:true,wait_reason:'本源工作器已暂停'},
+ {cycle:'2026110900',status:'status_unknown',completed_files:4,wait_reason:'当前传输身份或状态尚未确认'}
+ ].map(v=>({total_files:73,size_bytes:1000000000,...v}));
+ await page.route('**/*',async route=>{if(await fixtureConfigurationPreview(route))return;const req=route.request(),u=new URL(req.url()),p=u.pathname;if(!['localhost','127.0.0.1'].includes(u.hostname))return route.abort();const reply=data=>route.fulfill({contentType:'application/json',body:JSON.stringify({code:0,data})});
+ if(req.method()!=='GET')throw new Error('Unexpected mutation '+p);
+ if(p==='/api/wrf/options')return reply(options);
+ if(p==='/api/health')return reply({status:'online',hpc:{status:'ready'}});
+ if(p==='/api/wrf/workbench/tasks')return reply({items:[]});
+ if(p==='/api/wrf/forcing/refresh')return reply({status:'idle'});
+ if(p==='/api/wrf/data-status')return reply({pool_items:[{provider:'gfs',label:'GFS',status:'downloading',cycles}]});
+ if(p.startsWith('/api/'))throw new Error('Unexpected API '+p);return route.continue();});
+ await page.goto('/wrf');await page.getByRole('button',{name:/^任务与资料/}).click();
+ const cards=page.locator('.pool-provider article');await expect(cards).toHaveCount(5);
+ await expect(cards.nth(0).locator('.cycle-head b')).toHaveText('2026-11-18 00Z');
+ await expect(cards.nth(1).locator('.cycle-head b')).toHaveText('2026-11-17 00Z');
+ await expect(cards.nth(2)).toContainText('任务使用中');
+ const paused=cards.filter({has:page.locator('.cycle-head .paused')});
+ await expect(paused).toContainText('已暂停');await expect(paused).toContainText('手动保留');await expect(paused).toContainText('当前分片');
+ await expect(paused).not.toContainText('下载中');await expect(paused).not.toContainText('/s');
+ await expect(cards.nth(0)).toContainText('工作器已暂停');
+ await expect(cards.filter({has:page.locator('.cycle-head .status_unknown')})).toContainText('状态待核验');
+ await page.reload();await page.getByRole('button',{name:/^任务与资料/}).click();
+ await expect(cards.nth(0)).toContainText('2026-11-18 00Z');await expect(paused).toContainText('已暂停');
 });

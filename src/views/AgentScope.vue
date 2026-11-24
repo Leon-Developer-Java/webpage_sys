@@ -33,6 +33,7 @@ import {seasonalContextFromQuery} from '../utils/seasonalAgentContext';
 import { ensureFreshToken, getToken, getUser } from "../api.js";
 import {
   buildAgentScopeAuthContext,
+  buildIcingMapEmbedUrl,
   createAgentScopeConversationId,
   isTrustedAgentScopeMessage,
   resolveAgentScopeEmbedConfig,
@@ -111,8 +112,22 @@ function handleAgentScopeMessage(event) {
     sendAuthContext();
     return;
   }
-  if (payload.type === "weather-agent-open-nowcast-map" || payload.type === "weather-agent-open-icing-map") {
+  if (payload.type === "weather-agent-open-icing-map") {
+    const mapUrl = buildIcingMapEmbedUrl(payload, window.location.origin);
+    if (mapUrl) event.source.postMessage({
+      type: "weather-agent-icing-map-embed",
+      requestId: payload.requestId,
+      mapUrl,
+    }, config.webOrigin);
+    return;
+  }
+  if (payload.type === "weather-agent-open-nowcast-map") {
     openModelRun(payload.runId);
+    return;
+  }
+  if (payload.type === "weather-agent-open-scene3d") {
+    const runId = String(payload.runId || "");
+    if (/^s3d_[0-9a-f]{32}$/.test(runId)) router.push({ path: "/scene3d", query: { run_id: runId } });
     return;
   }
   if (payload.type === "weather-agent-open-data-visualization") {

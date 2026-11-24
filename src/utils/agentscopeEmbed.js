@@ -64,9 +64,23 @@ export function buildAgentScopeAuthContext({ token, apiUrl, user, dark, seasonal
     type: "weather-agent-auth-context",
     token: String(token || ""),
     serverUrl: apiUrl,
-    userId: String(user?.id ?? user?.username ?? ""),
+    userId: String(user?.uuid || (user?.id ?? user?.username ?? "")),
     theme: dark ? "dark" : "light",
     ...(conversationId ? {conversationId} : {}),
     ...(seasonalContext ? {seasonalContext} : {}),
   };
+}
+
+export function buildIcingMapEmbedUrl(payload, origin) {
+  const runId = String(payload?.runId || "").trim();
+  if (!runId) return "";
+  const url = new URL("/agent/icing-map", origin);
+  url.searchParams.set("run_id", runId);
+  if (payload.archiveId) url.searchParams.set("archive_id", String(payload.archiveId));
+  const range = payload.selectedRange;
+  if (range?.start && range?.end) {
+    url.searchParams.set("start_date", String(range.start));
+    url.searchParams.set("end_date", String(range.end));
+  }
+  return url.href;
 }

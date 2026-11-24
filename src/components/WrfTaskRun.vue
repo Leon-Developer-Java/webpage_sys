@@ -89,7 +89,17 @@ const pendingLogUpdate = ref(false);
 const displayLogs = computed(() => String(props.logs || "").replaceAll("超算", "tx-lab"));
 const displayError=computed(()=>safeError(props.task?.error||''));
 const allowed=action=>props.task?.operations?.some(op=>op.action===action && op.enabled)===true;
-const sourceLabel = computed(() => ({ ecmwf: "ECMWF", ec: "ECMWF" })[props.task?.request?.data_source] || "GFS");
+const sourceLabel = computed(() => {
+  const source = String(props.task?.request?.data_source ?? "").trim().toLowerCase();
+  switch (source) {
+    case "gfs": return "GFS";
+    case "ecmwf":
+    case "ec": return "ECMWF";
+    case "ecmwf_0p1": return "ECMWF IFS 0.1°";
+    case "": return "未记录资料源";
+    default: return "未知资料源";
+  }
+});
 const forcingCycle = computed(() => props.task?.runtime?.forcing_cycle || props.task?.runtime?.gfs_cycle || props.task?.runtime?.ecmwf_cycle);
 const forcingLabel = computed(() => `${sourceLabel.value} 周期`);
 const forcingValue = computed(() => forcingCycle.value || "待选择");

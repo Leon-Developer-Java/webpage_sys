@@ -1,3 +1,47 @@
+<!-- scene3d-current-start -->
+## 三维场景页面接入更新
+
+2026-11-20：已合并上游 `master` 并接入独立三维场景页面，保留上游 WRF UI 2.2.9、覆冰地图、认证和时间轴功能。
+
+### 页面功能
+
+- 路由为 `/scene3d`，导航对角色不低于 2 的业务用户开放，接口由后端再次校验身份与权限。
+- 保留原地形、杆塔、导线、WebGPU 风场粒子、配色、高度分层、时间播放和线路动态响应；底图与平台统一配置。
+- 左键平移，右键或中键旋转，滚轮缩放；增加 GPU 初始化重试、设备丢失恢复及错误提示，不采用替代风场渲染。
+- 主 Agent 的三维结果卡可以打开 `/scene3d?run_id=s3d_...`，展示同一个服务器任务。页面验证跨窗口消息来源和任务标识。
+
+### 配置和启动
+
+```bash
+npm ci --no-audit --no-fund
+npm run dev -- --port 5177 --strictPort
+```
+
+在 `.env.local` 中按需配置 `VITE_SCENE3D_BASE=http://127.0.0.1:8013`，示例见 [.env.example](.env.example)。页面使用现有 `authedFetch` 获取业务数据，Cesium 运行资源由三维服务提供。修改 Vite 环境变量后需重启开发服务或重新构建。
+
+三维页面需要登录服务、[backend_scene3d](https://github.com/xiaohu12138/backend_scene3d) 网关和服务器数据就绪；聊天调用还需要 [weather_agentscope](https://github.com/dying311/weather_agentscope)。这些服务不由 `npm run dev` 单独启动。开发页面地址为 `http://127.0.0.1:5177/scene3d`，未登录时进入登录页。
+
+Windows 一键启动与停止脚本保存在 `backend_scene3d/deployment/windows/`，使用前复制到各业务仓库共同父目录。数据、实际 `.env`、凭据和构建产物不上传 GitHub。三维计算服务仓库为私有，需授权访问。
+
+本次验证：主站 113 项单元测试及生产构建通过，原风场显示保持。完整说明见 [Scene3D 页面接入](docs/SCENE3D_INTEGRATION.md)。以下为其他业务已有的阶段记录，原内容保留。
+<!-- scene3d-current-end -->
+
+## 2026-11-18 资料池真实暂停状态与最新周期恢复
+
+确认暂停显示已暂停，未知身份继续保护；最新两预取周期置顶。核验身份和无引用后结束10日 GFS/ECMWF 0.25°旧暂停下载，全部文件、分片和历史保留，两个周期设为显式保留。仅通过原门禁重载 WRF API，其他服务身份保持；18日三源独立下载均有真实字节推进，0.1°原工作器不变。118项后端、10项维护、4项实际数据盘测试、3项浏览器及前端构建通过，真实页面刷新排序验收。未新增计算、自动检查或 Git 提交。[页面验收](docs/POOL_PAUSE_LATEST_ACCEPTANCE_20261118.md)。
+
+## 2026-10-30 通用请求身份绑定（仅源码，未加载）
+
+`authedFetch`在等待续期前后及响应返回时核对原请求归属，不把旧操作或响应转移到新账户；只有同一凭据的401才清除当前登录。身份比较不授予权限，认证、撤销及角色仍由服务端校验；已发送请求的未知结果回原账户核对，不自动重放。实际认证浏览器及Vue工作台50项通过，源码未主动加载。范围与反例见工作区 `weather_agentscope/docs/WRF_USER_JOURNEY_REGRESSION_20261029.md` 第二十批。
+
+## 2026-10-30 共享结果查看器候选（仅暂存，未加载）
+
+`packages/wrf-ui`暂存2.2.8补齐当前帧解码后等待再播放、失败停止与原帧重试、实际质量说明。`build-wrf-ui.mjs --stage-only`不改安装锁，测试通过专属配置引用同一候选；Vue/React运行依赖仍为2.2.7，本轮未切换。共享29、Vue浏览器50及两端候选构建通过；既有真实产品和聊天到工作台交接的范围与证据见工作区 `weather_agentscope/docs/WRF_USER_JOURNEY_REGRESSION_20261029.md` 第十九批。完整设计验收仍未完成，不新增计算、发布或清理输出。
+
+## 2026-10-30 共享认证续期保护（仅源码，未加载）
+
+`src/api.js`按启动续期的token绑定响应，迟到成功、401/403或网络错误不能覆盖新账户或恢复已退出登录；不同token分别合并并发续期。使用实际Vue宿主与React iframe的隔离浏览器回归，不新增WRF业务规则到公共层。构建输出在工作区本轮证据目录，未覆盖现有dist或重载服务；WRF整体仍在验收。详见 `weather_agentscope/docs/WRF_USER_JOURNEY_REGRESSION_20261029.md` 第十八批。
+
 > 2026-10-16 恢复完成：专用模型导航、`/model` 页面与8006客户端恢复，旧模型结果消息继续打开专用模型页；WRF改动保留。 实际加载及验证见工作区 `docs/MODEL_RESTORATION_20261016.md`。
 
 ## 2026-10-15 参数组合校验补齐（已安全切换）
@@ -289,7 +333,7 @@ npm run build
 
 ## WRF 共用组件发布与验证
 
-`wrf-ui.lock.json` 绑定版本、源码 SHA-256、JS bundle SHA-256、npm tarball integrity 和构建工具版本。`node scripts/build-wrf-ui.mjs` 重建并校验锁；只有维护发布时才使用 `--update-lock`。主站和 AgentScope 前端通过各自锁文件安装同一个 `.artifacts/wrf-ui/<version>/*.tgz`，无需私有 registry。部署版本不可覆盖成不同内容；源代码或打包内容变化时更新包版本并同时更新两端锁。构建前的 `verify-wrf-ui.mjs` 核对主站实际安装 bundle 和锁，防止 file 依赖旧缓存冒充新包。React 宿主对该已编译包关闭 Vite 再优化。
+`wrf-ui.lock.json` 绑定版本、源码 SHA-256、JS bundle SHA-256、npm tarball integrity 和构建工具版本。`node scripts/build-wrf-ui.mjs` 重建并校验锁；只有维护发布时才使用 `--update-lock`。主站通过 `vendor/wrf-ui/`、AgentScope 前端通过自己的 `frontend/vendor/wrf-ui/` 和各自锁文件安装同一归档，无需私有 registry。`.artifacts/wrf-ui/<version>/` 只保存重建暂存；`--stage-only` 不写入正式 vendor 归档或安装锁。部署版本不可覆盖成不同内容；源代码或打包内容变化时更新包版本并同时更新两端锁。构建前的 `verify-wrf-ui.mjs` 核对主站实际安装 bundle 和锁，防止 file 依赖旧缓存冒充新包。React 宿主对该已编译包关闭 Vite 再优化。
 
 更新包后，长期运行的 Vite 开发服务可能保留 node_modules 的旧模块转换及 immutable URL。应核对实际服务脚本的版本，按进程身份仅温和刷新对应前端，再完整刷新浏览器使 Custom Elements 重新注册；安装目录版本正确不能代替实际加载核验。几何数值在 input 时保存，预览响应必须同时匹配请求序列及当前几何签名，防止旧响应覆盖连续编辑或未失焦输入。
 
@@ -338,3 +382,7 @@ WRF_TEST_PYTHON=/path/to/backend-python npm run test:wrf-browser
 2026-10-09 源码共享包升级为 2.2.0，工作台增加容器宽度/短窗口布局、常驻启动栏、任务筛选分页及管理和资料操作界面；构建检查通过。5177 开发页面随源码热更新，8007 管理增量未重载；Vue/React 两宿主完整上线与实际计算验收仍须完成。16 项隔离 Chrome 回归通过，包含旧后端无管理接口时不发送缺失请求、输入保留和七种窗口尺寸。系统主题和地图底图设置保持原样。
 
 2026-10-15 专用模型页面与8006客户端已退役；旧 `/model` 跳转 `/wrf`。原模型数据与日志在工作区独立保留，历史模型卡仅展示快照。WRF与智能体导航保持。
+
+## 2026-11-14 隔离整合与可复现验证
+
+本地最新 WRF 功能及远端默认分支更新的整合方式、验证入口和运行切换边界见 [整合验收](docs/GIT_INTEGRATION_20261114.md)。

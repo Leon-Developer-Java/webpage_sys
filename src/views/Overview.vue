@@ -25,16 +25,18 @@
 
       <template v-if="tool === 'select'">
         <div class="resource-filter">
-          <label class="filter-label">数据类型</label>
-          <div class="data-type-grid">
-            <button
-              v-for="source in sources"
-              :key="source.key"
-              type="button"
-              :class="{ on: catalogSourceKey === source.key }"
-              @click="selectCatalogSource(source.key)"
-            >{{ source.btn }}</button>
-          </div>
+          <template v-for="group in sourceGroups" :key="group.label">
+            <label class="filter-label">{{ group.label }}</label>
+            <div class="data-type-grid">
+              <button
+                v-for="source in group.sources"
+                :key="source.key"
+                type="button"
+                :class="{ on: catalogSourceKey === source.key }"
+                @click="selectCatalogSource(source.key)"
+              >{{ source.btn }}</button>
+            </div>
+          </template>
 
           <span v-if="catalogSourceKey === 'seasonal'" class="filter-label">预报有效时间筛选（北京时间）</span>
           <p v-if="catalogSourceKey === 'seasonal'" class="seasonal-catalog-hint">先选择产品、起报批次和有效时次，点击“确认展示”后加载地图。月度产品通常每月 1 日一个时次。</p>
@@ -201,17 +203,17 @@
         <div class="resource-results">
           <p v-if="resourcesError" class="resource-state error">{{ resourcesError }}</p>
           <p v-else-if="resourcesLoading && !dataResources.length" class="resource-state">正在读取数据...</p>
-          <p v-else-if="!dataResources.length" class="resource-state">暂无已解析数据</p>
+          <p v-else-if="!dataResources.length" class="resource-state">{{ catalogModel ? '暂无已发布的预测产品' : '暂无已解析数据' }}</p>
           <p v-else-if="!filteredDataResources.length" class="resource-state">当前条件下暂无数据</p>
           <ul v-else class="resource-list">
             <li
               v-for="item in filteredDataResources"
-              :key="item.file_uuid"
-              :class="{ sel: catalogSelectedResourceUuid === item.file_uuid }"
+              :key="resourceId(item)"
+              :class="{ sel: catalogSelectedResourceUuid === resourceId(item) }"
               @click="catalogSourceKey === 'seasonal' ? stageSeasonalResource(item) : selectDataResource(item)"
             >
               <div class="resource-title">
-                <b :title="item.file_name">{{ item.file_name }}</b>
+                <b :title="item.product_id || item.file_name">{{ resourceTitle(item) }}</b>
                 <span class="continuity">{{ resourceStatus(item) }}</span>
               </div>
               <span v-if="catalogSourceKey === 'seasonal' && resourceProductLabel(item)">{{ resourceProductLabel(item) }}</span>
@@ -221,7 +223,8 @@
                 <span>{{ seasonalResultLabel(item) }} · {{ seasonalMatches(item).length }} 个匹配时次 / 共 {{ seasonalResourceTimes(item).length }} 个</span>
               </template>
               <span v-else>{{ resourceTimeRange(item) }}</span>
-              <span>{{ formatFileSize(item.file_size) }} · {{ item.elements.length }} 个要素</span>
+              <span v-if="item.product_id">{{ productRegion(item) }}</span>
+              <span v-else>{{ formatFileSize(item.file_size) }} · {{ item.elements.length }} 个要素</span>
             </li>
           </ul>
         </div>
@@ -287,7 +290,7 @@
               :key="`${layout}-${i}-${p.key}-${p.variantIndex}-${resourceRenderKey(p.key, i)}`"
               :is="p.comp"
               :parsed="layerParsed(p.key, i)"
-              :time-index="layerTimeIndex"
+              :time-index="p.modelId ? forecastFrameIndex(p.key, i) : layerTimeIndex"
               :variant-index="p.variantIndex"
               v-bind="layerProps(p.key, i)"
               @display-loaded="payload => onLayerDisplayLoaded(i, p.key, payload)"
@@ -302,7 +305,7 @@
       </div>
 
       <div class="timebar glass">
-        <div class="tb-head">
+        <div class="tb-head" :class="{ 'radar-head': active === 'radar' }">
           <span v-if="active === 'seasonal'" class="seasonal-axis-label">有效时间 · 北京时间</span>
           <button class="tc-btn" :disabled="!timelineInteractive" @click="setTimeIndex(0)"><el-icon><DArrowLeft /></el-icon></button>
           <button class="tc-btn" :disabled="!timelineInteractive" @click="setTimeIndex(Math.max(0, tIndex - 1))"><el-icon><ArrowLeft /></el-icon></button>
@@ -312,13 +315,14 @@
           <div class="tc-speed">
             <button v-for="s in [0.5, 1, 2, 4]" :key="s" :class="{ on: speed === s }" :disabled="!timelineInteractive" @click="speed = s">{{ s }}x</button>
           </div>
+          <span v-if="active === 'radar' && axisTimes.length" class="radar-axis-range">{{ radarAxisRange }}</span>
           <span class="tc-time">{{ timelineStatusText }}</span>
         </div>
         <TimeAxis
           :key="timeAxisKey"
           :times="axisTimes"
           :active="animPos"
-          :tick-mode="usesCompactTimeAxis ? 'all' : 'sampled'"
+          :tick-mode="active === 'radar' ? 'adaptive' : usesCompactTimeAxis ? 'all' : 'sampled'"
           :max-ticks="active === 'seasonal' ? 5 : 12"
           :compact-labels="usesCompactTimeAxis"
           :disabled="!timelineInteractive"
@@ -341,17 +345,19 @@
 
 <script setup>
 import { computed, inject, nextTick, onBeforeUnmount, onMounted, provide, ref, watch } from "vue";
-import {useRoute, useRouter} from 'vue-router';
-import {seasonalAgentContext, seasonalAgentQuery} from '../utils/seasonalAgentContext';
+import { useRoute, useRouter } from "vue-router";
+import { seasonalAgentContext, seasonalAgentQuery } from "../utils/seasonalAgentContext";
 import { ElNotification } from "element-plus";
 import { ArrowLeft, ArrowRight, Check, Close, Collection, Connection, DArrowLeft, DArrowRight, DataAnalysis, Document, FolderOpened, Grid, Loading, MapLocation, Monitor, Moon, Operation, Position, RefreshRight, Sunny, VideoPlay, VideoPause } from "@element-plus/icons-vue";
 import {
   downloadSeasonalProduct,
   getDisplayResource,
   getDisplayResources,
-  getUser,
+  getForecastProducts,
+  getModelRunResult,
   getSeasonalProducts,
   getSeasonalProductTypes,
+  getUser,
   getHimawariAutoStatus,
   parseFile,
   startSatelliteParseTask,
@@ -372,10 +378,10 @@ import RadarLayer from "../layers/RadarWebpLayer.vue";
 import HimawariLayer from "../layers/HimawariLayer.vue";
 import FY3Layer from "../layers/FY3Layer.vue";
 import WrfLayer from "../layers/WrfLayer.vue";
+import ForecastProductLayer from "../layers/ForecastProductLayer.vue";
 
 const dark = inject("theme");
 const router = useRouter();
-const route = useRoute();
 const canUseAgents = computed(() => (getUser()?.role || 0) >= 2);
 
 function openSeasonalAgent(pane) {
@@ -395,7 +401,7 @@ function openSeasonalAgent(pane) {
   router.push({path:'/agent', query:seasonalAgentQuery(context)});
 }
 
-const sources = [
+const dataSources = [
   {key: "gfs", btn: "GFS", comp: GribLayer, dataType: "GFS"},
   {key: "ecmwf", btn: "ECMWF", comp: GribLayer, dataType: "ECMWF"},
   {key: "seasonal", btn: "季节降水", comp: GribLayer, dataType: "SEASONAL_PRECIP"},
@@ -406,6 +412,13 @@ const sources = [
   {key: "wrf", btn: "WRF", comp: WrfLayer},
   {key: "era5", btn: "ERA5", comp: Era5Layer}
 ];
+const forecastSources = Number(getUser()?.role) >= 2 ? [
+  {key: "nowcast", btn: "短临预报", modelId: "precipitation_nowcasting", comp: ForecastProductLayer},
+  {key: "icing", btn: "覆冰预测", modelId: "icing_prediction", comp: ForecastProductLayer},
+] : [];
+const sourceGroups = [{label: "数据类型", sources: dataSources}];
+if (forecastSources.length) sourceGroups.push({label: "预测产品", sources: forecastSources});
+const sources = [...dataSources, ...forecastSources];
 
 const projections = ["等经纬", "墨卡托", "正弦", "罗宾逊", "兰博托", "卫星正视", "北极", "南极"];
 const basemaps = ["矢量底图", "影像底图", "地形晕渲", "全球境界"];
@@ -418,7 +431,9 @@ const dockOpen = ref(true);
 const showGrid = ref(true);
 const layout = ref("1");
 const propsOpen = ref(true);
-const active = ref("radar");
+const route = useRoute();
+const requestedSource = String(route.query.data_type ?? "").trim().toLowerCase();
+const active = ref(sources.some(source => source.key === requestedSource) ? requestedSource : "radar");
 const projection = ref("等经纬");
 const basemap = ref("矢量底图");
 const seasonalOpacity = useSeasonalOpacity();
@@ -494,6 +509,7 @@ const catalogSourceKey = computed(() =>
 );
 
 const activeSourceLabel = computed(() => sources.find(item => item.key === catalogSourceKey.value)?.btn || catalogSourceKey.value.toUpperCase());
+const catalogModel = computed(() => forecastSources.find(item => item.key === catalogSourceKey.value));
 const resourceListLabel = computed(() =>
   resourceStartTime.value && resourceEndTime.value
     ? `${activeSourceLabel.value} 搜索结果`
@@ -1189,10 +1205,19 @@ const activeLayerTimes = computed(() => {
   return [...new Set(parsedTimes.map(String))];
 });
 
+const forecastTimes = computed(() => {
+  const source = catalogModel.value;
+  if (!source) return null;
+  const pane = layout.value !== "1" ? selectedPane.value : -1;
+  const product = pane >= 0 ? layerParsed(source.key, pane) : parsed.value;
+  return (product?.frames || []).map(frame => frame.valid_time);
+});
+
 const axisTimes = computed(() => {
   if (active.value === 'seasonal' && activeLayerTimes.value.length) {
     return activeLayerTimes.value.map(value => formatForecastTime(value, 'Asia/Shanghai'));
   }
+  if (forecastTimes.value) return forecastTimes.value.map(formatAxisTime);
   if (selectedResource.value && parsedLayerKey.value === active.value) {
     const times = selectedResourceTimes.value;
     return times.map(formatAxisTime);
@@ -1520,6 +1545,7 @@ function snapTimeIndexForActive(value) {
 }
 
 const parsedFrameCount = computed(() => {
+  if (forecastTimes.value) return forecastTimes.value.length;
   if (isGribLayerKey(active.value)) {
     const validHours = currentLayerValidHours();
     if (validHours.length) return validHours.length;
@@ -1552,9 +1578,17 @@ const timelineDisabledLabel = computed(() => {
 });
 
 const timelineStatusText = computed(() => {
-  if (timelineInteractive.value) return activeTimeLabel.value;
+  if (timelineInteractive.value) return active.value === "radar"
+    ? `${activeTimeLabel.value} · ${Math.min(axisTimes.value.length, Math.max(1, Math.round(animPos.value) + 1))}/${axisTimes.value.length}`
+    : activeTimeLabel.value;
   if (axisTimes.value.length === 1) return axisTimes.value[0];
   return "无数据";
+});
+
+const radarAxisRange = computed(() => {
+  const first = String(axisTimes.value[0] || "").split(" ")[0];
+  const last = String(axisTimes.value.at(-1) || "").split(" ")[0];
+  return `${first === last ? first : `${first} — ${last}`} · 北京时间 UTC+8`;
 });
 
 const layerTimeIndex = computed(() => {
@@ -1583,6 +1617,13 @@ function clampTimeIndex(v) {
   const max = Math.max(0, axisTimes.value.length - 1);
   const n = Number.isFinite(Number(v)) ? Math.floor(Number(v)) : 0;
   return Math.min(max, Math.max(0, n));
+}
+
+function forecastFrameIndex(key, paneIndex) {
+  const frames = layerParsed(key, paneIndex)?.frames || [];
+  const clock = forecastTimes.value || (selectedResourceTimes.value.length ? selectedResourceTimes.value : activeLayerTimes.value);
+  const selectedTime = clock[tIndex.value];
+  return selectedTime ? frames.findIndex(frame => timestamp(frame.valid_time) === timestamp(selectedTime)) : 0;
 }
 
 function setTimeIndex(v) {
@@ -2296,6 +2337,20 @@ function resourceTimeRange(item) {
   return start === end ? start : `${start} 至 ${end}`;
 }
 
+function resourceId(item) {
+  return item?.product_id || item?.file_uuid;
+}
+
+function resourceTitle(item) {
+  if (!item.product_id) return item.file_name;
+  const name = item.mode === "uploaded_era5_netcdf_history" ? "覆冰历史回算" : activeSourceLabel.value;
+  return item.issue_time ? `${name} · ${formatAxisTime(item.issue_time)} 起报` : name;
+}
+
+function productRegion(item) {
+  return [item.region, item.extent?.join(", ")].filter(Boolean).join(" · ");
+}
+
 function resourceStatus(item) {
   if (catalogSourceKey.value === 'seasonal') return `匹配 ${seasonalMatches(item).length} 时次`;
   return `${item.frame_count || 0} 帧`;
@@ -2386,16 +2441,19 @@ async function refreshDataResources(options = {}) {
   try {
     const hasTimeRange = resourceStartTime.value && resourceEndTime.value;
     const isSeasonal = catalogSourceKey.value === 'seasonal';
-    const result = await getDisplayResources(sourceDataType(catalogSourceKey.value), {
+    const timeRange = {
       timeStart: hasTimeRange && !isSeasonal ? new Date(timestamp(resourceStartTime.value)).toISOString().slice(0, 19) : "",
       timeEnd: hasTimeRange && !isSeasonal ? new Date(timestamp(resourceEndTime.value)).toISOString().slice(0, 19) : "",
-    });
+    };
+    const result = catalogModel.value
+      ? await getForecastProducts(catalogModel.value.modelId, timeRange)
+      : await getDisplayResources(sourceDataType(catalogSourceKey.value), timeRange);
     if (requestId !== resourceRequestId) return;
     dataResources.value = result.items || [];
-    if (selectedSeasonalProduct.value && !seasonalProductOptions.value.some(item => item.value === selectedSeasonalProduct.value)) {
+    if (isSeasonal && selectedSeasonalProduct.value && !seasonalProductOptions.value.some(item => item.value === selectedSeasonalProduct.value)) {
       selectedSeasonalProduct.value = "";
     }
-    if (layout.value === "1" && selectedResourceUuid.value && !dataResources.value.some(item => item.file_uuid === selectedResourceUuid.value)) {
+    if (layout.value === "1" && selectedResourceUuid.value && !dataResources.value.some(item => resourceId(item) === selectedResourceUuid.value)) {
       clearSelectedResource();
     }
     if (isSeasonal) {
@@ -2435,17 +2493,41 @@ function parsedResourcePayload(resource, sourceKey = catalogSourceKey.value) {
   return isGribLayerKey(sourceKey) ? { ...common, meta } : { ...meta, ...common };
 }
 
+async function readForecastProduct(item) {
+  const title = resourceTitle(item);
+  const result = await getModelRunResult(item.product_id);
+  const frames = result.frames.map(frame => {
+    // Older model manifests contain UTC times without an explicit offset.
+    const time = frame.valid_time.replace(" ", "T");
+    return {
+      valid_time: /(?:Z|[+-]\d\d:\d\d)$/i.test(time) ? time : time + "Z",
+      url: frame.prediction_url || frame.raster_url,
+      grid_url: frame.grid_url,
+    };
+  });
+  return {
+    ...item, file_name: title, times: frames.map(frame => frame.valid_time),
+    meta: {
+      frames, file_name: title, extent: result.extent, range: productRegion(item),
+      element: result.field_info?.name_zh, unit: result.unit, colorbar: result.colorbar,
+      time: resourceTimeRange(item), extraRows: [{key: "product", label: "产品编号", value: item.product_id}],
+    },
+  };
+}
+
 async function selectDataResource(item, { replacePending = false, variableKey = null, validTime = null } = {}) {
-  if (!item?.file_uuid || (resourcesLoading.value && !replacePending)) return;
+  const id = resourceId(item);
+  if (!id || (resourcesLoading.value && !replacePending)) return;
   const targetPane = layout.value !== "1" && selectedPane.value >= 0 ? selectedPane.value : -1;
   const targetSource = catalogSourceKey.value;
   const timeStart = timestamp(resourceStartTime.value);
   const timeEnd = timestamp(resourceEndTime.value);
+  if (targetPane < 0 && targetSource !== "seasonal") selectedResourceUuid.value = id;
   resourcesLoading.value = true;
   resourcesError.value = "";
   const requestId = ++resourceRequestId;
   try {
-    const original = await getDisplayResource(resourceRequest(item));
+    const original = item.product_id ? await readForecastProduct(item) : await getDisplayResource(resourceRequest(item));
     if (requestId !== resourceRequestId) return;
     const resource = targetSource === 'seasonal' ? filterSeasonalResource(original, timeStart, timeEnd) : original;
     let requestedFrameIndex = 0;
@@ -2456,7 +2538,9 @@ async function selectDataResource(item, { replacePending = false, variableKey = 
       resource.meta = {...resource.meta, default_variable:variableKey};
     }
     resetTimebar();
-    const nextProcessing = [
+    const nextProcessing = item.product_id ? [
+      {step: "读取预测产品", state: `${resource.times.length} 帧`, t: "", ok: true},
+    ] : [
       {step: "上传/下载", state: "已入库", t: resource.create_time || "", ok: true},
       {step: "解析", state: "成功", t: resource.parse_finished_at || "", ok: true},
       {step: "渲染 WEBP", state: `${resource.webp_count || 0} 个资源`, t: "", ok: true},
@@ -2470,14 +2554,14 @@ async function selectDataResource(item, { replacePending = false, variableKey = 
           key: targetSource,
           parsed: nextParsed,
           resource,
-          fileUuid: item.file_uuid,
+          fileUuid: id,
           processing: nextProcessing,
         },
       };
       paneDisplays.value = { ...paneDisplays.value, [targetPane]: null };
     } else {
       selectedResource.value = resource;
-      selectedResourceUuid.value = item.file_uuid;
+      selectedResourceUuid.value = id;
       parsed.value = nextParsed;
       parsedLayerKey.value = targetSource;
       layerDisplays.value = { ...layerDisplays.value, [targetSource]: null };
@@ -3077,6 +3161,8 @@ watch(active, () => {
   background: var(--accent-soft);
 }
 
+.radar-head { flex-wrap: wrap; }
+.radar-axis-range { font-size: 11px; color: var(--muted); white-space: nowrap; }
 .tc-time {
   margin-left: auto;
   min-width: 92px;
