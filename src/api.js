@@ -559,6 +559,13 @@ export async function getModelRunResult(runId) {
   return normalizeModelResult(result);
 }
 
+export function getForecastProducts(modelId, { timeStart, timeEnd }) {
+  const query = new URLSearchParams();
+  if (timeStart) query.set("time_start", timeStart);
+  if (timeEnd) query.set("time_end", timeEnd);
+  return modelRequest(`/api/models/${encodeURIComponent(modelId)}/products?${query}`);
+}
+
 export async function getWinterIcingView(runId, startDate, endDate) {
   const query = new URLSearchParams({ start_date: startDate, end_date: endDate });
   const result = await modelRequest(`/api/model-runs/${encodeURIComponent(runId)}/icing-winter-view?${query}`);

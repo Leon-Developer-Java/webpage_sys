@@ -214,6 +214,8 @@ const currentFrames = computed(() => {
           `step${String(index).padStart(3, "0")}`,
         url: toPublicUrl(frame.url),
         stats: frame.stats || {},
+        color_range: frame.color_range,
+        legend_ticks: frame.legend_ticks,
       }))
       .filter(frame => frame.url);
   }
@@ -431,6 +433,7 @@ const renderVarType = computed(() => {
 
 const renderColorRange = computed(() => {
   const range =
+    currentFrame.value?.color_range ||
     currentLayer.value?.color_range ||
     currentLayer.value?.colorRange ||
     {};
@@ -461,7 +464,7 @@ const gradient = computed(() => {
 });
 
 const ticks = computed(() => {
-  const configured = currentLayer.value?.legend_ticks;
+  const configured = currentFrame.value?.legend_ticks || currentLayer.value?.legend_ticks;
   if (Array.isArray(configured) && configured.length) return configured;
 
   const min = Number(renderColorRange.value.min);
